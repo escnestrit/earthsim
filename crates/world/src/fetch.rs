@@ -38,6 +38,9 @@ pub const DEFAULT_ENDPOINTS: &[&str] = &[
     "https://overpass.private.coffee/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter",
 ];
 
 pub fn percent_encode(s: &str) -> String {
@@ -246,9 +249,18 @@ mod winhttp {
     impl WinHttpFetcher {
         /// `EARTHSIM_OVERPASS` overrides the public endpoints.
         pub fn from_env() -> WinHttpFetcher {
+            // `overpass.txt` next to the exe: one URL per line, tried before the built-in mirrors
+            let mut user: Vec<String> = std::env::current_exe()
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p.with_file_name("overpass.txt")).ok())
+                .map(|t| t.lines().map(|l| l.trim().to_string()).filter(|l| l.starts_with("http")).collect())
+                .unwrap_or_default();
             let endpoints = match std::env::var("EARTHSIM_OVERPASS") {
                 Ok(u) if !u.trim().is_empty() => vec![u.trim().to_string()],
-                _ => DEFAULT_ENDPOINTS.iter().map(|s| s.to_string()).collect(),
+                _ => {
+                    user.extend(DEFAULT_ENDPOINTS.iter().map(|s| s.to_string()));
+                    user
+                }
             };
             WinHttpFetcher { endpoints, current: AtomicUsize::new(0) }
         }

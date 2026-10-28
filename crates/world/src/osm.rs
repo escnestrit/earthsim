@@ -51,7 +51,7 @@ pub fn overpass_query(b: &Bounds) -> String {
     let hw: Vec<&str> = DRIVABLE.iter().map(|d| d.0).collect();
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);
     format!(
-        "[out:json][timeout:60];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb}););out geom;",
+        "[out:json][timeout:30];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb}););out geom;",
         hw.join("|")
     )
 }
