@@ -158,7 +158,8 @@ impl Controls {
 
     /// Normalised value of a binding: steer -1..1, pedals 0..1.
     pub fn value(&self, b: &Binding, raw: Option<f32>, pedal: bool) -> f32 {
-        let mut v = raw.unwrap_or(0.0);
+        // a control the device does not have is simply released
+        let Some(mut v) = raw else { return 0.0 };
         if b.invert {
             v = -v;
         }

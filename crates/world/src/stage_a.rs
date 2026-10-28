@@ -119,6 +119,103 @@ pub fn facade_from_tags(tags: &Tags, height: f64) -> scene::Facade {
     f
 }
 
+pub struct RoofPlan {
+    /// simplified 4-corner footprint (counter-clockwise)
+    pub corners: Vec<(f64, f64)>,
+    /// ridge end points (gabled/hipped) or the apex (pyramidal)
+    pub top: Vec<(f64, f64)>,
+    /// index of a long edge (the ridge runs parallel to it)
+    pub long_edge: usize,
+    pub roof_h: f64,
+}
+
+/// Drop vertices where the outline barely turns (< ~8 degrees) or that are closer than 0.3 m.
+pub fn simplify(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut r = ring.to_vec();
+    loop {
+        let n = r.len();
+        if n <= 3 {
+            return r;
+        }
+        let mut removed = false;
+        for i in 0..n {
+            let (a, b, c) = (r[(i + n - 1) % n], r[i], r[(i + 1) % n]);
+            let (u, v) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
+            let (lu, lv) = ((u.0 * u.0 + u.1 * u.1).sqrt(), (v.0 * v.0 + v.1 * v.1).sqrt());
+            let straight = lu > 1e-9 && lv > 1e-9 && ((u.0 * v.1 - u.1 * v.0) / (lu * lv)).abs() < 0.14 && (u.0 * v.0 + u.1 * v.1) > 0.0;
+            if lu < 0.3 || straight {
+                r.remove(i);
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return r;
+        }
+    }
+}
+
+/// Pitched roof for simple (4-corner, convex) footprints: `roof:shape` from the data (Overture roof_shape)
+/// or, for small houses without it, a gabled roof as a plausible default. Everything else stays flat.
+pub fn roof_plan(tags: &Tags, ring: &[(f64, f64)], h: f64) -> Option<RoofPlan> {
+    let class = tag(tags, "building").unwrap_or("yes");
+    let shape = match tag(tags, "roof:shape") {
+        Some("gabled") | Some("gambrel") | Some("saltbox") => "gabled",
+        Some("hipped") | Some("half-hipped") | Some("mansard") => "hipped",
+        Some("pyramidal") => "pyramidal",
+        Some(_) => return None,
+        None => {
+            let small_house = matches!(class, "house" | "detached" | "semidetached_house" | "bungalow" | "cabin" | "farm" | "hut" | "dacha");
+            if small_house && h <= 12.0 { "gabled" } else { return None }
+        }
+    };
+    let c = simplify(ring);
+    if c.len() != 4 {
+        return None;
+    }
+    // convex check
+    for i in 0..4 {
+        let (a, b, d) = (c[i], c[(i + 1) % 4], c[(i + 2) % 4]);
+        if (b.0 - a.0) * (d.1 - b.1) - (b.1 - a.1) * (d.0 - b.0) <= 0.0 {
+            return None;
+        }
+    }
+    let len = |i: usize| ((c[(i + 1) % 4].0 - c[i].0).powi(2) + (c[(i + 1) % 4].1 - c[i].1).powi(2)).sqrt();
+    let a = if len(0) + len(2) >= len(1) + len(3) { 0 } else { 1 };
+    let width = (len(a + 1) + len((a + 3) % 4)) / 2.0;
+    let length = (len(a) + len(a + 2)) / 2.0;
+    let tagged_h = tag(tags, "roof:height").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| *v > 0.0);
+    let roof_h = tagged_h.unwrap_or(match shape {
+        "pyramidal" => width.min(length) * 0.35,
+        _ => width * 0.5 * 30f64.to_radians().tan(),
+    });
+    let roof_h = roof_h.min(h * 0.6);
+    if h - roof_h < 2.2 || roof_h < 0.5 {
+        return None;
+    }
+    let mid = |i: usize| ((c[i % 4].0 + c[(i + 1) % 4].0) / 2.0, (c[i % 4].1 + c[(i + 1) % 4].1) / 2.0);
+    let top = match shape {
+        "pyramidal" => vec![((c[0].0 + c[1].0 + c[2].0 + c[3].0) / 4.0, (c[0].1 + c[1].1 + c[2].1 + c[3].1) / 4.0)],
+        _ => {
+            let (m1, m3) = (mid(a + 1), mid(a + 3));
+            if shape == "hipped" {
+                let (dx, dy) = (m3.0 - m1.0, m3.1 - m1.1);
+                let l = (dx * dx + dy * dy).sqrt();
+                let inset = width / 2.0;
+                if l <= 2.0 * inset + 0.2 {
+                    vec![((m1.0 + m3.0) / 2.0, (m1.1 + m3.1) / 2.0)]
+                } else {
+                    let (ux, uy) = (dx / l, dy / l);
+                    vec![(m1.0 + ux * inset, m1.1 + uy * inset), (m3.0 - ux * inset, m3.1 - uy * inset)]
+                }
+            } else {
+                vec![m1, m3]
+            }
+        }
+    };
+    Some(RoofPlan { corners: c, top, long_edge: a, roof_h })
+}
+
 pub fn signed_area(r: &[(f64, f64)]) -> f64 {
     let n = r.len();
     0.5 * (0..n).map(|i| {
@@ -216,14 +313,19 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
         ring.reverse();
     }
     let (h, origin) = estimate_height(tags);
+    let shaped = roof_plan(tags, &ring, h);
+    if let Some(sh) = &shaped {
+        ring = sh.corners.clone();
+    }
+    let wall_h = shaped.as_ref().map_or(h, |s| h - s.roof_h);
     let tris = triangulate(&ring);
     let n = ring.len();
-    let mut verts: Vec<f32> = Vec::with_capacity(n * 6);
+    let mut verts: Vec<f32> = Vec::with_capacity(n * 6 + 6);
     for p in &ring {
         verts.extend_from_slice(&[p.0 as f32, p.1 as f32, 0.0]);
     }
     for p in &ring {
-        verts.extend_from_slice(&[p.0 as f32, p.1 as f32, h as f32]);
+        verts.extend_from_slice(&[p.0 as f32, p.1 as f32, wall_h as f32]);
     }
     let mut indices: Vec<u32> = Vec::new();
     for i in 0..n {
@@ -231,9 +333,33 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
         indices.extend_from_slice(&[i as u32, j as u32, (n + j) as u32, i as u32, (n + j) as u32, (n + i) as u32]);
     }
     let ok_roof = tris.is_some();
-    if let Some(t) = &tris {
-        for tri in t {
-            indices.extend_from_slice(&[(n + tri[0]) as u32, (n + tri[1]) as u32, (n + tri[2]) as u32]);
+    match &shaped {
+        Some(sh) => {
+            let base = (verts.len() / 3) as u32;
+            for p in &sh.top {
+                verts.extend_from_slice(&[p.0 as f32, p.1 as f32, h as f32]);
+            }
+            let t = |k: usize| (n + k % n) as u32;
+            if sh.top.len() == 1 {
+                for k in 0..n {
+                    indices.extend_from_slice(&[t(k), t(k + 1), base]);
+                }
+            } else {
+                // ridge R1 near short edge a+1, R3 near short edge a+3
+                let a = sh.long_edge;
+                let (r1, r3) = (base, base + 1);
+                indices.extend_from_slice(&[t(a), t(a + 1), r1, t(a), r1, r3]);
+                indices.extend_from_slice(&[t(a + 2), t(a + 3), r3, t(a + 2), r3, r1]);
+                indices.extend_from_slice(&[t(a + 1), t(a + 2), r1]);
+                indices.extend_from_slice(&[t(a + 3), t(a), r3]);
+            }
+        }
+        None => {
+            if let Some(tr) = &tris {
+                for tri in tr {
+                    indices.extend_from_slice(&[(n + tri[0]) as u32, (n + tri[1]) as u32, (n + tri[2]) as u32]);
+                }
+            }
         }
     }
     Some(BuiltBuilding {
@@ -246,6 +372,7 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
             verts,
             indices,
             facade: facade_from_tags(tags, h),
+            ring: n as u32,
         },
         ok_roof,
     })
@@ -257,6 +384,32 @@ mod tests {
 
     fn t(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn pitched_roofs_for_simple_footprints() {
+        let fr = crate::geo::LocalFrame::new(53.9, 27.56, 0.0);
+        // ~ 12 m x 8 m rectangle, with an extra collinear vertex that must be simplified away
+        let (dla, dlo) = (8.0 / 111_320.0, 12.0 / (111_320.0 * 53.9f64.to_radians().cos()));
+        let ring = [(53.9, 27.56), (53.9, 27.56 + dlo / 2.0), (53.9, 27.56 + dlo), (53.9 + dla, 27.56 + dlo), (53.9 + dla, 27.56), (53.9, 27.56)];
+        for (shape, tops) in [("gabled", 2usize), ("hipped", 2), ("pyramidal", 1)] {
+            let b = build("t", &ring, &t(&[("building", "house"), ("roof:shape", shape), ("height", "8")]), &fr).unwrap().building;
+            assert_eq!(b.ring, 4);
+            assert_eq!(b.verts.len() / 3, 8 + tops, "{shape}");
+            let zs: Vec<f32> = b.verts.chunks(3).map(|v| v[2]).collect();
+            assert!((zs.iter().cloned().fold(0.0, f32::max) - 8.0).abs() < 1e-4);
+            assert!(zs[4] < 8.0 && zs[4] > 2.2, "eaves {}", zs[4]);
+            // every index valid, every triangle non-degenerate
+            assert!(b.indices.iter().all(|&k| (k as usize) < b.verts.len() / 3));
+        }
+        // flat roof tag and big buildings stay flat
+        let b = build("t", &ring, &t(&[("building", "house"), ("roof:shape", "flat"), ("height", "8")]), &fr).unwrap().building;
+        assert_eq!(b.verts.len() / 3, 2 * b.ring as usize);
+        let b = build("t", &ring, &t(&[("building", "apartments"), ("height", "30")]), &fr).unwrap().building;
+        assert_eq!(b.verts.len() / 3, 2 * b.ring as usize);
+        // default gabled for a small house without roof:shape
+        let b = build("t", &ring, &t(&[("building", "house")]), &fr).unwrap().building;
+        assert_eq!(b.verts.len() / 3, 10);
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub struct Building {
     pub verts: Vec<f32>,
     pub indices: Vec<u32>,
     pub facade: Facade,
+    /// Footprint vertex count when `verts` starts with the bottom ring then the eave ring (Stage A layout);
+    /// further vertices (ridge, apex) follow. 0 = derive from `verts` (bottom + top ring only).
+    pub ring: u32,
 }
 
 /// How a building's walls and roof look, from map attributes (Overture/OSM) or from heuristics.
@@ -147,6 +150,7 @@ impl Scene {
             }
             sc.buildings.push(Building {
                 facade: Facade::default(),
+                ring: 0,
                 id: b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 status: b.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 footprint,

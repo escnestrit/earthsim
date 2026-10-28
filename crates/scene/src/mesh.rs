@@ -313,14 +313,18 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     let mut bm = Mb::default();
     let mut bcol: Vec<f32> = Vec::new();
     for b in sc.buildings.iter() {
-        let n = b.verts.len() / 3 / 2; // bottom ring + top ring (Stage A layout)
-        let ring_ok = n >= 3 && b.verts.len() == n * 6;
+        let n = if b.ring > 0 { b.ring as usize } else { b.verts.len() / 6 };
+        let ring_ok = n >= 3 && b.verts.len() >= n * 6;
+        let corner = |i: usize| [b.verts[i * 3] as f64, b.verts[i * 3 + 1] as f64];
         let mut cum = vec![0.0f64; n + 1];
+        let mut dir = vec![[0.0f64; 2]; n];
         if ring_ok {
             for i in 0..n {
-                let j = (i + 1) % n;
-                let (dx, dy) = ((b.verts[j * 3] - b.verts[i * 3]) as f64, (b.verts[j * 3 + 1] - b.verts[i * 3 + 1]) as f64);
-                cum[i + 1] = cum[i] + (dx * dx + dy * dy).sqrt();
+                let (a, c) = (corner(i), corner((i + 1) % n));
+                let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+                let l = (dx * dx + dy * dy).sqrt();
+                cum[i + 1] = cum[i] + l;
+                dir[i] = if l > 1e-9 { [dx / l, dy / l] } else { [1.0, 0.0] };
             }
         }
         let vscale = 3.0 / b.facade.floor_height.max(2.0) as f64;
@@ -337,14 +341,14 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
             let nn = [nn[0] / l, nn[1] / l, nn[2] / l];
             let roof = nn[2].abs() > 0.5;
             let (m, col) = if roof { (mat::ROOF, b.facade.roof_colour) } else { (b.facade.style, b.facade.colour) };
+            // wall triangles start with a ring vertex of the edge they stand on
             let edge = t[0] as usize % n.max(1);
-            for (q, &k) in p.iter().zip(t) {
+            for q in &p {
                 let (u, v) = if roof || !ring_ok {
                     (q[0], q[1])
                 } else {
-                    let r = k as usize % n;
-                    let u = if r == edge { cum[edge] } else { cum[edge + 1] };
-                    (u, q[2] * vscale)
+                    let a = corner(edge);
+                    (cum[edge] + (q[0] - a[0]) * dir[edge][0] + (q[1] - a[1]) * dir[edge][1], q[2] * vscale)
                 };
                 bm.v(*q, nn, u, v, m);
                 bcol.extend_from_slice(&col);
