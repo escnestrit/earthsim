@@ -13,3 +13,4 @@ phys = { path = "../phys" }
 scene = { path = "../scene" }
 world = { path = "../world" }
 jbeam = { path = "../jbeam" }
+bevy = { version = "0.20.0", features = ["dds"] }
