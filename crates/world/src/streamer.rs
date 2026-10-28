@@ -398,7 +398,13 @@ fn net_worker(rx: Receiver<NetJob>, tx: Sender<NetResult>, fetcher: Arc<dyn Fetc
         }
         last_request = Some(Instant::now());
         let q = overpass_query(&tile.bounds());
+        crate::log::log(&format!("tile {}: request via {}", tile.path(), fetcher.describe()));
+        let t_req = Instant::now();
         let res = fetcher.fetch(tile, &q);
+        match &res {
+            Ok(text) => crate::log::log(&format!("tile {}: HTTP ok, {} bytes in {:.1}s", tile.path(), text.len(), t_req.elapsed().as_secs_f64())),
+            Err(e) => crate::log::log(&format!("tile {}: FAILED after {:.1}s: {}", tile.path(), t_req.elapsed().as_secs_f64(), e)),
+        }
         let outcome = match res {
             Ok(text) => match parse_overpass(&text, tile) {
                 Ok(raw) => {
@@ -407,7 +413,11 @@ fn net_worker(rx: Receiver<NetJob>, tx: Sender<NetResult>, fetcher: Arc<dyn Fetc
                     }
                     Ok((Arc::new(raw), text.len()))
                 }
-                Err(e) => Err((format!("bad response: {e}"), true)),
+                Err(e) => {
+                    let head: String = text.chars().take(160).collect();
+                    crate::log::log(&format!("tile {}: response could not be parsed ({e}); starts with: {head}", tile.path()));
+                    Err((format!("bad response: {e}"), true))
+                }
             },
             Err(FetchError::Transient(m)) => Err((m, true)),
             Err(FetchError::Permanent(m)) => Err((m, false)),

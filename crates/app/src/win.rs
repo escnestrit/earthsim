@@ -368,6 +368,8 @@ pub fn run() {
         let cache_dir = std::env::var("EARTHSIM_CACHE").ok().map(std::path::PathBuf::from).or_else(|| opts.cache.clone().map(Into::into)).unwrap_or_else(|| {
             std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("cache"))).unwrap_or_else(|| "cache".into())
         });
+        let log_path = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("earthsim.log"))).unwrap_or_else(|| "earthsim.log".into());
+        world::log::init(&log_path);
         let live: Option<std::sync::Arc<dyn world::fetch::Fetcher>> = Some(std::sync::Arc::new(world::fetch::WinHttpFetcher::from_env()));
         let mut game = match crate::game::build_game(&opts, live, cache_dir.clone()) {
             Ok(g) => g,

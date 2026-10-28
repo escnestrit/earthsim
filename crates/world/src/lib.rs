@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod fetch;
 pub mod geo;
+pub mod log;
 pub mod osm;
 pub mod stage_a;
 pub mod streamer;

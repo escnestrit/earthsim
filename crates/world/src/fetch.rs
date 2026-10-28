@@ -183,6 +183,7 @@ mod winhttp {
         fn WinHttpQueryDataAvailable(req: HINTERNET, available: *mut u32) -> BOOL;
         fn WinHttpReadData(req: HINTERNET, buffer: *mut c_void, to_read: u32, read: *mut u32) -> BOOL;
         fn WinHttpCloseHandle(h: HINTERNET) -> BOOL;
+        fn WinHttpSetOption(h: HINTERNET, option: u32, buffer: *const c_void, len: u32) -> BOOL;
     }
     #[link(name = "kernel32")]
     extern "system" {
@@ -190,10 +191,30 @@ mod winhttp {
     }
 
     const WINHTTP_ACCESS_TYPE_DEFAULT_PROXY: u32 = 0;
+    const WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY: u32 = 4;
+    const WINHTTP_OPTION_SECURE_PROTOCOLS: u32 = 84;
     const WINHTTP_FLAG_SECURE: u32 = 0x0080_0000;
     const WINHTTP_QUERY_STATUS_CODE: u32 = 19;
     const WINHTTP_QUERY_FLAG_NUMBER: u32 = 0x2000_0000;
     const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+    /// Readable text for the WinHTTP / Win32 error codes that matter for a failed download.
+    fn win_err(code: u32) -> String {
+        let what = match code {
+            12002 => "timed out",
+            12007 => "server name could not be resolved (no internet / DNS)",
+            12029 => "could not connect (firewall, proxy or no internet)",
+            12030 => "connection was terminated",
+            12038 => "certificate name does not match",
+            12044 | 12045 => "certificate not trusted",
+            12157 | 12175 => "TLS handshake failed",
+            12152 => "invalid server response",
+            12178 | 12180 => "automatic proxy detection failed",
+            12017 | 12019 => "request was cancelled",
+            _ => "",
+        };
+        if what.is_empty() { format!("error {code}") } else { format!("error {code}: {what}") }
+    }
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -230,29 +251,36 @@ mod winhttp {
         fn get(&self, url: &str) -> Result<String, FetchError> {
             let (host, port, path, tls) = split_url(url).ok_or_else(|| FetchError::Permanent(format!("bad url {url}")))?;
             unsafe {
-                let session = Handle(WinHttpOpen(wide(USER_AGENT).as_ptr(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, std::ptr::null(), std::ptr::null(), 0));
+                // Automatic proxy (system / WPAD settings, Windows 8.1+); fall back to the plain default on older systems.
+                let mut session = Handle(WinHttpOpen(wide(USER_AGENT).as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, std::ptr::null(), std::ptr::null(), 0));
                 if session.0.is_null() {
-                    return Err(FetchError::Transient(format!("WinHttpOpen failed ({})", GetLastError())));
+                    session = Handle(WinHttpOpen(wide(USER_AGENT).as_ptr(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, std::ptr::null(), std::ptr::null(), 0));
+                }
+                if session.0.is_null() {
+                    return Err(FetchError::Transient(format!("WinHttpOpen failed ({})", win_err(GetLastError()))));
                 }
                 WinHttpSetTimeouts(session.0, 10_000, 10_000, 30_000, 90_000);
+                // allow TLS 1.2 (and 1.3 where the system knows it); the result is ignored on systems that reject the flags
+                let protocols: u32 = 0x0800 | 0x2000;
+                WinHttpSetOption(session.0, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols as *const u32 as *const c_void, 4);
                 let conn = Handle(WinHttpConnect(session.0, wide(&host).as_ptr(), port, 0));
                 if conn.0.is_null() {
-                    return Err(FetchError::Transient(format!("cannot connect to {host} ({})", GetLastError())));
+                    return Err(FetchError::Transient(format!("cannot connect to {host}: {}", win_err(GetLastError()))));
                 }
                 let req = Handle(WinHttpOpenRequest(conn.0, wide("GET").as_ptr(), wide(&path).as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null(), if tls { WINHTTP_FLAG_SECURE } else { 0 }));
                 if req.0.is_null() {
-                    return Err(FetchError::Transient(format!("WinHttpOpenRequest failed ({})", GetLastError())));
+                    return Err(FetchError::Transient(format!("WinHttpOpenRequest failed ({})", win_err(GetLastError()))));
                 }
                 if WinHttpSendRequest(req.0, std::ptr::null(), 0, std::ptr::null(), 0, 0, 0) == 0 {
-                    return Err(FetchError::Transient(format!("send failed ({})", GetLastError())));
+                    return Err(FetchError::Transient(format!("send to {host} failed: {}", win_err(GetLastError()))));
                 }
                 if WinHttpReceiveResponse(req.0, std::ptr::null_mut()) == 0 {
-                    return Err(FetchError::Transient(format!("no response ({})", GetLastError())));
+                    return Err(FetchError::Transient(format!("no response from {host}: {}", win_err(GetLastError()))));
                 }
                 let mut code: u32 = 0;
                 let mut len: u32 = 4;
                 if WinHttpQueryHeaders(req.0, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, std::ptr::null(), &mut code as *mut u32 as *mut c_void, &mut len, std::ptr::null_mut()) == 0 {
-                    return Err(FetchError::Transient(format!("no status ({})", GetLastError())));
+                    return Err(FetchError::Transient(format!("no status ({})", win_err(GetLastError()))));
                 }
                 if code != 200 {
                     return Err(status_error(code));
@@ -261,7 +289,7 @@ mod winhttp {
                 loop {
                     let mut avail: u32 = 0;
                     if WinHttpQueryDataAvailable(req.0, &mut avail) == 0 {
-                        return Err(FetchError::Transient(format!("read failed ({})", GetLastError())));
+                        return Err(FetchError::Transient(format!("read failed ({})", win_err(GetLastError()))));
                     }
                     if avail == 0 {
                         break;
@@ -273,7 +301,7 @@ mod winhttp {
                     body.resize(start + avail as usize, 0);
                     let mut read: u32 = 0;
                     if WinHttpReadData(req.0, body[start..].as_mut_ptr() as *mut c_void, avail, &mut read) == 0 {
-                        return Err(FetchError::Transient(format!("read failed ({})", GetLastError())));
+                        return Err(FetchError::Transient(format!("read failed ({})", win_err(GetLastError()))));
                     }
                     body.truncate(start + read as usize);
                 }
