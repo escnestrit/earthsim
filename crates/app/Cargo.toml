@@ -1,0 +1,21 @@
+[package]
+name = "earthsim"
+version = "0.1.0"
+edition = "2021"
+description = "BeamNG.Earth prototype: native driving app on its own engine"
+
+[lib]
+name = "earthsim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "earthsim"
+path = "src/main.rs"
+
+[dependencies]
+phys = { path = "../phys" }
+scene = { path = "../scene" }
+world = { path = "../world" }
+
+[lints]
+workspace = true

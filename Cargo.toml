@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/phys", "crates/scene", "crates/world", "crates/app"]
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "thin"
+
+[profile.test]
+opt-level = 2
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(earthsim_check_win)'] }
