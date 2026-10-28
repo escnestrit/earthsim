@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/phys", "crates/scene", "crates/world","crates/jbeam", "crates/app"]
+members = ["crates/phys", "crates/scene", "crates/world","crates/jbeam", "crates/app", "crates/game"]
 
 [profile.release]
 opt-level = 3

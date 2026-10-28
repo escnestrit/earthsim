@@ -1,0 +1,40 @@
+name: vendor-deps
+# The development sandbox cannot reach crates.io. This job resolves the Bevy dependency tree, commits
+# Cargo.lock back to the branch and pushes all dependency sources (`cargo vendor`) to the `vendor-deps`
+# branch, from which the sandbox builds offline.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - crates/game/Cargo.toml
+      - .github/workflows/vendor.yml
+permissions:
+  contents: write
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve Bevy (latest release) if not pinned yet
+        run: |
+          grep -q '^bevy' crates/game/Cargo.toml || cargo add -p earthsim-game bevy --features dds
+          cargo generate-lockfile
+          grep -A1 '^name = "bevy"$' Cargo.lock
+      - name: Commit Cargo.toml / Cargo.lock
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add Cargo.lock crates/game/Cargo.toml
+          git diff --cached --quiet || (git commit -m "Pin Bevy and lock dependencies [skip ci]" && git push)
+      - name: Vendor
+        run: |
+          cargo vendor --versioned-dirs vendor > vendor-config.toml
+          du -sh vendor
+          mkdir /tmp/v && mv vendor vendor-config.toml Cargo.lock /tmp/v/
+          cd /tmp/v
+          git init -q -b vendor-deps
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "vendored dependencies for ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" vendor-deps
