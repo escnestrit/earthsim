@@ -33,7 +33,12 @@ pub trait Fetcher: Send + Sync {
 }
 
 pub const USER_AGENT: &str = "earthsim/0.1 (BeamNG.Earth prototype; research/driving sim; respects Overpass fair use)";
-pub const DEFAULT_ENDPOINTS: &[&str] = &["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+pub const DEFAULT_ENDPOINTS: &[&str] = &[
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
 
 pub fn percent_encode(s: &str) -> String {
     let mut o = String::with_capacity(s.len() * 3);
@@ -259,7 +264,7 @@ mod winhttp {
                 if session.0.is_null() {
                     return Err(FetchError::Transient(format!("WinHttpOpen failed ({})", win_err(GetLastError()))));
                 }
-                WinHttpSetTimeouts(session.0, 10_000, 10_000, 30_000, 90_000);
+                WinHttpSetTimeouts(session.0, 6_000, 6_000, 30_000, 90_000);
                 // allow TLS 1.2 (and 1.3 where the system knows it); the result is ignored on systems that reject the flags
                 let protocols: u32 = 0x0800 | 0x2000;
                 WinHttpSetOption(session.0, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols as *const u32 as *const c_void, 4);
@@ -312,13 +317,27 @@ mod winhttp {
 
     impl Fetcher for WinHttpFetcher {
         fn fetch(&self, _tile: TileId, query: &str) -> Result<String, FetchError> {
-            let idx = self.current.load(Ordering::Relaxed) % self.endpoints.len();
-            let url = format!("{}?data={}", self.endpoints[idx], percent_encode(query));
-            let r = self.get(&url);
-            if matches!(r, Err(FetchError::Transient(_))) && self.endpoints.len() > 1 {
-                self.current.fetch_add(1, Ordering::Relaxed); // try the next mirror next time
+            // Try the mirror that worked last first, then the others; remember whichever succeeds.
+            let n = self.endpoints.len();
+            let start = self.current.load(Ordering::Relaxed) % n;
+            let mut errors: Vec<String> = Vec::new();
+            for k in 0..n {
+                let idx = (start + k) % n;
+                let url = format!("{}?data={}", self.endpoints[idx], percent_encode(query));
+                match self.get(&url) {
+                    Ok(t) => {
+                        self.current.store(idx, Ordering::Relaxed);
+                        return Ok(t);
+                    }
+                    Err(FetchError::Permanent(m)) if n == 1 => return Err(FetchError::Permanent(m)),
+                    Err(e) => {
+                        crate::log::log(&format!("  endpoint {} failed: {}", self.endpoints[idx], e));
+                        errors.push(format!("{}: {}", self.endpoints[idx].split('/').nth(2).unwrap_or("?"), e));
+                    }
+                }
             }
-            r
+            // every mirror failed: transient (retry later with backoff), keeping all reasons for the log and HUD
+            Err(FetchError::Transient(errors.join(" | ")))
         }
         fn describe(&self) -> String {
             format!("Overpass via WinHTTP ({})", self.endpoints.join(", "))
