@@ -13,4 +13,16 @@ phys = { path = "../phys" }
 scene = { path = "../scene" }
 world = { path = "../world" }
 jbeam = { path = "../jbeam" }
-bevy = { version = "0.20.0", features = ["dds"] }
+# 3D renderer + UI, without audio/gamepads (those need system libraries the Linux dev sandbox lacks)
+bevy = { version = "0.20.0", default-features = false, features = [
+    "default_app", "std", "multi_threaded", "bevy_winit", "x11", "default_font",
+    "3d_bevy_render", "ui_api", "ui_bevy_render", "dds",
+] }
+
+# On Windows (the real target) add gamepads/steering wheels (gilrs, Windows.Gaming.Input) and audio.
+[target.'cfg(windows)'.dependencies]
+bevy = { version = "0.20.0", default-features = false, features = ["bevy_gilrs", "audio"] }
+
+# Dev sandbox (Linux, no GPU): software OpenGL through wgpu's GLES backend for headless screenshots.
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["gles"] }

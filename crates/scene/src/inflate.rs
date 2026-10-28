@@ -229,6 +229,36 @@ pub fn inflate(data: &[u8], size_hint: usize) -> Result<Vec<u8>, InflateError> {
     }
 }
 
+/// Decompress a gzip member (RFC 1952). Trailing members/garbage are ignored; the CRC is not checked here.
+pub fn gunzip(data: &[u8]) -> Result<Vec<u8>, InflateError> {
+    if data.len() < 18 || data[0] != 0x1f || data[1] != 0x8b || data[2] != 8 {
+        return Err(InflateError::BadHuffman("not a gzip stream"));
+    }
+    let flg = data[3];
+    let mut p = 10usize;
+    if flg & 4 != 0 {
+        let xlen = *data.get(p).ok_or(InflateError::Truncated)? as usize | (*data.get(p + 1).ok_or(InflateError::Truncated)? as usize) << 8;
+        p += 2 + xlen;
+    }
+    for bit in [8u8, 16] {
+        if flg & bit != 0 {
+            while *data.get(p).ok_or(InflateError::Truncated)? != 0 {
+                p += 1;
+            }
+            p += 1;
+        }
+    }
+    if flg & 2 != 0 {
+        p += 2;
+    }
+    if p >= data.len() {
+        return Err(InflateError::Truncated);
+    }
+    let n = data.len();
+    let isize = u32::from_le_bytes([data[n - 4], data[n - 3], data[n - 2], data[n - 1]]) as usize;
+    inflate(&data[p..], isize.min(256 << 20))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +274,14 @@ mod tests {
         // zlib.compress(b"hello hello hello hello", wbits=-15, level 9) (fixed Huffman with a back-reference)
         let d = [0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40, 0x27, 0x01];
         assert_eq!(inflate(&d, 23).unwrap(), b"hello hello hello hello");
+    }
+
+    #[test]
+    fn gzip_member() {
+        // gzip.compress(b"hello hello hello hello", mtime=0)
+        let d = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 2, 0xff, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40, 0x27, 0x01, 0, 0, 0, 0, 23, 0, 0, 0];
+        assert_eq!(gunzip(&d).unwrap(), b"hello hello hello hello");
+        assert!(gunzip(b"plain text that is long enough").is_err());
     }
 
     #[test]
