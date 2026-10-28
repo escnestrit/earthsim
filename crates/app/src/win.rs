@@ -370,7 +370,7 @@ pub fn run() {
         });
         let log_path = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("earthsim.log"))).unwrap_or_else(|| "earthsim.log".into());
         world::log::init(&log_path);
-        let live: Option<std::sync::Arc<dyn world::fetch::Fetcher>> = Some(std::sync::Arc::new(world::fetch::WinHttpFetcher::from_env()));
+        let live: Option<std::sync::Arc<dyn world::fetch::Fetcher>> = Some(world::fetch::default_live_fetcher());
         let mut game = match crate::game::build_game(&opts, live, cache_dir.clone()) {
             Ok(g) => g,
             Err(e) => return error_box(&e),

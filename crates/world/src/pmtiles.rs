@@ -266,3 +266,34 @@ mod tests {
         assert!(parse_directory(&b).is_err());
     }
 }
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+
+    /// Real archive from the PMTiles repository (Florence, vector, gzip). Skipped when not present.
+    fn fixture() -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(std::env::var("PMTILES_FIXTURE").ok()?);
+        p.exists().then_some(p)
+    }
+
+    #[test]
+    fn reads_real_vector_archive() {
+        let Some(p) = fixture() else { return };
+        let pm = PmTiles::open(FileSource(p)).unwrap();
+        let h = &pm.header;
+        assert_eq!((h.tile_type, h.tile_compression), (1, 2));
+        // the tile containing the centre of Florence at the max zoom
+        let (lat, lon) = ((h.min_lat + h.max_lat) / 2.0, (h.min_lon + h.max_lon) / 2.0);
+        let z = h.max_zoom;
+        let n = (1u64 << z) as f64;
+        let x = ((lon + 180.0) / 360.0 * n) as u32;
+        let y = ((1.0 - (lat.to_radians().tan() + 1.0 / lat.to_radians().cos()).ln() / std::f64::consts::PI) / 2.0 * n) as u32;
+        let t = pm.get(z, x, y).unwrap().expect("centre tile exists");
+        let layers = crate::mvt::decode(&t).unwrap();
+        let names: Vec<_> = layers.iter().map(|l| l.name.as_str()).collect();
+        eprintln!("z{z} {x} {y}: {} bytes, layers {names:?}", t.len());
+        assert!(layers.iter().map(|l| l.features.len()).sum::<usize>() > 10);
+        assert!(pm.get(z, 0, 0).unwrap().is_none());
+    }
+}

@@ -5,7 +5,7 @@ edition = "2021"
 description = "BeamNG.Earth on the Bevy engine: streaming world, soft-body cars, wheel input"
 
 [[bin]]
-name = "earthsim"
+name = "earthsim-bevy"
 path = "src/main.rs"
 
 [dependencies]

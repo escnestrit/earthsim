@@ -164,9 +164,31 @@ impl Fetcher for VirtualOsm {
     }
 }
 
+/// Tries each source in turn (e.g. Overture first, Overpass as a fallback); keeps every error for the log.
+pub struct ChainFetcher(pub Vec<Arc<dyn Fetcher>>);
+
+impl Fetcher for ChainFetcher {
+    fn fetch(&self, tile: TileId, query: &str) -> Result<String, FetchError> {
+        let mut errs = Vec::new();
+        for f in &self.0 {
+            match f.fetch(tile, query) {
+                Ok(t) => return Ok(t),
+                Err(e) => {
+                    crate::log::log(&format!("  source {} failed: {e}", f.describe()));
+                    errs.push(e.to_string());
+                }
+            }
+        }
+        Err(FetchError::Transient(errs.join(" || ")))
+    }
+    fn describe(&self) -> String {
+        self.0.iter().map(|f| f.describe()).collect::<Vec<_>>().join(" -> ")
+    }
+}
+
 // ------------------------------------------------------------------------------------------------------
 #[cfg(any(windows, earthsim_check_win))]
-pub use winhttp::WinHttpFetcher;
+pub use winhttp::{default_live_fetcher, http_get, HttpRange, WinHttpFetcher};
 
 #[cfg(any(windows, earthsim_check_win))]
 mod winhttp {
@@ -266,6 +288,14 @@ mod winhttp {
         }
 
         fn get(&self, url: &str) -> Result<String, FetchError> {
+            let body = http_get(url, None)?;
+            String::from_utf8(body).map_err(|_| FetchError::Transient("response is not valid UTF-8".into()))
+        }
+    }
+
+    /// GET `url`; with `range = Some((offset, len))` sends a Range header and accepts 206.
+    pub fn http_get(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
+        {
             let (host, port, path, tls) = split_url(url).ok_or_else(|| FetchError::Permanent(format!("bad url {url}")))?;
             unsafe {
                 // Automatic proxy (system / WPAD settings, Windows 8.1+); fall back to the plain default on older systems.
@@ -288,7 +318,13 @@ mod winhttp {
                 if req.0.is_null() {
                     return Err(FetchError::Transient(format!("WinHttpOpenRequest failed ({})", win_err(GetLastError()))));
                 }
-                if WinHttpSendRequest(req.0, std::ptr::null(), 0, std::ptr::null(), 0, 0, 0) == 0 {
+                let hdr: Vec<u16> = match range {
+                    Some((off, len)) => wide(&format!("Range: bytes={}-{}", off, off + len.max(1) - 1)),
+                    None => wide(""),
+                };
+                let hdr_len = if range.is_some() { (hdr.len() - 1) as u32 } else { 0 };
+                let hdr_ptr = if range.is_some() { hdr.as_ptr() } else { std::ptr::null() };
+                if WinHttpSendRequest(req.0, hdr_ptr, hdr_len, std::ptr::null(), 0, 0, 0) == 0 {
                     return Err(FetchError::Transient(format!("send to {host} failed: {}", win_err(GetLastError()))));
                 }
                 if WinHttpReceiveResponse(req.0, std::ptr::null_mut()) == 0 {
@@ -299,7 +335,7 @@ mod winhttp {
                 if WinHttpQueryHeaders(req.0, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, std::ptr::null(), &mut code as *mut u32 as *mut c_void, &mut len, std::ptr::null_mut()) == 0 {
                     return Err(FetchError::Transient(format!("no status ({})", win_err(GetLastError()))));
                 }
-                if code != 200 {
+                if code != 200 && !(code == 206 && range.is_some()) {
                     return Err(status_error(code));
                 }
                 let mut body: Vec<u8> = Vec::new();
@@ -322,8 +358,97 @@ mod winhttp {
                     }
                     body.truncate(start + read as usize);
                 }
-                String::from_utf8(body).map_err(|_| FetchError::Transient("response is not valid UTF-8".into()))
+                if let Some((_, len)) = range {
+                    // a server that ignores Range answers 200 with the whole file: refuse rather than misread
+                    if code == 200 && body.len() as u64 != len {
+                        return Err(FetchError::Permanent("server ignored the Range header".into()));
+                    }
+                }
+                Ok(body)
             }
+        }
+    }
+
+    /// A remote file read with HTTP range requests (PMTiles archives).
+    pub struct HttpRange(pub String);
+
+    impl crate::pmtiles::RangeSource for HttpRange {
+        fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>, String> {
+            let mut last = String::new();
+            for _attempt in 0..3 {
+                match http_get(&self.0, Some((offset, len))) {
+                    Ok(b) => return Ok(b),
+                    Err(e @ FetchError::Permanent(_)) => return Err(e.to_string()),
+                    Err(e) => last = e.to_string(),
+                }
+            }
+            Err(last)
+        }
+        fn describe(&self) -> String {
+            self.0.clone()
+        }
+    }
+
+    /// Overture over HTTP range requests, opened on first use (release list + archive headers need the network).
+    pub struct LazyOverture {
+        inner: std::sync::Mutex<Option<Arc<crate::overture::OvertureFetcher<HttpRange>>>>,
+        last_try: std::sync::Mutex<Option<std::time::Instant>>,
+    }
+
+    impl LazyOverture {
+        pub fn new() -> Self {
+            LazyOverture { inner: std::sync::Mutex::new(None), last_try: std::sync::Mutex::new(None) }
+        }
+        fn get(&self) -> Result<Arc<crate::overture::OvertureFetcher<HttpRange>>, FetchError> {
+            if let Some(f) = self.inner.lock().unwrap().as_ref() {
+                return Ok(f.clone());
+            }
+            {
+                let mut lt = self.last_try.lock().unwrap();
+                if lt.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(20)) {
+                    return Err(FetchError::Transient("Overture not reachable (retrying shortly)".into()));
+                }
+                *lt = Some(std::time::Instant::now());
+            }
+            use crate::overture::*;
+            let release = std::env::var("EARTHSIM_OVERTURE_RELEASE").ok().filter(|r| !r.is_empty()).or_else(|| {
+                let url = format!("{BUCKET}/?list-type=2&prefix=tiles/&delimiter=/");
+                match http_get(&url, None) {
+                    Ok(b) => newest_release(&String::from_utf8_lossy(&b)),
+                    Err(e) => {
+                        crate::log::log(&format!("Overture: release list failed: {e}"));
+                        None
+                    }
+                }
+            }).unwrap_or_else(|| FALLBACK_RELEASE.to_string());
+            crate::log::log(&format!("Overture: using release {release}"));
+            let f = OvertureFetcher::new(HttpRange(theme_url(&release, "buildings")), HttpRange(theme_url(&release, "transportation")), &release)
+                .map_err(|e| FetchError::Transient(format!("Overture {release}: {e}")))?;
+            let f = Arc::new(f);
+            *self.inner.lock().unwrap() = Some(f.clone());
+            Ok(f)
+        }
+    }
+
+    impl Fetcher for LazyOverture {
+        fn fetch(&self, tile: TileId, query: &str) -> Result<String, FetchError> {
+            self.get()?.fetch(tile, query)
+        }
+        fn describe(&self) -> String {
+            match self.inner.lock().unwrap().as_ref() {
+                Some(f) => f.describe(),
+                None => "Overture (S3 PMTiles)".into(),
+            }
+        }
+    }
+
+    /// Live map source: `EARTHSIM_SOURCE=overpass` uses only Overpass; default is Overture, then Overpass.
+    pub fn default_live_fetcher() -> Arc<dyn Fetcher> {
+        let overpass: Arc<dyn Fetcher> = Arc::new(WinHttpFetcher::from_env());
+        match std::env::var("EARTHSIM_SOURCE").unwrap_or_default().as_str() {
+            "overpass" => overpass,
+            "overture" => Arc::new(LazyOverture::new()),
+            _ => Arc::new(ChainFetcher(vec![Arc::new(LazyOverture::new()), overpass])),
         }
     }
 
