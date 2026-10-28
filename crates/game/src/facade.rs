@@ -1,0 +1,232 @@
+//! Procedural facade textures. One texture covers 4 x 4 bays of 3 m x 3 m (12 m square) so lit windows at
+//! night vary between neighbours. Walls carry u = metres along the footprint and v = height scaled to 3 m
+//! storeys (see scene::mesh), so the texture repeats every 12 m in both directions.
+//!
+//! These are generic styles chosen from map attributes (material, colour, class, storeys); they are NOT the
+//! real facade of the building.
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use scene::mesh::mat;
+
+pub const TEX: usize = 512;
+pub const BAYS: usize = 4;
+const BAY: usize = TEX / BAYS; // pixels per 3 m
+pub const REPEAT_M: f32 = 12.0;
+
+/// Per pixel: albedo (sRGB), roughness, metallic, lit-window emission (0..1).
+#[derive(Clone, Copy)]
+struct Px {
+    c: [f32; 3],
+    rough: f32,
+    metal: f32,
+    lit: f32,
+}
+
+fn hash(a: u32, b: u32) -> f32 {
+    let mut h = a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    (h & 0xFFFF) as f32 / 65535.0
+}
+
+struct Style {
+    wall: fn(x: f32, y: f32, bx: usize, by: usize) -> Px,
+    /// window rectangle inside a bay, in metres from the bay's bottom-left: (x0, x1, y0, y1)
+    window: Option<(f32, f32, f32, f32)>,
+    frame: [f32; 3],
+}
+
+fn plaster(x: f32, y: f32, _: usize, _: usize) -> Px {
+    let n = hash((x * 40.0) as u32, (y * 40.0) as u32) * 0.04;
+    // cornice line at each floor slab
+    let band = if y < 0.12 { 0.88 } else { 0.97 };
+    Px { c: [band - n, band - n, band - n], rough: 0.9, metal: 0.0, lit: 0.0 }
+}
+
+fn brick(x: f32, y: f32, _: usize, _: usize) -> Px {
+    let course = (y / 0.075) as u32;
+    let off = if course % 2 == 0 { 0.0 } else { 0.125 };
+    let bx = ((x + off) / 0.25).fract();
+    let by = (y / 0.075).fract();
+    let mortar = bx < 0.05 || by < 0.13;
+    let v = hash(((x + off) / 0.25) as u32, course) * 0.18;
+    if mortar {
+        Px { c: [1.25, 1.2, 1.1], rough: 0.95, metal: 0.0, lit: 0.0 }
+    } else {
+        Px { c: [0.92 - v, 0.9 - v, 0.9 - v], rough: 0.85, metal: 0.0, lit: 0.0 }
+    }
+}
+
+fn panel(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // large precast panels: seams every bay horizontally and every storey vertically
+    let seam = x < 0.03 || y < 0.03;
+    let n = hash(bx as u32 * 7 + (x * 8.0) as u32, by as u32 * 13 + (y * 8.0) as u32) * 0.06;
+    let v = if seam { 0.55 } else { 0.95 - n };
+    Px { c: [v, v, v], rough: 0.92, metal: 0.0, lit: 0.0 }
+}
+
+fn glass(x: f32, y: f32, _: usize, _: usize) -> Px {
+    // curtain wall: mullions every 1.5 m, spandrel band at each slab
+    let mull = (x / 1.5).fract() < 0.03 || y < 0.04;
+    let spandrel = y < 0.7;
+    if mull {
+        Px { c: [0.55, 0.57, 0.6], rough: 0.4, metal: 0.8, lit: 0.0 }
+    } else if spandrel {
+        Px { c: [0.35, 0.38, 0.42], rough: 0.3, metal: 0.2, lit: 0.0 }
+    } else {
+        Px { c: [0.20, 0.27, 0.33], rough: 0.06, metal: 0.0, lit: 1.0 }
+    }
+}
+
+fn wood(_x: f32, y: f32, _: usize, by: usize) -> Px {
+    let board = (y / 0.18).fract();
+    let v = 0.9 - hash((y / 0.18) as u32, by as u32) * 0.15 - if board < 0.08 { 0.3 } else { 0.0 };
+    Px { c: [v, v, v], rough: 0.85, metal: 0.0, lit: 0.0 }
+}
+
+fn metal(x: f32, y: f32, _: usize, _: usize) -> Px {
+    let rib = ((x / 0.2).fract() - 0.5).abs() * 2.0;
+    let v = 0.82 + rib * 0.15 - if y < 0.05 { 0.2 } else { 0.0 };
+    Px { c: [v, v, v], rough: 0.45, metal: 0.6, lit: 0.0 }
+}
+
+fn style(id: f32) -> Style {
+    let dark = [0.25, 0.25, 0.25];
+    match id {
+        s if s == mat::WALL_BRICK => Style { wall: brick, window: Some((0.85, 2.15, 0.85, 2.45)), frame: [0.92, 0.92, 0.9] },
+        s if s == mat::WALL_PANEL => Style { wall: panel, window: Some((0.75, 2.25, 0.9, 2.3)), frame: [0.9, 0.9, 0.88] },
+        s if s == mat::WALL_GLASS => Style { wall: glass, window: None, frame: dark },
+        s if s == mat::WALL_WOOD => Style { wall: wood, window: Some((1.0, 2.0, 1.0, 2.2)), frame: [0.95, 0.95, 0.95] },
+        s if s == mat::WALL_METAL => Style { wall: metal, window: None, frame: dark },
+        _ => Style { wall: plaster, window: Some((0.8, 2.2, 0.9, 2.4)), frame: [0.95, 0.95, 0.95] },
+    }
+}
+
+fn pixel(st: &Style, px: usize, py_from_bottom: usize) -> Px {
+    let (bx, by) = (px / BAY, py_from_bottom / BAY);
+    let m = 3.0 / BAY as f32;
+    let x = (px % BAY) as f32 * m + m * 0.5;
+    let y = (py_from_bottom % BAY) as f32 * m + m * 0.5;
+    if let Some((x0, x1, y0, y1)) = st.window {
+        let f = 0.07;
+        if x >= x0 - f && x <= x1 + f && y >= y0 - f && y <= y1 + f {
+            let inside = x >= x0 && x <= x1 && y >= y0 && y <= y1;
+            if !inside || (x - (x0 + x1) / 2.0).abs() < 0.03 {
+                return Px { c: st.frame, rough: 0.5, metal: 0.0, lit: 0.0 };
+            }
+            // glass: darker at the top (reveal shadow), occasional curtains
+            let curtain = hash(bx as u32 * 31 + 1, by as u32 * 17 + 3) > 0.7 && y > y1 - (y1 - y0) * 0.35;
+            let g = if curtain { [0.55, 0.52, 0.48] } else { [0.10, 0.13, 0.17] };
+            let shade = 1.0 - ((y1 - y) / (y1 - y0) < 0.12) as i32 as f32 * 0.4;
+            return Px { c: [g[0] * shade, g[1] * shade, g[2] * shade], rough: 0.05, metal: 0.0, lit: 1.0 };
+        }
+        // sill shadow under the window
+        if x >= x0 && x <= x1 && y < y0 - f && y > y0 - f - 0.08 {
+            let mut p = (st.wall)(x, y, bx, by);
+            p.c = p.c.map(|v| v * 0.7);
+            return p;
+        }
+    }
+    (st.wall)(x, y, bx, by)
+}
+
+/// RGBA8 images (base level + full mip chain): albedo, metallic-roughness, emissive.
+pub fn generate(id: f32) -> [Vec<u8>; 3] {
+    let st = style(id);
+    let mut alb = vec![0u8; TEX * TEX * 4];
+    let mut mr = vec![0u8; TEX * TEX * 4];
+    let mut em = vec![0u8; TEX * TEX * 4];
+    for row in 0..TEX {
+        let py = TEX - 1 - row; // image rows go down, metres go up
+        for px in 0..TEX {
+            let p = pixel(&st, px, py);
+            let i = (row * TEX + px) * 4;
+            for k in 0..3 {
+                alb[i + k] = (p.c[k].clamp(0.0, 1.0) * 255.0) as u8;
+            }
+            alb[i + 3] = 255;
+            mr[i] = 255;
+            mr[i + 1] = (p.rough.clamp(0.0, 1.0) * 255.0) as u8;
+            mr[i + 2] = (p.metal.clamp(0.0, 1.0) * 255.0) as u8;
+            mr[i + 3] = 255;
+            // about a third of the windows are lit at night, warm or cool white
+            let (bx, by) = (px / BAY, py / BAY);
+            let on = p.lit > 0.0 && hash(bx as u32 + 101, by as u32 + 211) < 0.35;
+            let warm = hash(bx as u32 + 7, by as u32 + 5) < 0.7;
+            let e = if on { if warm { [1.0, 0.78, 0.45] } else { [0.85, 0.9, 1.0] } } else { [0.0; 3] };
+            for k in 0..3 {
+                em[i + k] = (e[k] * 255.0) as u8;
+            }
+            em[i + 3] = 255;
+        }
+    }
+    [with_mips(alb), with_mips(mr), with_mips(em)]
+}
+
+pub fn mip_count() -> u32 {
+    TEX.trailing_zeros() + 1
+}
+
+/// Box-filtered mip chain appended after the base level (wgpu's layer-major order for a single layer).
+fn with_mips(base: Vec<u8>) -> Vec<u8> {
+    let mut out = base.clone();
+    let mut cur = base;
+    let mut size = TEX;
+    while size > 1 {
+        let ns = size / 2;
+        let mut next = vec![0u8; ns * ns * 4];
+        for y in 0..ns {
+            for x in 0..ns {
+                for k in 0..4 {
+                    let s = |dx: usize, dy: usize| cur[((y * 2 + dy) * size + x * 2 + dx) * 4 + k] as u32;
+                    next[(y * ns + x) * 4 + k] = ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1) + 2) / 4) as u8;
+                }
+            }
+        }
+        out.extend_from_slice(&next);
+        cur = next;
+        size = ns;
+    }
+    out
+}
+
+pub fn image(data: Vec<u8>, srgb: bool) -> Image {
+    let mut img = Image::new_uninit(
+        Extent3d { width: TEX as u32, height: TEX as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    img.data = Some(data);
+    img.texture_descriptor.mip_level_count = mip_count();
+    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        anisotropy_clamp: 8,
+        ..ImageSamplerDescriptor::linear()
+    });
+    img
+}
+
+pub const STYLES: [f32; 6] = [mat::WALL_PLASTER, mat::WALL_BRICK, mat::WALL_PANEL, mat::WALL_GLASS, mat::WALL_WOOD, mat::WALL_METAL];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn textures_have_full_mip_chains_and_windows() {
+        for s in STYLES {
+            let [a, m, e] = generate(s);
+            let expect: usize = (0..mip_count()).map(|l| (TEX >> l).max(1).pow(2) * 4).sum();
+            assert_eq!((a.len(), m.len(), e.len()), (expect, expect, expect));
+        }
+        // plaster: some windows lit (emissive), most of the wall not
+        let [_, _, e] = generate(mat::WALL_PLASTER);
+        let lit = e[..TEX * TEX * 4].chunks_exact(4).filter(|p| p[0] > 0).count();
+        assert!(lit > 1000 && lit < TEX * TEX / 4, "{lit}");
+    }
+}

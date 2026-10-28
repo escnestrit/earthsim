@@ -8,7 +8,7 @@ pub mod tire;
 pub mod vehicle;
 pub mod world;
 
-pub use controls::{Driver, Keys};
+pub use controls::{Analog, Driver, Keys};
 pub use drivetrain::{Drivetrain, DrivetrainParams};
 pub use math::{v3, Quat, V3};
 pub use softbody::SoftBody;

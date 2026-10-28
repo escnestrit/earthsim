@@ -1,0 +1,9 @@
+# earthsim controls. Inputs: LeftStickX LeftStickY LeftZ RightStickX RightStickY RightZ Other0..Other15 (axes)
+# or South East North West LeftTrigger LeftTrigger2 RightTrigger RightTrigger2 ... (buttons, analog value used).
+# Add 'invert' to flip a control, 'full' if it reports -1..1 instead of 0..1. Press F4 in the game to see
+# all axes of your wheel/pedals live and pick the right ones.
+steer = LeftStickX
+throttle = RightTrigger2
+brake = LeftTrigger2
+handbrake = West
+deadzone = 0.04

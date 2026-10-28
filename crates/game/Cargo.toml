@@ -13,6 +13,7 @@ phys = { path = "../phys" }
 scene = { path = "../scene" }
 world = { path = "../world" }
 jbeam = { path = "../jbeam" }
+earthsim = { path = "../app" }
 # 3D renderer + UI, without audio/gamepads (those need system libraries the Linux dev sandbox lacks)
 bevy = { version = "0.20.0", default-features = false, features = [
     "default_app", "std", "multi_threaded", "bevy_winit", "x11", "default_font",

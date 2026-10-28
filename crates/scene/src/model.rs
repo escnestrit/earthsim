@@ -21,6 +21,28 @@ pub struct Building {
     /// xyz triples of the Stage A mesh.
     pub verts: Vec<f32>,
     pub indices: Vec<u32>,
+    pub facade: Facade,
+}
+
+/// How a building's walls and roof look, from map attributes (Overture/OSM) or from heuristics.
+/// This is an approximation of the real facade, not a reconstruction of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Facade {
+    /// one of `mesh::mat::WALL_*`
+    pub style: f32,
+    /// linear-ish sRGB 0..1
+    pub colour: [f32; 3],
+    pub roof_colour: [f32; 3],
+    /// storey height used to align window rows (m)
+    pub floor_height: f32,
+    /// true when style/colour came from the data rather than defaults
+    pub from_data: bool,
+}
+
+impl Default for Facade {
+    fn default() -> Self {
+        Facade { style: crate::mesh::mat::WALL_PLASTER, colour: [0.80, 0.76, 0.68], roof_colour: [0.38, 0.33, 0.30], floor_height: 3.0, from_data: false }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -124,6 +146,7 @@ impl Scene {
                 return Err(format!("building {} has an inconsistent mesh", b.get("id").and_then(|v| v.as_str()).unwrap_or("?")));
             }
             sc.buildings.push(Building {
+                facade: Facade::default(),
                 id: b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 status: b.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 footprint,

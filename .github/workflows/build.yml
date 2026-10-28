@@ -1,7 +1,6 @@
 name: build-windows
-# Builds earthsim.exe on GitHub's Windows machines, so nothing has to be installed locally.
-# Use: push this folder to a GitHub repository, open the "Actions" tab, pick "build-windows" (or press
-# "Run workflow"), wait ~5 minutes, download the artifact "earthsim-windows" (a zip with earthsim.exe).
+# Builds the game on GitHub's Windows machines, so nothing has to be installed locally.
+# Download the artifact "earthsim-windows" from the run page (a zip with earthsim.exe).
 on:
   push:
   workflow_dispatch:
@@ -10,20 +9,22 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      # The exe is built first and delivered even if a test fails (tests include timing-based streaming tests).
-      - name: Build earthsim.exe
-        run: cargo build --release -p earthsim
+      - uses: Swatinem/rust-cache@v2
+      # Bevy front end (main exe) and the original OpenGL front end (kept as a fallback)
+      - name: Build earthsim.exe (Bevy) and earthsim-classic.exe
+        run: cargo build --release -p earthsim-game -p earthsim
       - name: Collect
         shell: bash
         run: |
           mkdir dist
-          cp target/release/earthsim.exe dist/
+          cp target/release/earthsim-bevy.exe dist/earthsim.exe
+          cp target/release/earthsim.exe dist/earthsim-classic.exe
           cp README.md dist/
-          cp dist_files/*.bat dist/
+          cp dist_files/* dist/
       - uses: actions/upload-artifact@v4
         with:
           name: earthsim-windows
           path: dist/
-      - name: Tests (physics, scene, streaming, game logic)
+      - name: Tests (physics, scene, streaming, game logic, jbeam, input mapping)
         continue-on-error: true
-        run: cargo test --release --workspace --exclude earthsim-game
+        run: cargo test --release --workspace

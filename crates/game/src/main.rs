@@ -1,29 +1,107 @@
+//! earthsim on Bevy: the simulation (streaming world, soft-body car, driver model) is the engine-independent
+//! `earthsim::game::Game`; Bevy renders it, reads keyboard / gamepad / steering wheel and shows the HUD.
+//!
+//! World axes: the simulation is Z-up (x east, y north); Bevy is Y-up. All world geometry hangs under one
+//! root entity rotated -90 degrees about X, and the camera is converted with `zup`.
+
+mod facade;
+mod hud;
+mod input;
+mod view;
+
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use earthsim::game::Game;
+
+/// The simulation behind a mutex: its streamer holds channel receivers, which are `Send` but not `Sync`.
+#[derive(Resource)]
+pub struct Sim(pub std::sync::Mutex<Game>);
+
+impl Sim {
+    pub fn g(&self) -> std::sync::MutexGuard<'_, Game> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Headless capture for automated checks (`EARTHSIM_SHOT=out.png`): render N frames, save, exit.
+#[derive(Resource, Clone)]
+pub struct Shot {
+    pub path: String,
+    pub frames: u32,
+    pub warmup_sim_s: f64,
+}
+
+fn build_sim() -> Result<Game, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let opts = earthsim::cli::parse(args)?;
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| ".".into());
+    let cache_dir = std::env::var("EARTHSIM_CACHE").ok().map(std::path::PathBuf::from).or_else(|| opts.cache.clone().map(Into::into)).unwrap_or_else(|| exe_dir.join("cache"));
+    world::log::init(&exe_dir.join("earthsim.log"));
+    world::log::log(&format!("earthsim (Bevy) mode {:?}, cache {}", opts.mode, cache_dir.display()));
+    #[cfg(windows)]
+    let live = Some(world::fetch::default_live_fetcher());
+    #[cfg(not(windows))]
+    let live: Option<std::sync::Arc<dyn world::fetch::Fetcher>> = None;
+    earthsim::game::build_game(&opts, live, cache_dir)
+}
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_systems(Startup, setup)
-        .add_systems(Update, shot)
-        .run();
+    let game = match build_sim() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("earthsim: {e}");
+            world::log::log(&format!("startup failed: {e}"));
+            std::process::exit(2);
+        }
+    };
+    let shot = std::env::var("EARTHSIM_SHOT").ok().map(|path| Shot {
+        path,
+        frames: std::env::var("EARTHSIM_SHOT_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(40),
+        warmup_sim_s: std::env::var("EARTHSIM_SHOT_SIM").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+    });
+
+    let mut app = App::new();
+    if let Some(s) = &shot {
+        use bevy::app::ScheduleRunnerPlugin;
+        use bevy::window::ExitCondition;
+        app.add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
+                .disable::<bevy::winit::WinitPlugin>(),
+        )
+        .add_plugins(ScheduleRunnerPlugin::run_loop(std::time::Duration::from_millis(1)))
+        .insert_resource(s.clone())
+        // The dev sandbox renders with software OpenGL, where one optional compute shader (SSAO depth
+        // pre-pass) fails to compile; ignore that instead of quitting. Not used for the real window.
+        .insert_resource(bevy::render::error_handler::RenderErrorHandler(|e, _, _| {
+            eprintln!("earthsim: ignoring render error in capture mode: {:?}", e.ty);
+            bevy::render::error_handler::RenderErrorPolicy::Ignore
+        }));
+    } else {
+        app.add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window { title: "BeamNG.Earth prototype (earthsim)".into(), resolution: (1600u32, 900u32).into(), ..default() }),
+            ..default()
+        }));
+    }
+    app.insert_resource(Sim(std::sync::Mutex::new(game)))
+        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin))
+        .add_systems(Update, step_sim.after(input::read_input).before(view::sync_world));
+    app.run();
 }
 
-fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    commands.spawn((Mesh3d(meshes.add(Plane3d::default().mesh().size(5.0, 5.0))), MeshMaterial3d(materials.add(Color::srgb(0.3, 0.5, 0.3)))));
-    commands.spawn((Mesh3d(meshes.add(Cuboid::default())), MeshMaterial3d(materials.add(Color::srgb(0.8, 0.7, 0.6))), Transform::from_xyz(0.0, 0.5, 0.0)));
-    commands.spawn((DirectionalLight { shadow_maps_enabled: true, ..default() }, Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y)));
-    commands.spawn((Camera3d::default(), Transform::from_xyz(-2.0, 2.5, 5.0).looking_at(Vec3::ZERO, Vec3::Y)));
-}
-
-fn shot(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    *frame += 1;
-    if let Ok(p) = std::env::var("EARTHSIM_SHOT") {
-        if *frame == 30 {
-            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+/// Advance the simulation by the frame time (the game runs its own fixed 1 ms physics steps).
+fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm: Local<bool>) {
+    if let Some(s) = shot {
+        // deterministic captures: fixed 1/60 s per frame, plus an optional warm-up
+        if !*warm {
+            *warm = true;
+            let mut t = 0.0;
+            while t < s.warmup_sim_s {
+                sim.g().update(0.02);
+                t += 0.02;
+            }
         }
-        if *frame == 60 {
-            exit.write(AppExit::Success);
-        }
+        sim.g().update(1.0 / 60.0);
+    } else {
+        sim.g().update(time.delta_secs_f64());
     }
 }

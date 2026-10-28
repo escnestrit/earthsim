@@ -20,6 +20,16 @@ pub mod mat {
     pub const TRUNK: f32 = 11.0;
     pub const TAILLIGHT: f32 = 12.0;
     pub const RIM: f32 = 13.0;
+    /// Facade styles (walls with window rows); the old OpenGL renderer draws them all as WALL.
+    pub const WALL_PLASTER: f32 = 20.0;
+    pub const WALL_BRICK: f32 = 21.0;
+    pub const WALL_PANEL: f32 = 22.0;
+    pub const WALL_GLASS: f32 = 23.0;
+    pub const WALL_WOOD: f32 = 24.0;
+    pub const WALL_METAL: f32 = 25.0;
+    pub fn is_facade(m: f32) -> bool {
+        (19.5..26.5).contains(&m)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +39,8 @@ pub struct MeshData {
     /// glPolygonOffset factor/units used to stop coplanar layers z-fighting.
     pub polygon_offset: f32,
     pub casts_shadow: bool,
+    /// Optional per-vertex colour (rgb, one triple per vertex) multiplied with the material colour.
+    pub colors: Vec<f32>,
 }
 
 impl MeshData {
@@ -136,7 +148,7 @@ impl Mb {
 pub fn ground_mesh(e: f64) -> MeshData {
     let mut g = Mb::default();
     g.quad([-e, -e, 0.0], [e, -e, 0.0], [e, e, 0.0], [-e, e, 0.0], [0.0, 0.0, 1.0], mat::GROUND);
-    MeshData { name: "ground".into(), verts: g.a, polygon_offset: 0.0, casts_shadow: false }
+    MeshData { name: "ground".into(), verts: g.a, polygon_offset: 0.0, casts_shadow: false, colors: Vec::new() }
 }
 
 /// Road-like strip along a polyline with mitred joins (mitre length clamped).
@@ -225,7 +237,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         }
         ribbon(&mut sw, pts, r.width / 2.0 + if r.cls == "service" { 1.2 } else { 2.4 }, 0.01, mat::SIDEWALK);
     }
-    out.push(MeshData { name: "sidewalk".into(), verts: sw.a, polygon_offset: -1.0, casts_shadow: false });
+    out.push(MeshData { name: "sidewalk".into(), verts: sw.a, polygon_offset: -1.0, casts_shadow: false, colors: Vec::new() });
 
     // roads: one mesh per width so wider roads can be layered over narrower ones at junctions
     let mut widths: Vec<f64> = roads.iter().map(|(r, _, _)| r.width).collect();
@@ -240,7 +252,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         }
         // Offset depends only on the width, so the same road drawn by two neighbouring streamed tiles
         // gets the same depth bias, and wider roads always win at junctions.
-        out.push(MeshData { name: format!("road{w}"), verts: rb.a, polygon_offset: -2.0 - w.round() as f32, casts_shadow: false });
+        out.push(MeshData { name: format!("road{w}"), verts: rb.a, polygon_offset: -2.0 - w.round() as f32, casts_shadow: false, colors: Vec::new() });
     }
 
     // lane markings: dashed centre line, skipped near junctions and road ends
@@ -293,30 +305,53 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
             cum += len;
         }
     }
-    out.push(MeshData { name: "marks".into(), verts: mk.a, polygon_offset: -30.0, casts_shadow: false });
+    out.push(MeshData { name: "marks".into(), verts: mk.a, polygon_offset: -30.0, casts_shadow: false, colors: Vec::new() });
 
-    // buildings: the Stage A mesh, walls vs roofs by normal; u carries a per-building seed for the facade shader
+    // buildings: the Stage A mesh. Walls get u = distance along the footprint (m) and v = height scaled so
+    // that one storey is 3 units, so a facade texture repeating every 3 x 3 units puts one window per bay and
+    // floor; the facade style picks the material and the colour is per vertex.
     let mut bm = Mb::default();
-    for (bi, b) in sc.buildings.iter().enumerate() {
-        let seed = (bi as f64 * 0.6180339887).fract();
+    let mut bcol: Vec<f32> = Vec::new();
+    for b in sc.buildings.iter() {
+        let n = b.verts.len() / 3 / 2; // bottom ring + top ring (Stage A layout)
+        let ring_ok = n >= 3 && b.verts.len() == n * 6;
+        let mut cum = vec![0.0f64; n + 1];
+        if ring_ok {
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let (dx, dy) = ((b.verts[j * 3] - b.verts[i * 3]) as f64, (b.verts[j * 3 + 1] - b.verts[i * 3 + 1]) as f64);
+                cum[i + 1] = cum[i] + (dx * dx + dy * dy).sqrt();
+            }
+        }
+        let vscale = 3.0 / b.facade.floor_height.max(2.0) as f64;
         for t in b.indices.chunks_exact(3) {
             let p: Vec<V> = t.iter().map(|&k| {
                 let k = k as usize * 3;
                 [b.verts[k] as f64, b.verts[k + 1] as f64, b.verts[k + 2] as f64]
             }).collect();
-            let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
-            let l = dot(n, n).sqrt();
+            let nn = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            let l = dot(nn, nn).sqrt();
             if l < 1e-6 {
                 continue;
             }
-            let n = [n[0] / l, n[1] / l, n[2] / l];
-            let m = if n[2].abs() > 0.5 { mat::ROOF } else { mat::WALL };
-            for q in &p {
-                bm.v(*q, n, seed, 0.0, m);
+            let nn = [nn[0] / l, nn[1] / l, nn[2] / l];
+            let roof = nn[2].abs() > 0.5;
+            let (m, col) = if roof { (mat::ROOF, b.facade.roof_colour) } else { (b.facade.style, b.facade.colour) };
+            let edge = t[0] as usize % n.max(1);
+            for (q, &k) in p.iter().zip(t) {
+                let (u, v) = if roof || !ring_ok {
+                    (q[0], q[1])
+                } else {
+                    let r = k as usize % n;
+                    let u = if r == edge { cum[edge] } else { cum[edge + 1] };
+                    (u, q[2] * vscale)
+                };
+                bm.v(*q, nn, u, v, m);
+                bcol.extend_from_slice(&col);
             }
         }
     }
-    out.push(MeshData { name: "buildings".into(), verts: bm.a, polygon_offset: 0.0, casts_shadow: true });
+    out.push(MeshData { name: "buildings".into(), verts: bm.a, polygon_offset: 0.0, casts_shadow: true, colors: bcol });
 
     // trees
     let mut tm = Mb::default();
@@ -326,7 +361,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         tm.box_(t[0] - 0.15, t[1] - 0.15, 0.0, t[0] + 0.15, t[1] + 0.15, 2.3, &[mat::TRUNK]);
         tm.sphere(t[0], t[1], 2.3 + rr * 0.8, rr, rr * 1.1, mat::FOLIAGE, s, 7, 4);
     }
-    out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true });
+    out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
     out
 }
 
@@ -354,8 +389,8 @@ pub fn car_meshes() -> (MeshData, MeshData) {
     w.cyl(0.0, 0.0, 0.2, 0.105, 0.13, RIM, 10);
     w.cyl(0.0, 0.0, 0.2, -0.13, -0.105, RIM, 10);
     (
-        MeshData { name: "car_body".into(), verts: b.a, polygon_offset: 0.0, casts_shadow: true },
-        MeshData { name: "car_wheel".into(), verts: w.a, polygon_offset: 0.0, casts_shadow: true },
+        MeshData { name: "car_body".into(), verts: b.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() },
+        MeshData { name: "car_wheel".into(), verts: w.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() },
     )
 }
 

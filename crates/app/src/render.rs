@@ -134,6 +134,21 @@ fn link(gl: &Gl, vs: &str, fs: &str, what: &str) -> Result<Prog, String> {
 }
 
 fn upload(gl: &Gl, m: &MeshData) -> GpuMesh {
+    // facade styles are newer than this renderer's shader: draw them as plain walls
+    let remapped;
+    let m = if m.verts.chunks_exact(FLOATS_PER_VERTEX).any(|v| scene::mesh::mat::is_facade(v[8])) {
+        let mut verts = m.verts.clone();
+        for v in verts.chunks_exact_mut(FLOATS_PER_VERTEX) {
+            if scene::mesh::mat::is_facade(v[8]) {
+                v[8] = scene::mesh::mat::WALL;
+                v[6] = 0.5;
+            }
+        }
+        remapped = MeshData { verts, ..m.clone() };
+        &remapped
+    } else {
+        m
+    };
     unsafe {
         let (mut vao, mut vbo) = (0, 0);
         (gl.GenVertexArrays)(1, &mut vao);
@@ -249,7 +264,7 @@ impl Renderer {
             return;
         };
         if self.car_dyn.is_none() {
-            self.car_dyn = Some(upload(&self.gl, &MeshData { name: "car_body_deformed".into(), verts: Vec::new(), polygon_offset: 0.0, casts_shadow: true }));
+            self.car_dyn = Some(upload(&self.gl, &MeshData { name: "car_body_deformed".into(), verts: Vec::new(), polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() }));
         }
         let m = self.car_dyn.as_mut().unwrap();
         unsafe {

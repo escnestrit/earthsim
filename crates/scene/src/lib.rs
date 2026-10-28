@@ -5,4 +5,4 @@ pub mod mesh;
 pub mod model;
 
 pub use mesh::{car_meshes, ground_mesh, scene_meshes, scene_meshes_opts, MeshData};
-pub use model::{Building, Road, Scene};
+pub use model::{Building, Facade, Road, Scene};

@@ -8,6 +8,16 @@ pub struct Keys {
     pub left: bool,
     pub right: bool,
     pub handbrake: bool,
+    /// Steering wheel / gamepad. When present it replaces the keyboard pedals and steering.
+    pub analog: Option<Analog>,
+}
+
+/// Analog controls: steer -1 (full right) .. +1 (full left), pedals 0..1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Analog {
+    pub steer: f64,
+    pub throttle: f64,
+    pub brake: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +39,9 @@ impl Driver {
 
     /// `fwd_speed`: signed speed along the car's heading (m/s).
     pub fn update(&mut self, dt: f64, k: &Keys, fwd_speed: f64) -> Input {
+        if let Some(a) = k.analog {
+            return self.update_analog(&a, k.handbrake, fwd_speed);
+        }
         // W/S: throttle and brake, with S becoming reverse throttle once the car is (nearly) stopped.
         let (mut thr, mut brk) = (0.0, 0.0);
         if k.up && !k.down {
@@ -80,6 +93,32 @@ impl Driver {
     }
 }
 
+impl Driver {
+    /// Wheel/pedals: no smoothing (the driver's hands and feet do that). Holding the brake pedal while
+    /// stopped engages reverse, then the brake pedal works as reverse throttle (same rule as the S key).
+    fn update_analog(&mut self, a: &Analog, handbrake: bool, fwd_speed: f64) -> Input {
+        let thr = a.throttle.clamp(0.0, 1.0);
+        let brk = a.brake.clamp(0.0, 1.0);
+        if thr > 0.05 && fwd_speed > -1.0 {
+            self.reverse = false;
+        }
+        if brk > 0.5 && thr < 0.05 && fwd_speed.abs() < 0.5 {
+            self.reverse = true;
+        }
+        if self.reverse {
+            // brake pedal = reverse throttle; throttle pedal = brake
+            self.throttle = if fwd_speed < 1.0 { brk } else { 0.0 };
+            self.brake = thr.max(if fwd_speed > 1.0 { brk } else { 0.0 });
+        } else {
+            self.throttle = thr;
+            self.brake = brk;
+        }
+        self.steer = (a.steer.clamp(-1.0, 1.0)) * self.steer_max;
+        self.handbrake = if handbrake { 1.0 } else { 0.0 };
+        Input { throttle: self.throttle, brake: self.brake, steer_angle: self.steer, handbrake: self.handbrake, reverse: self.reverse, tcs: self.tcs, abs: self.abs }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +136,26 @@ mod tests {
             d.update(0.001, &k, 40.0);
         }
         assert!(slow > 0.5 && d.steer < 0.12 && d.steer > 0.0, "{} {}", slow, d.steer);
+    }
+
+    #[test]
+    fn analog_pedals_and_wheel() {
+        let mut d = Driver::new(0.55);
+        let k = Keys { analog: Some(Analog { steer: 0.5, throttle: 0.7, brake: 0.0 }), ..Default::default() };
+        let i = d.update(0.001, &k, 20.0);
+        assert_eq!((i.throttle, i.brake, i.reverse), (0.7, 0.0, false));
+        assert!((i.steer_angle - 0.275).abs() < 1e-12); // no speed-dependent lock with a real wheel
+        // brake while moving brakes, never reverses
+        let k = Keys { analog: Some(Analog { steer: 0.0, throttle: 0.0, brake: 1.0 }), ..Default::default() };
+        let i = d.update(0.001, &k, 10.0);
+        assert!(i.brake == 1.0 && !i.reverse);
+        // stopped + brake held -> reverse, brake pedal drives backwards
+        let i = d.update(0.001, &k, 0.0);
+        assert!(i.reverse && i.throttle == 1.0);
+        // throttle pedal returns to forward
+        let k = Keys { analog: Some(Analog { steer: 0.0, throttle: 0.6, brake: 0.0 }), ..Default::default() };
+        let i = d.update(0.001, &k, -0.2);
+        assert!(!i.reverse && i.throttle == 0.6);
     }
 
     #[test]
