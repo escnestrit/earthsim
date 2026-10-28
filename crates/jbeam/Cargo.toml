@@ -1,0 +1,11 @@
+[package]
+name = "jbeam"
+version = "0.1.0"
+edition = "2021"
+description = "BeamNG vehicle mods: zip reader, DEFLATE, lenient JBeam parser, slot assembly"
+
+[dependencies]
+scene = { path = "../scene" }
+
+[lints]
+workspace = true

@@ -12,6 +12,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jbeam"
+version = "0.1.0"
+dependencies = [
+ "scene",
+]
+
+[[package]]
 name = "phys"
 version = "0.1.0"
 
