@@ -401,6 +401,18 @@ mod tests {
             assert!(zs[4] < 8.0 && zs[4] > 2.2, "eaves {}", zs[4]);
             // every index valid, every triangle non-degenerate
             assert!(b.indices.iter().all(|&k| (k as usize) < b.verts.len() / 3));
+            // every face points outwards (back faces are culled by the renderer)
+            let v = |k: u32| { let k = k as usize * 3; [b.verts[k] as f64, b.verts[k + 1] as f64, b.verts[k + 2] as f64] };
+            let nv = b.verts.len() / 3;
+            let c: Vec<f64> = (0..3).map(|a| (0..nv).map(|k| v(k as u32)[a]).sum::<f64>() / nv as f64).collect();
+            for t in b.indices.chunks(3) {
+                let (p, q, r) = (v(t[0]), v(t[1]), v(t[2]));
+                let e1 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                let e2 = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                let m = [(p[0] + q[0] + r[0]) / 3.0 - c[0], (p[1] + q[1] + r[1]) / 3.0 - c[1], (p[2] + q[2] + r[2]) / 3.0 - c[2]];
+                assert!(n[0] * m[0] + n[1] * m[1] + n[2] * m[2] > 0.0, "{shape}: inward face {t:?}");
+            }
         }
         // flat roof tag and big buildings stay flat
         let b = build("t", &ring, &t(&[("building", "house"), ("roof:shape", "flat"), ("height", "8")]), &fr).unwrap().building;
