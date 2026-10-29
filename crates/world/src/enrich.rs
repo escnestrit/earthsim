@@ -21,7 +21,8 @@ pub fn heights_query(b: &Bounds) -> String {
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);
     format!(
         "[out:json][timeout:25];(way[\"building\"][\"building:levels\"]({bb});way[\"building\"][\"height\"]({bb});\
-         relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb});node[\"entrance\"]({bb}););out tags center;"
+         relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb}););out tags center;\
+         node[\"entrance\"]({bb});out body;"
     )
 }
 
@@ -182,7 +183,8 @@ mod tests {
         let osm = r#"{"elements":[
             {"type":"way","id":10,"center":{"lat":0.0005,"lon":0.0005},"tags":{"building":"yes","building:levels":"9","roof:shape":"flat"}},
             {"type":"way","id":11,"center":{"lat":0.0025,"lon":0.0005},"tags":{"building":"yes","height":"40","building:levels":"12"}},
-            {"type":"way","id":12,"center":{"lat":0.5,"lon":0.5},"tags":{"building":"yes","building:levels":"3"}}]}"#;
+            {"type":"way","id":12,"center":{"lat":0.5,"lon":0.5},"tags":{"building":"yes","building:levels":"3"}},
+            {"type":"node","id":20,"lat":0.0001,"lon":0.0005,"tags":{"entrance":"staircase","ref":"1"}}]}"#;
         let (j, n) = merge_osm_heights(OVERTURE, osm).unwrap();
         assert_eq!(n, 2);
         let raw = crate::osm::parse_overpass(&j, TileId::from_lat_lon(0.0005, 0.0005, 15)).unwrap();
@@ -191,6 +193,7 @@ mod tests {
         assert_eq!(tag(0, "building:levels").as_deref(), Some("9"));
         assert_eq!(tag(0, "height"), None);
         assert_eq!(tag(0, "roof:shape").as_deref(), Some("flat"));
+        assert_eq!(raw.entrances.len(), 1, "entrance nodes from OSM reach the tile");
         let (h, _) = crate::stage_a::estimate_height(&raw.buildings[0].tags);
         assert!(h > 25.0, "9 storeys, got {h} m");
     }
@@ -220,6 +223,8 @@ mod tests {
         let plain = r#"{"elements":[]}"#;
         let f = EnrichFetcher { base: Arc::new(Fixed(Ok(plain.into()))), osm: down };
         assert_eq!(f.fetch(t, "").unwrap(), plain);
-        assert!(heights_query(&t.bounds()).contains("out tags center"));
+        let q = heights_query(&t.bounds());
+        // ways: tags + a centre point; entrance nodes need their coordinates ("out tags" would drop them)
+        assert!(q.contains("out tags center") && q.contains("node[\"entrance\"]") && q.ends_with("out body;"), "{q}");
     }
 }

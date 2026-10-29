@@ -110,6 +110,7 @@ pub struct SoftBody {
     pub slides: Vec<Slide>,
     pub pins: Vec<Pin>,
     scratch: Vec<Contact>,
+    near_ids: Vec<u32>,
     hot: Vec<Hot>,
     hot_f: Vec<V3>,
 }
@@ -130,6 +131,7 @@ impl SoftBody {
             slides: Vec::new(),
             pins: Vec::new(),
             scratch: Vec::new(),
+            near_ids: Vec::new(),
             hot: Vec::new(),
             hot_f: Vec::new(),
         }
@@ -397,13 +399,26 @@ impl SoftBody {
             return;
         }
         let mut scratch = std::mem::take(&mut self.scratch);
+        // the obstacles near the body, gathered once; each node then tests only those (bbox first)
+        let m = rmax + 0.3;
+        let mut ids = std::mem::take(&mut self.near_ids);
+        let gathered = world.candidates((lo.x - m, lo.y - m, hi.x + m, hi.y + m), &mut ids);
+        if gathered && ids.is_empty() {
+            self.near_ids = ids;
+            self.scratch = scratch;
+            return;
+        }
         let mut peak: f64 = 0.0;
         for n in self.nodes.iter_mut() {
             if !n.hit_world {
                 continue;
             }
             for _ in 0..2 {
-                world.query(n.p.x, n.p.y, n.radius, &mut scratch);
+                if gathered {
+                    world.query_among(&ids, n.p.x, n.p.y, n.radius, &mut scratch);
+                } else {
+                    world.query(n.p.x, n.p.y, n.radius, &mut scratch);
+                }
                 if scratch.is_empty() {
                     break;
                 }
@@ -425,6 +440,7 @@ impl SoftBody {
             }
         }
         self.scratch = scratch;
+        self.near_ids = ids;
         self.peak_world = self.peak_world.max(peak);
     }
 

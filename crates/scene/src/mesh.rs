@@ -380,20 +380,25 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         let n = if b.ring > 0 { b.ring as usize } else { b.verts.len() / 6 };
         let ring_ok = n >= 3 && b.verts.len() >= n * 6;
         let corner = |i: usize| [b.verts[i * 3] as f64, b.verts[i * 3 + 1] as f64];
-        let mut cum = vec![0.0f64; n + 1];
+        // each wall holds a whole number of 3 m window bays, stretched to fit, so windows never run round a
+        // corner; walls under 1.5 m get none (u stays on the plain strip at the bay edge)
+        let mut ustart = vec![0.0f64; n + 1];
+        let mut uscale = vec![0.0f64; n];
         let mut dir = vec![[0.0f64; 2]; n];
         if ring_ok {
             for i in 0..n {
                 let (a, c) = (corner(i), corner((i + 1) % n));
                 let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
                 let l = (dx * dx + dy * dy).sqrt();
-                cum[i + 1] = cum[i] + l;
+                let bays = (l / 3.0).round();
+                uscale[i] = if bays >= 1.0 && l > 1e-9 { bays * 3.0 / l } else { 0.0 };
+                ustart[i + 1] = ustart[i] + bays * 3.0;
                 dir[i] = if l > 1e-9 { [dx / l, dy / l] } else { [1.0, 0.0] };
             }
         }
         let vscale = 3.0 / b.facade.floor_height.max(2.0) as f64;
-        // shift the window grid per building so neighbours do not line up identically
-        let u_off = (b.seed % 997) as f64 * 0.37;
+        // start each building at a different bay of the texture (lit-window pattern differs between neighbours)
+        let u_off = (b.seed % 4) as f64 * 3.0;
         for t in b.indices.chunks_exact(3) {
             let p: Vec<V> = t.iter().map(|&k| {
                 let k = k as usize * 3;
@@ -414,7 +419,9 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
                     (q[0], q[1])
                 } else {
                     let a = corner(edge);
-                    (u_off + cum[edge] + (q[0] - a[0]) * dir[edge][0] + (q[1] - a[1]) * dir[edge][1], q[2] * vscale)
+                    let along = (q[0] - a[0]) * dir[edge][0] + (q[1] - a[1]) * dir[edge][1];
+                    let u = if uscale[edge] > 0.0 { ustart[edge] + along * uscale[edge] } else { ustart[edge] + 0.12 };
+                    (u_off + u, q[2] * vscale)
                 };
                 bm.v(*q, nn, u, v, m);
                 bcol.extend_from_slice(&col);

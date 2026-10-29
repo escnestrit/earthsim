@@ -252,6 +252,93 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
     Ok(out)
 }
 
+/// Entrances where the map has none: apartment blocks (3+ storeys, 20 m+) get a staircase door every ~18 m
+/// along their longest wall on the side away from the nearest road (the courtyard), other buildings over
+/// 60 m² one door on the wall nearest a road. Doors already mapped near a wall suppress the estimate there.
+pub fn estimate_entrances(sc: &mut Scene) {
+    let mapped: Vec<[f64; 2]> = sc.entrances.iter().map(|e| e.p).collect();
+    let road_pts: Vec<[f64; 2]> = sc.roads.iter().flat_map(|r| r.pts.iter().copied()).collect();
+    let mut grid: HashMap<(i64, i64), Vec<[f64; 2]>> = HashMap::new();
+    for p in &road_pts {
+        grid.entry(((p[0] / 50.0).floor() as i64, (p[1] / 50.0).floor() as i64)).or_default().push(*p);
+    }
+    let road_dist = |x: f64, y: f64| {
+        let (ci, cj) = ((x / 50.0).floor() as i64, (y / 50.0).floor() as i64);
+        let mut best = f64::MAX;
+        for i in ci - 2..=ci + 2 {
+            for j in cj - 2..=cj + 2 {
+                for p in grid.get(&(i, j)).into_iter().flatten() {
+                    best = best.min((p[0] - x).hypot(p[1] - y));
+                }
+            }
+        }
+        best
+    };
+    let mut out = Vec::new();
+    for b in &sc.buildings {
+        let f = &b.footprint;
+        let n = f.len();
+        if n < 3 || b.kind == "part" || matches!(b.kind.as_str(), "garage" | "garages" | "shed" | "roof" | "hut" | "kiosk" | "transformer_tower" | "service") {
+            continue;
+        }
+        let zmin = b.verts.chunks(3).map(|v| v[2]).fold(f32::MAX, f32::min);
+        if zmin > 0.5 {
+            continue;
+        }
+        let area: f64 = (0..n).map(|i| f[i][0] * f[(i + 1) % n][1] - f[(i + 1) % n][0] * f[i][1]).sum::<f64>().abs() / 2.0;
+        if area < 60.0 {
+            continue;
+        }
+        let cx = f.iter().map(|p| p[0]).sum::<f64>() / n as f64;
+        let cy = f.iter().map(|p| p[1]).sum::<f64>() / n as f64;
+        // already has a mapped door within the outline's reach
+        let reach = f.iter().map(|p| (p[0] - cx).hypot(p[1] - cy)).fold(0.0, f64::max) + 2.0;
+        if mapped.iter().any(|m| (m[0] - cx).hypot(m[1] - cy) < reach) {
+            continue;
+        }
+        let edges: Vec<([f64; 2], [f64; 2], f64, [f64; 2])> = (0..n)
+            .map(|i| {
+                let (a, c) = (f[i], f[(i + 1) % n]);
+                let l = (c[0] - a[0]).hypot(c[1] - a[1]);
+                (a, c, l, if l > 1e-9 { [(c[1] - a[1]) / l, -(c[0] - a[0]) / l] } else { [0.0, 0.0] })
+            })
+            .collect();
+        let mid = |e: &([f64; 2], [f64; 2], f64, [f64; 2])| [(e.0[0] + e.1[0]) / 2.0, (e.0[1] + e.1[1]) / 2.0];
+        let floors = b.height as f64 / b.facade.floor_height.max(2.4) as f64;
+        let long = edges.iter().cloned().fold(None::<([f64; 2], [f64; 2], f64, [f64; 2])>, |acc, e| if acc.is_none_or(|a| e.2 > a.2) { Some(e) } else { acc }).unwrap();
+        let apartments = matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory" | "yes") && floors >= 3.0 && long.2 >= 20.0;
+        if apartments {
+            // the long walls facing each other: pick the one farther from roads (courtyard side)
+            let opposite = edges.iter().filter(|e| e.2 > long.2 * 0.7 && (e.3[0] * long.3[0] + e.3[1] * long.3[1]) < -0.8).cloned().next();
+            let side = match opposite {
+                Some(o) => {
+                    let (m1, m2) = (mid(&long), mid(&o));
+                    if road_dist(m1[0] + long.3[0] * 8.0, m1[1] + long.3[1] * 8.0) > road_dist(m2[0] + o.3[0] * 8.0, m2[1] + o.3[1] * 8.0) { long } else { o }
+                }
+                None => long,
+            };
+            let count = ((side.2 / 18.0).round() as usize).max(1);
+            let dir = [(side.1[0] - side.0[0]) / side.2, (side.1[1] - side.0[1]) / side.2];
+            for k in 0..count {
+                let s = side.2 * (k as f64 + 0.5) / count as f64;
+                out.push(scene::model::Entrance { p: [side.0[0] + dir[0] * s, side.0[1] + dir[1] * s], out: side.3, kind: "staircase".into() });
+            }
+        } else {
+            // one door, on the longer of the walls closest to a road
+            let e = edges.iter().filter(|e| e.2 >= 4.0).min_by(|a, b| {
+                let (ma, mb) = (mid(a), mid(b));
+                road_dist(ma[0] + a.3[0] * 3.0, ma[1] + a.3[1] * 3.0).total_cmp(&road_dist(mb[0] + b.3[0] * 3.0, mb[1] + b.3[1] * 3.0))
+            });
+            if let Some(e) = e {
+                let m = mid(e);
+                let kind = if matches!(b.kind.as_str(), "retail" | "commercial" | "office" | "supermarket") { "main" } else { "yes" };
+                out.push(scene::model::Entrance { p: m, out: e.3, kind: kind.into() });
+            }
+        }
+    }
+    sc.entrances.extend(out);
+}
+
 fn seg_dist(x: f64, y: f64, a: [f64; 2], b: [f64; 2]) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let l2 = dx * dx + dy * dy;
@@ -359,9 +446,12 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
             sc.entrances.push(scene::model::Entrance { p: q, out, kind: e.kind.clone() });
         }
     }
+
     let (areas, area_trees) = crate::areas::build_areas(&raw.areas, frame, &on_road);
     sc.areas = areas;
     sc.trees.extend(area_trees);
+    // buildings without mapped entrances get typical ones (estimated, see README)
+    estimate_entrances(&mut sc);
     let mut sv: Vec<_> = status.into_iter().collect();
     sv.sort();
     let mut ov: Vec<_> = origins.into_iter().collect();
@@ -525,7 +615,10 @@ mod tests {
         let tower = sc.buildings.iter().find(|b| b.id.ends_with("/3")).unwrap();
         let zmin = tower.verts.chunks(3).map(|v| v[2]).fold(f32::MAX, f32::min);
         assert!((zmin - 27.0).abs() < 0.01, "upper part starts at storey 9: {zmin}");
-        assert_eq!(sc.entrances.len(), 1);
+        // the mapped door, plus an estimated one for the small house that has none in the data
+        assert_eq!(sc.entrances.len(), 2);
+        let est = &sc.entrances[1];
+        assert!(est.p[0] > 59.0 && est.p[0] < 71.0, "estimated door on the house: {:?}", est.p);
         let e = &sc.entrances[0];
         assert!(e.p[1].abs() < 0.1 && (e.p[0] - 30.0).abs() < 0.2, "on the south wall: {:?}", e.p);
         assert!(e.out[1] < -0.99, "facing south, out of the building: {:?}", e.out);

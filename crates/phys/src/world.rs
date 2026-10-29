@@ -124,6 +124,15 @@ pub trait Obstacles {
     fn any_near(&self, _x: f64, _y: f64, _r: f64) -> bool {
         true
     }
+    /// Collect the obstacles whose bounds overlap the box (x0, y0, x1, y1) into `out` (ids for
+    /// `query_among`). Returns false when the world cannot do this (callers then use `query`).
+    fn candidates(&self, _b: (f64, f64, f64, f64), _out: &mut Vec<u32>) -> bool {
+        false
+    }
+    /// Like `query`, but only against obstacles from `candidates`.
+    fn query_among(&self, _ids: &[u32], x: f64, y: f64, r: f64, out: &mut Vec<Contact>) {
+        self.query(x, y, r, out)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +258,42 @@ impl Obstacles for StaticWorld {
         (i0..=i1).any(|i| (j0..=j1).any(|j| self.grid.get(&(i, j)).is_some_and(|l| !l.is_empty())))
     }
 
+    fn candidates(&self, b: (f64, f64, f64, f64), out: &mut Vec<u32>) -> bool {
+        out.clear();
+        let c = self.cell;
+        let (i0, i1) = ((b.0 / c).floor() as i32, (b.2 / c).floor() as i32);
+        let (j0, j1) = ((b.1 / c).floor() as i32, (b.3 / c).floor() as i32);
+        if (i1 - i0 + 1) as i64 * (j1 - j0 + 1) as i64 > 400 {
+            return false;
+        }
+        for i in i0..=i1 {
+            for j in j0..=j1 {
+                if let Some(list) = self.grid.get(&(i, j)) {
+                    for &id in list {
+                        let ib = self.items[id as usize].bbox;
+                        if ib.0 <= b.2 && ib.2 >= b.0 && ib.1 <= b.3 && ib.3 >= b.1 {
+                            out.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        true
+    }
+
+    fn query_among(&self, ids: &[u32], x: f64, y: f64, r: f64, out: &mut Vec<Contact>) {
+        out.clear();
+        for &id in ids {
+            let b = self.items[id as usize].bbox;
+            if x + r < b.0 || x - r > b.2 || y + r < b.1 || y - r > b.3 {
+                continue;
+            }
+            self.contact(id, x, y, r, out);
+        }
+    }
+
     /// Contacts of a disc (centre `(x,y)`, radius `r`) with all obstacles.
     fn query(&self, x: f64, y: f64, r: f64, out: &mut Vec<Contact>) {
         out.clear();
@@ -264,6 +309,15 @@ impl Obstacles for StaticWorld {
                         continue;
                     }
                     seen.push(id);
+                    self.contact(id, x, y, r, out);
+                }
+            }
+        }
+    }
+}
+
+impl StaticWorld {
+    fn contact(&self, id: u32, x: f64, y: f64, r: f64, out: &mut Vec<Contact>) {
                     match &self.items[id as usize].shape {
                         Some(Shape::Circle(cx, cy, cr)) => {
                             let (dx, dy) = (x - cx, y - cy);
@@ -280,9 +334,6 @@ impl Obstacles for StaticWorld {
                         }
                         None => {}
                     }
-                }
-            }
-        }
     }
 }
 
