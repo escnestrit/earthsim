@@ -1,11 +1,15 @@
 //! BeamNG mod loading: zip + DEFLATE + lenient JBeam + slot assembly.
 pub mod assemble;
+pub mod dae;
 pub mod expr;
+pub mod flex;
 pub use scene::inflate;
 pub mod lenient;
+pub mod materials;
 pub mod model;
 pub mod table;
 pub mod vehicle;
+pub mod visual;
 pub mod zip;
 
 use std::collections::HashMap;
@@ -18,29 +22,48 @@ pub struct LoadedVehicle {
     pub beams: usize,
     /// assembly/model warnings and vehicle notes (missing parts, defaults used)
     pub notes: Vec<String>,
+    /// meshes, materials and textures (None when the mod has no usable .dae or loading them failed)
+    pub visual: Option<visual::CarVisual>,
 }
 
 /// Load a BeamNG vehicle zip. `main` picks the main part; by default the first part with slotType "main".
 pub fn load_vehicle(path: &std::path::Path, main: Option<&str>) -> Result<LoadedVehicle, String> {
     let mut z = zip::Zip::open(path)?;
     let lib = assemble::Library::from_zip(&mut z);
-    load_from_library(&lib, main)
+    let main_part = resolve_main(&lib, main)?;
+    let m = model::build(assemble::assemble(&lib, &main_part, &HashMap::new()));
+    let mut lv = finish(m, main_part)?;
+    match visual::load(&mut z, &model::build(assemble::assemble(&lib, &lv.main_part, &HashMap::new())), &lv.vehicle) {
+        Ok(v) => {
+            lv.notes.push(format!("meshes: {} parts, {} triangles, {} textures", v.parts.len(), v.triangle_count(), v.textures.len()));
+            lv.notes.extend(v.notes.iter().cloned());
+            lv.visual = Some(v);
+        }
+        Err(e) => lv.notes.push(format!("meshes not loaded: {e}")),
+    }
+    Ok(lv)
 }
 
-pub fn load_from_library(lib: &assemble::Library, main: Option<&str>) -> Result<LoadedVehicle, String> {
-    let main_part = match main {
-        Some(m) => m.to_string(),
+fn resolve_main(lib: &assemble::Library, main: Option<&str>) -> Result<String, String> {
+    match main {
+        Some(m) => Ok(m.to_string()),
         None => {
             let mut mains: Vec<&String> = lib.by_type.get("main").map(|v| v.iter().collect()).unwrap_or_default();
             mains.sort();
-            mains.first().map(|s| s.to_string()).ok_or("no part with slotType \"main\" in the mod")?
+            mains.first().map(|s| s.to_string()).ok_or_else(|| "no part with slotType \"main\" in the mod".to_string())
         }
-    };
-    let asm = assemble::assemble(lib, &main_part, &HashMap::new());
-    if asm.parts.is_empty() {
+    }
+}
+
+pub fn load_from_library(lib: &assemble::Library, main: Option<&str>) -> Result<LoadedVehicle, String> {
+    let main_part = resolve_main(lib, main)?;
+    finish(model::build(assemble::assemble(lib, &main_part, &HashMap::new())), main_part)
+}
+
+fn finish(m: model::Model, main_part: String) -> Result<LoadedVehicle, String> {
+    if m.asm.parts.is_empty() {
         return Err(format!("main part '{main_part}' not found"));
     }
-    let m = model::build(asm);
     let v = vehicle::JbeamVehicle::from_model(&m)?;
     let mut notes: Vec<String> = v.notes.clone();
     if !m.asm.missing.is_empty() {
@@ -49,5 +72,5 @@ pub fn load_from_library(lib: &assemble::Library, main: Option<&str>) -> Result<
     if m.skipped_beams > 0 {
         notes.push(format!("{} beams skipped (their nodes are in missing parts)", m.skipped_beams));
     }
-    Ok(LoadedVehicle { nodes: m.nodes.len(), beams: m.beams.len(), vehicle: v, main_part, notes })
+    Ok(LoadedVehicle { nodes: m.nodes.len(), beams: m.beams.len(), vehicle: v, main_part, notes, visual: None })
 }

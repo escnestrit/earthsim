@@ -97,6 +97,8 @@ pub struct Game {
     pub jcar_info: Vec<String>,
     /// jcar wheel index for FL, FR, RL, RR
     jcar_map: [Option<usize>; 4],
+    /// the mod's meshes/materials/textures, for the renderer to take once
+    pub jcar_visual: Option<jbeam::visual::CarVisual>,
     pub deformed: Vec<f32>,
     /// Fixed camera (eye, target, fov) used for screenshots and tests instead of the follow cameras.
     pub cam_override: Option<(V3f, V3f, f32)>,
@@ -146,6 +148,7 @@ impl Game {
             jcar: None,
             jcar_info: Vec::new(),
             jcar_map: [None; 4],
+            jcar_visual: None,
             deformed: Vec::new(),
             cam_override: None,
             stream: None,
@@ -185,7 +188,8 @@ impl Game {
     }
 
     /// Drive a BeamNG vehicle mod instead of the built-in car.
-    pub fn set_jbeam_car(&mut self, lv: jbeam::LoadedVehicle, name: &str) {
+    pub fn set_jbeam_car(&mut self, mut lv: jbeam::LoadedVehicle, name: &str) {
+        self.jcar_visual = lv.visual.take();
         let mut v = lv.vehicle;
         let f = self.car.forward();
         v.place(self.car.pos.x, self.car.pos.y, f.y.atan2(f.x), 0.0, &self.ground);
@@ -205,7 +209,7 @@ impl Game {
         }
         self.jcar_map = map;
         self.jcar_info = vec![format!("CAR: {} FROM MOD ({} NODES, {} BEAMS, MAIN PART {})", name.to_uppercase(), lv.nodes, lv.beams, lv.main_part.to_uppercase())];
-        self.jcar_info.extend(lv.notes.iter().take(4).map(|n| format!("  {}", n.to_uppercase())));
+        self.jcar_info.extend(lv.notes.iter().filter(|n| n.starts_with("meshes") || n.contains("driven") || n.contains("engine")).map(|n| format!("  {}", n.to_uppercase())));
         self.jcar = Some(Box::new(v));
         self.soft_on = true;
         self.sync_from_soft_if_on();

@@ -4,6 +4,7 @@
 //! World axes: the simulation is Z-up (x east, y north); Bevy is Y-up. All world geometry hangs under one
 //! root entity rotated -90 degrees about X, and the camera is converted with `zup`.
 
+mod car_visual;
 mod facade;
 mod hud;
 mod input;
@@ -92,7 +93,7 @@ fn main() {
         }));
     }
     app.insert_resource(Sim(std::sync::Mutex::new(game)))
-        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin))
+        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin))
         .add_systems(Update, step_sim.after(input::read_input).before(view::sync_world));
     app.run();
 }
@@ -109,7 +110,18 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
                 t += 0.02;
             }
         }
-        sim.g().update(1.0 / 60.0);
+        let mut g = sim.g();
+        g.update(1.0 / 60.0);
+        // EARTHSIM_SHOT_CAM=side|front: fixed camera beside / in front of the car (for checking car models)
+        if let Ok(view) = std::env::var("EARTHSIM_SHOT_CAM") {
+            let (p, f) = (g.car.pos, g.car.forward());
+            let left = phys::v3(-f.y, f.x, 0.0);
+            let eye = match view.as_str() {
+                "front" => p + f * 6.0 + left * 2.5 + phys::v3(0.0, 0.0, 0.8),
+                _ => p + left * 5.5 + f * 1.5 + phys::v3(0.0, 0.0, 0.6),
+            };
+            g.cam_override = Some(([eye.x as f32, eye.y as f32, eye.z as f32], [p.x as f32, p.y as f32, (p.z - 0.1) as f32], 50.0));
+        }
     } else {
         sim.g().update(time.delta_secs_f64());
     }

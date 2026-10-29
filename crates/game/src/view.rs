@@ -16,10 +16,16 @@ pub struct ViewPlugin;
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Tiles>()
-            .add_systems(Startup, setup)
+            .add_systems(Startup, setup.in_set(SetupMarker))
             .add_systems(Update, (sync_world, sync_car, sync_camera_and_light, capture).chain());
     }
 }
+
+/// Systems that need the world root run after this set.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SetupMarker;
+#[allow(non_upper_case_globals)]
+pub const setup_marker: SetupMarker = SetupMarker;
 
 /// Simulation (Z-up) to Bevy (Y-up).
 pub fn zup(v: [f32; 3]) -> Vec3 {
@@ -31,11 +37,11 @@ pub struct WorldRoot;
 #[derive(Component)]
 struct GroundPlane;
 #[derive(Component)]
-struct CarBody;
+pub struct CarBody;
 #[derive(Component)]
-struct CarWheel(usize);
+pub struct CarWheel(pub usize);
 #[derive(Component)]
-struct SoftBody;
+pub struct SoftBody;
 #[derive(Component)]
 pub struct MainCamera;
 #[derive(Component)]
@@ -244,7 +250,7 @@ fn m4_to_transform(m: &[f32; 16]) -> Transform {
     Transform::from_matrix(Mat4::from_cols_array(m))
 }
 
-fn sync_car(
+pub fn sync_car(
     sim: Res<Sim>,
     tiles: Res<Tiles>,
     mut meshes: ResMut<Assets<Mesh>>,

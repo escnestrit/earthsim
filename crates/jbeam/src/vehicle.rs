@@ -105,7 +105,7 @@ pub fn drivetrain_params(m: &Model, notes: &mut Vec<String>) -> DrivetrainParams
             // our clutch model is tuned for a heavier engine+flywheel; keep a floor for stability
             p.engine_inertia = v.max(0.15);
         }
-        notes.push(format!("engine from mod: peak {:.0} N·m, idle {:.0}, max {:.0} rpm", p.torque_curve.iter().map(|c| c.1).fold(0.0, f64::max), p.idle_rpm, p.max_rpm));
+        notes.push(format!("engine from mod: peak {:.0} Nm, idle {:.0}, max {:.0} rpm", p.torque_curve.iter().map(|c| c.1).fold(0.0, f64::max), p.idle_rpm, p.max_rpm));
     } else {
         notes.push("engine: none in mod, using default".into());
     }
@@ -389,6 +389,21 @@ impl JbeamVehicle {
 
     pub fn forward(&self) -> V3 {
         self.q.rotate(V3::X)
+    }
+
+    /// Rotation from the rest shape to the current body orientation.
+    pub fn body_rotation(&self) -> Quat {
+        self.q.mul(self.q_rest.conj())
+    }
+
+    /// Mass centre of the rest shape (rest-frame origin of `body_rotation`).
+    pub fn rest_com(&self) -> V3 {
+        let (mut s, mut m) = (V3::ZERO, 0.0);
+        for n in &self.body.nodes {
+            s += n.rest * n.m;
+            m += n.m;
+        }
+        s / m
     }
 
     /// Put the car at (x, y) on the ground facing `yaw`, undamaged, rolling at `speed`.
