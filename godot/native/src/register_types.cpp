@@ -3,12 +3,14 @@
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "earth_core.h"
+#include "earth_stream.h"
 
 using namespace godot;
 
 void initialize_earthcore(ModuleInitializationLevel p_level) {
     if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
     GDREGISTER_CLASS(EarthCore);
+    GDREGISTER_CLASS(EarthStream);
 }
 
 void uninitialize_earthcore(ModuleInitializationLevel p_level) {}

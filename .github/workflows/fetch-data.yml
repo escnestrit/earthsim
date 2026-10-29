@@ -7,7 +7,7 @@ on:
       name: {description: "region name", default: "minsk"}
       lat: {default: "53.9045"}
       lon: {default: "27.5615"}
-      radius: {description: "metres", default: "3500"}
+      radius: {description: "metres", default: "2500"}
   push:
     paths:
       - tools/fetch_region.py
@@ -20,8 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install pmtiles requests
-      - name: Fetch
-        run: python3 tools/fetch_region.py ${{ github.event.inputs.lat || '53.9045' }} ${{ github.event.inputs.lon || '27.5615' }} ${{ github.event.inputs.radius || '3500' }} /tmp/region
+      - name: Fetch map tiles and elevation
+        run: python3 tools/fetch_region.py ${{ github.event.inputs.lat || '53.9045' }} ${{ github.event.inputs.lon || '27.5615' }} ${{ github.event.inputs.radius || '2500' }} /tmp/region map
       - name: Push to data branch
         run: |
           N=${{ github.event.inputs.name || 'minsk' }}
@@ -31,4 +31,16 @@ jobs:
           git config user.email "github-actions@users.noreply.github.com"
           git add -A
           git commit -q -m "Map data for $N [skip ci]"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data-$N
+      - name: Fetch OSM tags (Overpass)
+        continue-on-error: true
+        timeout-minutes: 60
+        run: python3 tools/fetch_region.py ${{ github.event.inputs.lat || '53.9045' }} ${{ github.event.inputs.lon || '27.5615' }} ${{ github.event.inputs.radius || '2500' }} /tmp/region osm
+      - name: Push OSM tags
+        if: always()
+        run: |
+          N=${{ github.event.inputs.name || 'minsk' }}
+          cd /tmp/region
+          git add -A
+          git commit -q -m "OSM tags for $N [skip ci]" || exit 0
           git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data-$N

@@ -39,6 +39,7 @@ def newest_release():
 def main():
     lat, lon, radius = float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])
     out = sys.argv[4]
+    phase = sys.argv[5] if len(sys.argv) > 5 else 'all'
     os.makedirs(out, exist_ok=True)
     rel = newest_release()
     print("release", rel)
@@ -49,6 +50,14 @@ def main():
     tiles = [(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
     print(len(tiles), "z14 tiles")
     sess = requests.Session()
+    if phase in ('all', 'map'):
+        fetch_map(rel, tiles, out, sess, lat, lon, dlat, dlon)
+    if phase in ('all', 'osm'):
+        fetch_osm(tiles, out, sess)
+    json.dump({"lat": lat, "lon": lon, "radius_m": radius, "release": rel, "tiles14": tiles}, open(f"{out}/region.json", "w"))
+    print("all done")
+
+def fetch_map(rel, tiles, out, sess, lat, lon, dlat, dlon):
     for theme in ["buildings", "transportation", "base"]:
         url = f"{BUCKET}/tiles/{rel}/{theme}.pmtiles"
         def get_bytes(offset, length):
@@ -72,6 +81,18 @@ def main():
             os.makedirs(p, exist_ok=True)
             open(f"{p}/{y}.mvt", "wb").write(data)
         print(theme, "done")
+    # elevation
+    xs0, ys1 = tile_of(lat - dlat, lon - dlon, 13)
+    xs1, ys0 = tile_of(lat + dlat, lon + dlon, 13)
+    for x in range(xs0 - 1, xs1 + 2):
+        for y in range(ys0 - 1, ys1 + 2):
+            r = sess.get(f"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/13/{x}/{y}.png", timeout=60)
+            if r.status_code == 200:
+                p = f"{out}/dem/13/{x}"
+                os.makedirs(p, exist_ok=True)
+                open(f"{p}/{y}.png", "wb").write(r.content)
+
+def fetch_osm(tiles, out, sess):
     # OSM tags of buildings (heights, use, names) and entrances, per z14 tile: the game's enrich query
     os.makedirs(f"{out}/osm", exist_ok=True)
     for (x, y) in tiles:
@@ -83,10 +104,10 @@ def main():
              f'way["building"~"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$"]({bb}););out tags center;'
              f'node["entrance"]({bb});out body;'
              f'(way["highway"]["oneway"]({bb});way["highway"]["lanes"]({bb});way["highway"]["width"]({bb}););out tags center;')
-        for k in range(8):
+        for k in range(3):
             ep = OVERPASS[k % len(OVERPASS)]
             try:
-                r = sess.post(ep, data={"data": q}, timeout=180)
+                r = sess.post(ep, data={"data": q}, timeout=100)
                 if r.status_code == 200 and r.text.lstrip().startswith("{"):
                     open(f"{out}/osm/enrich_14_{x}_{y}.json", "w").write(r.text)
                     break
@@ -96,17 +117,5 @@ def main():
             time.sleep(10)
         time.sleep(2)
     print("osm done")
-    # elevation
-    xs0, ys1 = tile_of(lat - dlat, lon - dlon, 13)
-    xs1, ys0 = tile_of(lat + dlat, lon + dlon, 13)
-    for x in range(xs0 - 1, xs1 + 2):
-        for y in range(ys0 - 1, ys1 + 2):
-            r = sess.get(f"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/13/{x}/{y}.png", timeout=60)
-            if r.status_code == 200:
-                p = f"{out}/dem/13/{x}"
-                os.makedirs(p, exist_ok=True)
-                open(f"{p}/{y}.png", "wb").write(r.content)
-    json.dump({"lat": lat, "lon": lon, "radius_m": radius, "release": rel, "tiles14": tiles}, open(f"{out}/region.json", "w"))
-    print("all done")
 
 main()

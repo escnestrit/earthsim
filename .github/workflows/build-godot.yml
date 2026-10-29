@@ -1,0 +1,64 @@
+name: build-godot-windows
+# Builds the Godot version: the native C++ extension (earthcore.dll) with MSVC, then exports the game with
+# Godot's Windows template. Download the artifact "earthsim-godot-windows" (a folder with earthsim.exe).
+on:
+  push:
+    branches: [earthsim-godot]
+  workflow_dispatch:
+env:
+  GODOT_VER: 4.7.2
+  GODOT_CPP_TAG: godot-4.5-stable
+jobs:
+  native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: godot-cpp
+        shell: bash
+        run: git clone --depth 1 --branch $GODOT_CPP_TAG https://github.com/godotengine/godot-cpp godot/native/godot-cpp
+      - uses: actions/cache@v4
+        with:
+          path: build
+          key: native-${{ runner.os }}-${{ env.GODOT_CPP_TAG }}-${{ hashFiles('godot/native/src/**', 'godot/native/CMakeLists.txt') }}
+          restore-keys: native-${{ runner.os }}-${{ env.GODOT_CPP_TAG }}-
+      - name: Build earthcore.dll
+        shell: bash
+        run: |
+          cmake -S godot/native -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel 4
+          ls -la godot/bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earthcore-dll
+          path: godot/bin/*.dll
+  export:
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: earthcore-dll
+          path: godot/bin
+      - name: Godot and export templates
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          wget -q https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_export_templates.tpz
+          unzip -q Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VER}.stable
+          unzip -q Godot_v${GODOT_VER}-stable_export_templates.tpz
+          mv templates/* ~/.local/share/godot/export_templates/${GODOT_VER}.stable/
+      - name: Export
+        run: |
+          mkdir -p dist
+          cd godot
+          ../Godot_v${GODOT_VER}-stable_linux.x86_64 --headless --import || true
+          ../Godot_v${GODOT_VER}-stable_linux.x86_64 --headless --export-release "Windows Desktop" ../dist/earthsim.exe
+          cd ..
+          cp godot/bin/*.dll dist/ || true
+          cp README.md dist/ || true
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earthsim-godot-windows
+          path: dist/

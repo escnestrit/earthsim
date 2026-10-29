@@ -1,0 +1,264 @@
+# Game entry: sky and light, the streamed world, the player's car, cameras, HUD and options.
+# Command line (after "--"): --lat=.. --lon=.. --data=<cache dir> --offline --noenrich --time=<hour>
+#   --shot=<png> [--shot-after=<s>] [--cam=x,y,z,yaw_deg,pitch_deg]  (take a screenshot and quit: for tests)
+extends Node3D
+
+var world: EarthWorld
+var car: PlayerCar
+var cam: Camera3D
+var sun: DirectionalLight3D
+var env: Environment
+var hud: Label
+var help: Label
+var args := {}
+var hour := 13.0
+var cam_mode := 0           # 0 chase, 1 hood, 2 free
+var cam_yaw := 0.0
+var cam_pitch := 0.25
+var cam_dist := 7.0
+var free_pos := Vector3.ZERO
+var started := false
+var spawn_ready := false
+var shot_t := -1.0
+var t_since := 0.0
+var fps_acc := 0.0
+
+func _ready() -> void:
+	for a in OS.get_cmdline_user_args() + OS.get_cmdline_args():
+		if a.begins_with("--"):
+			var kv := a.substr(2).split("=", true, 1)
+			args[kv[0]] = kv[1] if kv.size() > 1 else "1"
+	var lat := float(args.get("lat", "53.9024"))
+	var lon := float(args.get("lon", "27.5618"))
+	hour = float(args.get("time", "13"))
+	var cache: String = args.get("data", OS.get_environment("EARTHSIM_DATA"))
+	if cache == "":
+		cache = ProjectSettings.globalize_path("user://cache")
+	_setup_env()
+	world = EarthWorld.new()
+	world.name = "World"
+	add_child(world)
+	var detail := float(args.get("detail", "700"))
+	var far := float(args.get("far", "2400"))
+	world.start(lat, lon, cache, not args.has("offline"), detail, far, not args.has("noenrich"))
+	world.chunk_added.connect(_on_chunk)
+	_setup_car()
+	_setup_hud()
+	if args.has("shot"):
+		shot_t = float(args.get("shot-after", "20"))
+	if args.has("cam"):
+		var c: PackedStringArray = (args["cam"] as String).split(",")
+		cam_mode = 2
+		free_pos = Vector3(float(c[0]), float(c[1]), float(c[2]))
+		cam_yaw = deg_to_rad(float(c[3]))
+		cam_pitch = deg_to_rad(float(c[4]))
+
+func _setup_env() -> void:
+	var we := WorldEnvironment.new()
+	env = Environment.new()
+	var sky := Sky.new()
+	var sm := PhysicalSkyMaterial.new()
+	sm.rayleigh_coefficient = 2.0
+	sm.mie_coefficient = 0.005
+	sm.turbidity = 8.0
+	sm.ground_color = Color(0.25, 0.25, 0.22)
+	sm.energy_multiplier = 1.0
+	sky.sky_material = sm
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
+	env.tonemap_exposure = 1.0
+	env.ssao_enabled = true
+	env.ssao_radius = 1.5
+	env.ssao_intensity = 2.0
+	env.ssil_enabled = true
+	env.ssr_enabled = true
+	env.ssr_max_steps = 48
+	env.glow_enabled = true
+	env.glow_intensity = 0.4
+	env.glow_bloom = 0.05
+	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_DEPTH
+	env.fog_density = 0.0006
+	env.fog_aerial_perspective = 0.85
+	env.fog_sky_affect = 0.0
+	env.fog_depth_begin = 200.0
+	env.fog_depth_end = 3500.0
+	env.fog_light_color = Color(0.7, 0.78, 0.9)
+	env.sdfgi_enabled = not args.has("nogi")
+	env.sdfgi_use_occlusion = true
+	env.sdfgi_cascades = 6
+	env.sdfgi_min_cell_size = 0.4
+	env.adjustment_enabled = true
+	env.adjustment_saturation = 1.08
+	we.environment = env
+	add_child(we)
+	sun = DirectionalLight3D.new()
+	sun.shadow_enabled = true
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_max_distance = 600.0
+	sun.light_angular_distance = 0.5
+	sun.shadow_blur = 1.2
+	add_child(sun)
+	_apply_time()
+
+func _apply_time() -> void:
+	# sun path of a mid-latitude summer day: south at noon
+	var t := (hour - 6.0) / 12.0 * PI
+	var elev := sin(t) * deg_to_rad(58.0)
+	var az := PI + (hour - 12.0) / 12.0 * PI
+	sun.rotation = Vector3(-elev, az, 0)
+	var day := clampf(sin(t) * 3.0 + 0.3, 0.0, 1.0)
+	sun.light_energy = 1.6 * day + 0.02
+	sun.light_color = Color(1.0, lerpf(0.65, 0.96, day), lerpf(0.45, 0.9, day))
+	var night := 1.0 - clampf(sin(t) * 4.0 + 0.6, 0.0, 1.0)
+	env.background_energy_multiplier = lerpf(1.0, 0.08, night)
+	env.ambient_light_energy = lerpf(1.0, 0.25, night)
+	if world:
+		world.mats.set_night(night)
+
+func _setup_car() -> void:
+	car = PlayerCar.new()
+	car.name = "Car"
+	var body: Mesh = world.models["4:0"]
+	var d: Dictionary = EarthCore.model(4, 1)
+	var am := ArrayMesh.new()
+	for mat in d:
+		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, d[mat])
+		var m: Material = world.mats.get_mat(mat)
+		if mat == EarthMaterials.M_CARPAINT:
+			var p := (m as StandardMaterial3D).duplicate() as StandardMaterial3D
+			p.vertex_color_use_as_albedo = false
+			p.albedo_color = Color(0.55, 0.06, 0.05)
+			m = p
+		am.surface_set_material(am.get_surface_count() - 1, m)
+	body = am
+	var wheel := CylinderMesh.new()
+	wheel.top_radius = PlayerCar.WHEEL_R
+	wheel.bottom_radius = PlayerCar.WHEEL_R
+	wheel.height = 0.22
+	wheel.radial_segments = 24
+	wheel.material = world.mats.get_mat(EarthMaterials.M_TIRE)
+	car.setup(body, wheel)
+	car.freeze = true
+	add_child(car)
+	car.global_position = Vector3(0, 300, 0)
+	cam = Camera3D.new()
+	cam.far = 6000.0
+	cam.near = 0.1
+	cam.fov = 70.0
+	add_child(cam)
+	cam.make_current()
+
+func _setup_hud() -> void:
+	var cl := CanvasLayer.new()
+	add_child(cl)
+	hud = Label.new()
+	hud.position = Vector2(12, 8)
+	hud.add_theme_font_size_override("font_size", 15)
+	hud.add_theme_color_override("font_outline_color", Color.BLACK)
+	hud.add_theme_constant_override("outline_size", 4)
+	cl.add_child(hud)
+	help = Label.new()
+	help.text = "WASD / стрелки — ехать, Space — ручник, R — поставить на колёса, C — камера, T — время суток, G — GI вкл/выкл, F1 — помощь"
+	help.add_theme_font_size_override("font_size", 14)
+	help.add_theme_color_override("font_outline_color", Color.BLACK)
+	help.add_theme_constant_override("outline_size", 4)
+	help.anchor_top = 1.0
+	help.anchor_bottom = 1.0
+	help.position = Vector2(12, -30)
+	cl.add_child(help)
+
+func _on_chunk(cx: int, cy: int, full: bool) -> void:
+	if spawn_ready:
+		return
+	# the car waits frozen until the chunk under it has its collision
+	var p := car.global_position
+	if full and cx == int(floor(p.x / 256.0)) and cy == int(floor(-p.z / 256.0)):
+		var g := world.ground(p.x, p.z)
+		if not is_nan(g):
+			car.global_position = Vector3(p.x, g + 1.2, p.z)
+			car.freeze = false
+			spawn_ready = true
+
+func _unhandled_input(e: InputEvent) -> void:
+	if e is InputEventKey and e.pressed and not e.echo:
+		match e.keycode:
+			KEY_R:
+				car.reset_upright()
+			KEY_C:
+				cam_mode = (cam_mode + 1) % 3
+				free_pos = cam.global_position
+			KEY_T:
+				hour = fmod(hour + 1.5, 24.0)
+				_apply_time()
+			KEY_G:
+				env.sdfgi_enabled = not env.sdfgi_enabled
+			KEY_F1:
+				help.visible = not help.visible
+	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+		cam_yaw -= e.relative.x * 0.005
+		cam_pitch = clampf(cam_pitch + e.relative.y * 0.005, -1.2, 1.4)
+	if e is InputEventMouseButton and e.pressed:
+		if e.button_index == MOUSE_BUTTON_WHEEL_UP:
+			cam_dist = maxf(3.0, cam_dist * 0.9)
+		elif e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			cam_dist = minf(40.0, cam_dist * 1.1)
+
+func _process(dt: float) -> void:
+	t_since += dt
+	if not spawn_ready:
+		# hold the spawn point on the ground once the terrain there is known
+		var g := world.ground(car.global_position.x, car.global_position.z)
+		if not is_nan(g):
+			car.global_position.y = g + 1.2
+	world.focus = car.global_position if cam_mode != 2 else cam.global_position
+	_update_camera(dt)
+	fps_acc = lerpf(fps_acc, 1.0 / maxf(dt, 1e-4), 0.05)
+	var ll := world.stream.latlon(car.global_position)
+	var gear_s: String = "R" if car.gear < 0 else str(car.gear)
+	hud.text = "%d км/ч   передача %s   %d об/мин\n%.5f, %.5f   %02d:%02d   FPS %d\n%s" % [
+		roundi(car.speed_kmh()), gear_s, roundi(car.rpm), ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60), roundi(fps_acc), world.stream.status()]
+	if shot_t > 0.0 and int(t_since / 5.0) != int((t_since - dt) / 5.0):
+		print("t=%.0f fps=%d %s" % [t_since, fps_acc, world.stream.status()])
+	if shot_t > 0.0 and t_since > shot_t:
+		shot_t = -1.0
+		await RenderingServer.frame_post_draw
+		var img := get_viewport().get_texture().get_image()
+		img.save_png(args["shot"])
+		print("screenshot saved ", args["shot"], " status: ", world.stream.status())
+		get_tree().quit()
+
+func _update_camera(dt: float) -> void:
+	if cam_mode == 2:
+		var f := Vector3(-sin(cam_yaw) * cos(cam_pitch), -sin(cam_pitch), -cos(cam_yaw) * cos(cam_pitch))
+		var mv := Vector3.ZERO
+		if not args.has("cam"):
+			if Input.is_key_pressed(KEY_I): mv += f
+			if Input.is_key_pressed(KEY_K): mv -= f
+			if Input.is_key_pressed(KEY_J): mv -= f.cross(Vector3.UP).normalized()
+			if Input.is_key_pressed(KEY_L): mv += f.cross(Vector3.UP).normalized()
+		free_pos += mv * dt * (60.0 if Input.is_key_pressed(KEY_SHIFT) else 15.0)
+		cam.global_position = free_pos
+		cam.look_at(free_pos + f, Vector3.UP)
+		return
+	var tr := car.global_transform
+	var fwd := tr.basis.z * car.forward_sign
+	fwd.y = 0
+	if fwd.length() < 0.1:
+		fwd = Vector3.FORWARD
+	fwd = fwd.normalized()
+	if cam_mode == 1:
+		cam.global_position = tr * Vector3(0, 1.35, 0.3 * car.forward_sign)
+		cam.look_at(cam.global_position + tr.basis.z * car.forward_sign * 10.0 + Vector3(0, -0.6, 0), Vector3.UP)
+		return
+	var back := fwd.rotated(Vector3.UP, cam_yaw)
+	var target := car.global_position + Vector3(0, 1.3, 0)
+	var want := target - back * cam_dist * cos(cam_pitch) + Vector3(0, cam_dist * sin(cam_pitch), 0)
+	var g := world.ground(want.x, want.z)
+	if not is_nan(g):
+		want.y = maxf(want.y, g + 0.6)
+	cam.global_position = cam.global_position.lerp(want, clampf(dt * 6.0, 0.0, 1.0)) if t_since > 0.5 else want
+	cam.look_at(target, Vector3.UP)
