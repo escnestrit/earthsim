@@ -199,6 +199,8 @@ pub struct Game {
     jcar_map: [Option<usize>; 4],
     /// the mod's meshes/materials/textures, for the renderer to take once
     pub jcar_visual: Option<jbeam::visual::CarVisual>,
+    /// the mod car came with meshes (stays true after the front end takes `jcar_visual`)
+    pub jcar_has_visual: bool,
     pub deformed: Vec<f32>,
     /// Fixed camera (eye, target, fov) used for screenshots and tests instead of the follow cameras.
     pub cam_override: Option<(V3f, V3f, f32)>,
@@ -250,6 +252,7 @@ impl Game {
             jcar_info: Vec::new(),
             jcar_map: [None; 4],
             jcar_visual: None,
+            jcar_has_visual: false,
             deformed: Vec::new(),
             cam_override: None,
             stream: None,
@@ -316,6 +319,7 @@ impl Game {
     /// Drive a BeamNG vehicle mod instead of the built-in car.
     pub fn set_jbeam_car(&mut self, mut lv: jbeam::LoadedVehicle, name: &str) {
         self.jcar_visual = lv.visual.take();
+        self.jcar_has_visual = self.jcar_visual.is_some();
         let mut v = lv.vehicle;
         let f = self.car.forward();
         v.place(self.car.pos.x, self.car.pos.y, f.y.atan2(f.x), 0.0, &self.ground);
@@ -418,6 +422,19 @@ impl Game {
     /// The deformed body mesh in world coordinates when the soft-body model is active.
     pub fn deformed_body(&self) -> Option<&[f32]> {
         (self.soft_on && !self.deformed.is_empty()).then_some(self.deformed.as_slice())
+    }
+
+    /// Where the car is on Earth (streaming worlds only): (lat, lon, heading in degrees clockwise from north).
+    pub fn car_geo(&self) -> Option<(f64, f64, f64)> {
+        let st = self.stream.as_ref()?;
+        let (lat, lon, _) = st.streamer.frame().from_local(self.car.pos.x, self.car.pos.y, 0.0);
+        let f = self.car.forward();
+        Some((lat, lon, f.x.atan2(f.y).to_degrees().rem_euclid(360.0)))
+    }
+
+    /// Name of the current place (preset or teleport target).
+    pub fn place_name(&self) -> Option<&str> {
+        self.stream.as_ref().map(|s| s.place.as_str())
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -718,7 +735,24 @@ impl Game {
                 55.0,
             ),
         };
+        let mut up: V3f = [0.0, 0.0, 1.0];
+        let mut interior = false;
+        let (mut eye, mut target, mut fov) = (eye, target, fov);
+        // interior view of a mod car: the driver's eye from the mod, moving and tilting with the body
+        if let (1, true, Some(jc)) = (self.cam_mode, self.soft_on, self.jcar.as_ref()) {
+            let (e, r, f) = jc.lock().v.eye_pose();
+            let fwd = r.rotate(phys::math::v3(1.0, 0.0, 0.0));
+            let u = r.rotate(phys::math::v3(0.0, 0.0, 1.0));
+            // look slightly down at the road like a seated driver
+            let dir = (fwd - u * 0.06).norm();
+            eye = [e.x as f32, e.y as f32, e.z as f32];
+            target = [(e.x + dir.x * 10.0) as f32, (e.y + dir.y * 10.0) as f32, (e.z + dir.z * 10.0) as f32];
+            up = [u.x as f32, u.y as f32, u.z as f32];
+            fov = (f as f32 + spd as f32 * 0.08).min(f as f32 + 10.0);
+            interior = true;
+        }
         let (eye, target, fov) = self.cam_override.unwrap_or((eye, target, fov));
+        let interior = interior && self.cam_override.is_none();
         let body = m4::mul(&m4::from_quat([car.q.w, car.q.x, car.q.y, car.q.z], [cp.x, cp.y, cp.z]), &m4::translate(0.0, 0.0, -CG_HEIGHT as f32));
         let mut wheels = [m4::id(); 4];
         if let (true, Some(jc)) = (self.soft_on, self.jcar.as_ref()) {
@@ -750,9 +784,12 @@ impl Game {
             eye,
             target,
             fov_deg: fov,
+            up: if interior { up } else { [0.0, 0.0, 1.0] },
+            interior,
             body,
             wheels,
-            draw_car: self.cam_mode != 1,
+            // first person: the textured mod car is drawn (dashboard, pillars); the plain car is hidden
+            draw_car: self.cam_mode != 1 || (interior && self.jcar_has_visual),
             car_pos: [cp.x as f32, cp.y as f32, 0.0],
             head_pos: [(cp.x + f.x * 2.3) as f32, (cp.y + f.y * 2.3) as f32, (cp.z + f.z * 2.3 + 0.2) as f32],
             head_dir: [f.x as f32, f.y as f32, f.z as f32 - 0.05],
@@ -794,8 +831,15 @@ impl Game {
         }
         if let (true, Some(jc)) = (self.soft_on, self.jcar.as_ref()) {
             lines.extend(self.jcar_info.iter().cloned());
-            let (dmg, broken) = jc.lock().v.damage();
+            let (dmg, broken, loose, groups) = {
+                let j = jc.lock();
+                let (d, b) = j.v.damage();
+                (d, b, j.v.detached_nodes(), j.v.groups.triggered.iter().filter(|t| **t).count() + j.v.groups.broken_group_count())
+            };
             lines.push(format!("PHYSICS: SOFT-BODY FROM JBEAM   BODY DAMAGE {:.0} CM   BROKEN BEAMS {}   (F3 = BUILT-IN RIGID CAR)", dmg * 100.0, broken));
+            if loose > 0 || groups > 0 {
+                lines.push(format!("DAMAGE: {groups} PARTS BROKEN/CRACKED, {loose} NODES TORN OFF"));
+            }
         } else if self.soft_on {
             let (dmg, broken) = self.soft.damage();
             lines.push(format!("PHYSICS: SOFT-BODY NODE-BEAM ({} NODES, {} BEAMS)   BODY DAMAGE {:.0} CM   BROKEN BEAMS {}", self.soft.body.nodes.len(), self.soft.body.beams.len(), dmg * 100.0, broken));
@@ -813,7 +857,7 @@ impl Game {
             lines.push("COLLISION".to_string());
         }
         let help = if self.show_help {
-            "W/S THROTTLE + BRAKE/REVERSE   A/D STEER   SPACE HANDBRAKE\nC CAMERA   [ ] TIME OF DAY   L LIGHTS   R RESPAWN+REPAIR   U RECOVER+REPAIR\nT TCS   B ABS   H HUD   F1 HELP   F2 TELEPORT   F3 SOFT/RIGID   ESC QUIT".to_string()
+            "W/S THROTTLE + BRAKE/REVERSE   A/D STEER   SPACE HANDBRAKE\nC CAMERA (CHASE / DRIVER / TOP)   M MAP + TELEPORT   [ ] TIME OF DAY   L LIGHTS   R RESPAWN+REPAIR   U RECOVER+REPAIR\nT TCS   B ABS   H HUD   F1 HELP   F2 TELEPORT   F3 SOFT/RIGID   F4 CONTROLLERS".to_string()
         } else {
             String::new()
         };
@@ -942,6 +986,17 @@ mod tests {
         let fp = g.frame_params();
         let c = g.jcar.as_ref().unwrap().lock().v.wheel_center(g.jcar_map[0].unwrap());
         assert!((fp.wheels[0][12] as f64 - c.x).abs() < 1e-3 && (fp.wheels[0][14] as f64 - c.z).abs() < 1e-3);
+        // interior camera: at the mod car's eye, looking forward along the body
+        g.cam_mode = 1;
+        let fp = g.frame_params();
+        assert!(fp.interior);
+        let (e, r, _) = g.jcar.as_ref().unwrap().lock().v.eye_pose();
+        assert!((fp.eye[0] as f64 - e.x).abs() < 1e-3 && (fp.eye[2] as f64 - e.z).abs() < 1e-3);
+        let f = r.rotate(phys::v3(1.0, 0.0, 0.0));
+        let d = [fp.target[0] - fp.eye[0], fp.target[1] - fp.eye[1]];
+        assert!((d[0] as f64 * f.x + d[1] as f64 * f.y) > 9.0, "interior camera looks forward");
+        assert!(fp.up[2] > 0.95);
+        g.cam_mode = 0;
         // F3 switches to the built-in car and back
         g.key_state(Key::SoftBody, true);
         assert!(!g.soft_on && g.deformed_body().is_none());
@@ -1103,6 +1158,13 @@ mod tests {
         assert!((g.car.pos - before).len() < 1e-9, "car must not move while waiting");
         assert!(run_until(&mut g, 15.0, settled));
         assert_eq!(g.world.poly_count(), polys, "same place must give the same collision world");
+        let (la, lo, _) = g.car_geo().unwrap();
+        assert!((la - crate::cli::MINSK.0).abs() < 0.02 && (lo - crate::cli::MINSK.1).abs() < 0.02, "car at {la},{lo}");
+        // teleport to map coordinates (as the map screen does)
+        g.teleport("53.95000, 27.70000", 53.95, 27.70);
+        let (la, lo, _) = g.car_geo().unwrap();
+        assert!((la - 53.95).abs() < 1e-4 && (lo - 27.70).abs() < 1e-4, "car at {la},{lo} after teleport");
+        assert_eq!(g.place_name(), Some("53.95000, 27.70000"));
     }
 
     #[test]

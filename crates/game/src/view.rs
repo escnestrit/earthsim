@@ -74,6 +74,10 @@ fn material_for(id: u32) -> StandardMaterial {
         x if x == mat::TRUNK => ([0.30, 0.22, 0.15], 0.9, 0.0, 0.0, false),
         x if x == mat::TAILLIGHT => ([0.6, 0.02, 0.02], 0.3, 0.0, 0.0, true),
         x if x == mat::RIM => ([0.7, 0.7, 0.72], 0.3, 0.9, 0.0, false),
+        x if x == mat::GRASS => ([0.26, 0.40, 0.17], 0.95, 0.0, 0.5, false),
+        x if x == mat::FOREST_FLOOR => ([0.17, 0.25, 0.11], 1.0, 0.0, 0.5, false),
+        x if x == mat::SAND => ([0.74, 0.68, 0.50], 0.95, 0.0, 0.5, false),
+        x if x == mat::WATER => ([0.09, 0.19, 0.25], 0.06, 0.0, 0.8, false),
         _ => ([0.6, 0.6, 0.6], 0.8, 0.0, 0.0, false),
     };
     let col = Color::srgb(c[0], c[1], c[2]);
@@ -81,6 +85,8 @@ fn material_for(id: u32) -> StandardMaterial {
         base_color: col,
         perceptual_roughness: rough,
         metallic: metal,
+        // water: strong sky reflection at grazing angles
+        reflectance: if id as f32 == mat::WATER { 0.9 } else { 0.5 },
         depth_bias: bias,
         emissive: if emissive { LinearRgba::from(col) * 2.0 } else { LinearRgba::BLACK },
         ..default()
@@ -304,9 +310,10 @@ fn sync_camera_and_light(
     let target = zup(fp.target);
     let sky = Color::srgb(lg.horizon[0], lg.horizon[1], lg.horizon[2]);
     for (mut t, mut p, mut fog) in &mut cam {
-        *t = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+        *t = Transform::from_translation(eye).looking_at(target, zup(fp.up).normalize_or(Vec3::Y));
         if let Projection::Perspective(pp) = p.as_mut() {
             pp.fov = fp.fov_deg.to_radians();
+            pp.near = if fp.interior { 0.03 } else { 0.1 };
         }
         fog.color = sky;
     }

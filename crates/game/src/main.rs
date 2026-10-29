@@ -8,6 +8,7 @@ mod car_visual;
 mod facade;
 mod hud;
 mod input;
+mod map;
 mod view;
 
 use bevy::prelude::*;
@@ -99,7 +100,7 @@ fn main() {
         }));
     }
     app.insert_resource(Sim(std::sync::Mutex::new(game)))
-        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin))
+        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin))
         .add_systems(Update, step_sim.after(input::read_input).before(view::sync_world));
     app.run();
 }
@@ -129,7 +130,11 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
         let mut g = sim.g();
         g.update(1.0 / 60.0);
         // EARTHSIM_SHOT_CAM=side|front: fixed camera beside / in front of the car (for checking car models)
-        if let Ok(view) = std::env::var("EARTHSIM_SHOT_CAM") {
+        // EARTHSIM_SHOT_CAM=interior: the driver's view
+        let view = std::env::var("EARTHSIM_SHOT_CAM").ok();
+        if view.as_deref() == Some("interior") {
+            g.cam_mode = 1;
+        } else if let Some(view) = view {
             let (p, f) = (g.car.pos, g.car.forward());
             let left = phys::v3(-f.y, f.x, 0.0);
             let eye = match view.as_str() {

@@ -24,4 +24,11 @@ fn main() {
         println!("  table {s}: {} rows", m.table(s).len());
     }
     for w in m.warnings.iter().chain(m.asm.warnings.iter()).take(40) { println!("  warn: {w}"); }
+    match jbeam::vehicle::JbeamVehicle::from_model(&m) {
+        Ok(v) => {
+            let (lo, hi) = v.body.nodes.iter().fold(([f64::MAX; 3], [f64::MIN; 3]), |(mut lo, mut hi), n| { for (i, c) in [n.p.x, n.p.y, n.p.z].into_iter().enumerate() { lo[i] = lo[i].min(c); hi[i] = hi[i].max(c); } (lo, hi) });
+            println!("eye (from mod: {}) at {:.2} {:.2} {:.2}, fov {}, {} ref nodes; body z {:.2}..{:.2}, x {:.2}..{:.2}", v.eye.from_mod, v.eye.rest.x, v.eye.rest.y, v.eye.rest.z, v.eye.fov_deg, v.eye.refs.len(), lo[2], hi[2], lo[0], hi[0]);
+        }
+        Err(e) => println!("vehicle: {e}"),
+    }
 }

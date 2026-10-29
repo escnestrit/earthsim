@@ -208,8 +208,13 @@ const KEYS: &[(KeyCode, Key)] = &[
     (KeyCode::F3, Key::SoftBody),
 ];
 
-pub fn read_input(sim: ResMut<Sim>, keys: Res<ButtonInput<KeyCode>>, pads: Query<(&Gamepad, Option<&Name>)>, controls: Res<Controls>, mut mon: ResMut<InputMonitor>) {
+pub fn read_input(sim: ResMut<Sim>, map: Res<crate::map::MapView>, keys: Res<ButtonInput<KeyCode>>, pads: Query<(&Gamepad, Option<&Name>)>, controls: Res<Controls>, mut mon: ResMut<InputMonitor>) {
     let mut g = sim.g();
+    // the map screen takes the keyboard; the car coasts with everything released
+    if map.open {
+        g.release_all();
+        return;
+    }
     for (code, k) in KEYS {
         if keys.just_pressed(*code) {
             g.key_state(*k, true);

@@ -188,7 +188,7 @@ impl Fetcher for ChainFetcher {
 
 // ------------------------------------------------------------------------------------------------------
 #[cfg(any(windows, earthsim_check_win))]
-pub use winhttp::{default_live_fetcher, http_get, HttpRange, WinHttpFetcher};
+pub use winhttp::{default_live_fetcher, http_get, live_map_source, overture_release, HttpRange, WinHttpFetcher};
 
 #[cfg(any(windows, earthsim_check_win))]
 mod winhttp {
@@ -389,6 +389,42 @@ mod winhttp {
         }
     }
 
+    /// Newest Overture release on S3 (`EARTHSIM_OVERTURE_RELEASE` overrides; looked up once per run).
+    pub fn overture_release() -> String {
+        use crate::overture::*;
+        static R: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        R.get_or_init(|| {
+            std::env::var("EARTHSIM_OVERTURE_RELEASE").ok().filter(|r| !r.is_empty()).or_else(|| {
+                let url = format!("{BUCKET}/?list-type=2&prefix=tiles/&delimiter=/");
+                match http_get(&url, None) {
+                    Ok(b) => newest_release(&String::from_utf8_lossy(&b)),
+                    Err(e) => {
+                        crate::log::log(&format!("Overture: release list failed: {e}"));
+                        None
+                    }
+                }
+            }).unwrap_or_else(|| FALLBACK_RELEASE.to_string())
+        })
+        .clone()
+    }
+
+    /// Map tiles straight from Overture's archives (base, transportation, buildings), byte ranges cached in `cache`.
+    pub fn live_map_source(cache: &std::path::Path) -> crate::basemap::MapSource<Box<dyn crate::pmtiles::RangeSource>> {
+        use crate::pmtiles::{CachedRange, PmTiles, RangeSource};
+        let release = overture_release();
+        let open = |theme: &str| -> Option<PmTiles<Box<dyn RangeSource>>> {
+            let src: Box<dyn RangeSource> = Box::new(CachedRange { inner: HttpRange(crate::overture::theme_url(&release, theme)), dir: cache.join(theme) });
+            match PmTiles::open(src) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    crate::log::log(&format!("map: Overture {theme} not available: {e}"));
+                    None
+                }
+            }
+        };
+        crate::basemap::MapSource { base: open("base"), transport: open("transportation"), buildings: open("buildings") }
+    }
+
     /// Overture over HTTP range requests, opened on first use (release list + archive headers need the network).
     pub struct LazyOverture {
         inner: std::sync::Mutex<Option<Arc<crate::overture::OvertureFetcher<HttpRange>>>>,
@@ -411,19 +447,11 @@ mod winhttp {
                 *lt = Some(std::time::Instant::now());
             }
             use crate::overture::*;
-            let release = std::env::var("EARTHSIM_OVERTURE_RELEASE").ok().filter(|r| !r.is_empty()).or_else(|| {
-                let url = format!("{BUCKET}/?list-type=2&prefix=tiles/&delimiter=/");
-                match http_get(&url, None) {
-                    Ok(b) => newest_release(&String::from_utf8_lossy(&b)),
-                    Err(e) => {
-                        crate::log::log(&format!("Overture: release list failed: {e}"));
-                        None
-                    }
-                }
-            }).unwrap_or_else(|| FALLBACK_RELEASE.to_string());
+            let release = overture_release();
             crate::log::log(&format!("Overture: using release {release}"));
             let f = OvertureFetcher::new(HttpRange(theme_url(&release, "buildings")), HttpRange(theme_url(&release, "transportation")), &release)
-                .map_err(|e| FetchError::Transient(format!("Overture {release}: {e}")))?;
+                .map_err(|e| FetchError::Transient(format!("Overture {release}: {e}")))?
+                .with_base(HttpRange(theme_url(&release, "base")));
             let f = Arc::new(f);
             *self.inner.lock().unwrap() = Some(f.clone());
             Ok(f)

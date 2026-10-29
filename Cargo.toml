@@ -7,6 +7,14 @@ opt-level = 3
 debug = false
 lto = "thin"
 
+# Dependencies (Bevy) optimised and without debug info even in dev builds: much faster and far smaller.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
 [profile.test]
 opt-level = 2
 

@@ -1,5 +1,7 @@
 //! `world` — streaming the planet: geodesy, tile scheme, OpenStreetMap parsing, building Stage A,
 //! disk cache, fetchers and the tile streamer. std only.
+pub mod areas;
+pub mod basemap;
 pub mod cache;
 pub mod fetch;
 pub mod geo;

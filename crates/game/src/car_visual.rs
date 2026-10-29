@@ -31,8 +31,14 @@ const RESKIN_BUDGET: usize = 250_000;
 struct PartVis {
     part: FlexPart,
     meshes: Vec<Option<Handle<Mesh>>>,
+    /// entity per submesh (None: never drawn)
+    ents: Vec<Option<Entity>>,
     snap: Vec<V3>,
 }
+
+/// A drawn submesh of the car (material/visibility change with damage).
+#[derive(Component)]
+struct CarSubmesh;
 
 #[derive(Resource)]
 struct CarVis {
@@ -44,6 +50,9 @@ struct CarVis {
     cursor: usize,
     pos: Vec<[f32; 3]>,
     nrm: Vec<[f32; 3]>,
+    mats: HashMap<String, Handle<StandardMaterial>>,
+    /// damage-group generation the materials reflect
+    groups_gen: u32,
 }
 
 fn quat(q: phys::math::Quat) -> Quat {
@@ -139,12 +148,22 @@ fn setup(
             (c, x, y, z)
         });
         let mut handles = Vec::new();
+        let mut ents = Vec::new();
+        // the damaged material of a swap is made up front (textures are only at hand here)
+        if let Some(w) = part.swap.as_ref().filter(|w| !flex::is_invisible_material(&w.damaged)) {
+            mat_handles.entry(w.damaged.clone()).or_insert_with(|| materials.add(material(vis.materials.get(&w.damaged), &tex)));
+        }
         for sm in &part.submeshes {
-            if sm.material.contains("invisible") {
+            let invisible = flex::is_invisible_material(&sm.material);
+            let swaps = part.swap.as_ref().is_some_and(|w| w.base == sm.material);
+            if invisible && !swaps {
                 handles.push(None);
+                ents.push(None);
                 continue;
             }
-            let mh = mat_handles.entry(sm.material.clone()).or_insert_with(|| materials.add(material(vis.materials.get(&sm.material), &tex))).clone();
+            // an invisible base (crack overlay) still needs a material until it is swapped in
+            let key = if invisible { part.swap.as_ref().map(|w| w.damaged.clone()).unwrap_or_default() } else { sm.material.clone() };
+            let mh = mat_handles.entry(key.clone()).or_insert_with(|| materials.add(material(vis.materials.get(&key), &tex))).clone();
             let (pos, nrm) = match wheel_frame {
                 Some((c, x, y, z)) => {
                     let to = |p: &[f32; 3]| {
@@ -160,15 +179,19 @@ fn setup(
                 None => (sm.positions.clone(), sm.normals.clone()),
             };
             let h = meshes.add(make_mesh(pos, nrm, sm.uvs.clone(), sm.indices.clone()));
-            commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mh), Transform::default(), ChildOf(parent)));
+            let e = commands
+                .spawn((CarSubmesh, Mesh3d(h.clone()), MeshMaterial3d(mh), Transform::default(), if invisible { Visibility::Hidden } else { Visibility::Inherited }, ChildOf(parent)))
+                .id();
             handles.push(Some(h));
+            ents.push(Some(e));
         }
         let snap = part.nodes.iter().map(|&n| j.body.nodes[n as usize].rest).collect();
-        parts.push(PartVis { part, meshes: handles, snap });
+        parts.push(PartVis { part, meshes: handles, ents, snap });
     }
     world::log::log(&format!("car meshes: {} parts, {} textures ({failed} failed), {} materials", parts.len(), tex.len(), mat_handles.len()));
     let rest_com = j.rest_com();
-    commands.insert_resource(CarVis { root: car_root, parts, wheels, rest_com, cursor: 0, pos: Vec::new(), nrm: Vec::new() });
+    let groups_gen = j.groups.generation;
+    commands.insert_resource(CarVis { root: car_root, parts, wheels, rest_com, cursor: 0, pos: Vec::new(), nrm: Vec::new(), mats: mat_handles, groups_gen });
 }
 
 #[allow(clippy::type_complexity)]
@@ -176,8 +199,9 @@ fn update(
     sim: Res<Sim>,
     vis: Option<ResMut<CarVis>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut tf: Query<(&mut Transform, &mut Visibility), (Without<CarBody>, Without<SoftBody>, Without<CarWheel>)>,
-    mut hide: Query<&mut Visibility, Or<(With<SoftBody>, With<CarWheel>, With<CarBody>)>>,
+    mut tf: Query<(&mut Transform, &mut Visibility), (Without<CarBody>, Without<SoftBody>, Without<CarWheel>, Without<CarSubmesh>)>,
+    mut hide: Query<&mut Visibility, (Or<(With<SoftBody>, With<CarWheel>, With<CarBody>)>, Without<CarSubmesh>)>,
+    mut subs: Query<(&mut MeshMaterial3d<StandardMaterial>, &mut Visibility), (With<CarSubmesh>, Without<CarBody>, Without<SoftBody>, Without<CarWheel>)>,
 ) {
     let Some(mut vis) = vis else { return };
     let g = sim.g();
@@ -201,9 +225,10 @@ fn update(
     }
     // copy what is needed and let the physics thread go on
     let rc = vis.rest_com;
-    let (r, pos, nodes, wheel_tf) = {
+    let (r, pos, nodes, wheel_tf, groups) = {
         let guard = g.jcar.as_ref().unwrap().lock();
         let j = &guard.v;
+        let groups = (j.groups.generation != vis.groups_gen).then(|| (j.groups.generation, j.groups.triggered_names()));
         let (_, _, up) = j.axes();
         let wheel_tf: Vec<(Vec3, Mat3, f32)> = wheel_ents
             .iter()
@@ -214,9 +239,28 @@ fn update(
                 (vec3(j.wheel_center(wi)), Mat3::from_cols(vec3(x), vec3(y), vec3(z)), j.wheels[wi].state.spin as f32)
             })
             .collect();
-        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), wheel_tf)
+        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), wheel_tf, groups)
     };
     drop(g);
+    // damage groups changed (glass cracked, lights broken, or everything repaired): swap materials
+    if let Some((gen, triggered)) = groups {
+        vis.groups_gen = gen;
+        for pv in &vis.parts {
+            let Some(w) = &pv.part.swap else { continue };
+            let hit = triggered.iter().any(|t| *t == w.group);
+            let name = if hit { &w.damaged } else { &w.base };
+            for (sm, e) in pv.part.submeshes.iter().zip(&pv.ents) {
+                let (Some(e), true) = (e, sm.material == w.base) else { continue };
+                if let Ok((mut m, mut v)) = subs.get_mut(*e) {
+                    let hidden = flex::is_invisible_material(name);
+                    *v = if hidden { Visibility::Hidden } else { Visibility::Inherited };
+                    if let Some(h) = vis.mats.get(name) {
+                        m.0 = h.clone();
+                    }
+                }
+            }
+        }
+    }
     if let Ok((mut t, _)) = tf.get_mut(vis.root) {
         *t = Transform { translation: vec3(pos - r.rotate(rc)), rotation: quat(r), scale: Vec3::ONE };
     }

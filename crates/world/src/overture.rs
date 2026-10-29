@@ -159,10 +159,67 @@ fn point_id(p: (f64, f64)) -> i64 {
     (a.wrapping_mul(1_000_003) ^ b).abs()
 }
 
+/// Overture base-theme feature -> OSM-style tags understood by `areas::area_kind`.
+pub fn area_tags(layer: &str, f: &Feature) -> Option<Vec<(String, String)>> {
+    let st = s(f.prop("subtype")).unwrap_or_default();
+    let class = s(f.prop("class")).unwrap_or_default();
+    let kv = |k: &str, v: &str| Some(vec![(k.to_string(), v.to_string())]);
+    match layer {
+        "water" => kv("natural", "water"),
+        "land" => match st.as_str() {
+            "forest" => kv("natural", "wood"),
+            "grass" | "shrub" | "wetland" => kv("natural", "grassland"),
+            "sand" => kv("natural", "sand"),
+            _ => None,
+        },
+        "land_use" => match (st.as_str(), class.as_str()) {
+            (_, "forest" | "wood") => kv("landuse", "forest"),
+            (_, "park" | "garden" | "playground" | "dog_park") | ("park", _) => kv("leisure", "park"),
+            (_, "pitch" | "golf_course") => kv("leisure", "pitch"),
+            (_, "grass" | "meadow" | "village_green" | "recreation_ground" | "cemetery" | "allotments" | "orchard") => kv("landuse", "grass"),
+            (_, "beach") => kv("natural", "beach"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Convert the z14 layers to Overpass-style JSON. The z15 parser clips to the requested tile itself.
 pub fn to_overpass(z: u8, x: u32, y: u32, buildings: &[Layer], transport: &[Layer]) -> String {
+    to_overpass_with_base(z, x, y, buildings, transport, &[])
+}
+
+/// As `to_overpass`, plus ground cover from the base theme as `earthsim_area` elements (rings with holes).
+pub fn to_overpass_with_base(z: u8, x: u32, y: u32, buildings: &[Layer], transport: &[Layer], base: &[Layer]) -> String {
     let mut els: Vec<Json> = Vec::new();
     let mut next_id: i64 = 1;
+    for l in base.iter().filter(|l| matches!(l.name.as_str(), "water" | "land" | "land_use")) {
+        for f in l.features.iter().filter(|f| f.kind == GeomType::Polygon) {
+            let Some(tags) = area_tags(&l.name, f) else { continue };
+            // MVT polygons: an outer ring (positive area) followed by its holes
+            let mut polys: Vec<Vec<&Vec<(i32, i32)>>> = Vec::new();
+            for r in f.parts.iter().filter(|r| r.len() >= 4) {
+                if mvt::ring_area(r) > 0.0 {
+                    polys.push(vec![r]);
+                } else if let Some(p) = polys.last_mut() {
+                    p.push(r);
+                }
+            }
+            for p in polys {
+                let rings: Vec<Json> = p
+                    .iter()
+                    .map(|r| geom_json(&r.iter().map(|&(px, py)| tile_to_latlon(z, x, y, l.extent, px, py)).collect::<Vec<_>>()))
+                    .collect();
+                els.push(Json::Obj(vec![
+                    ("type".into(), Json::Str("earthsim_area".into())),
+                    ("id".into(), Json::Num(next_id as f64)),
+                    ("tags".into(), tags_json(&tags)),
+                    ("rings".into(), Json::Arr(rings)),
+                ]));
+                next_id += 1;
+            }
+        }
+    }
     for l in buildings.iter().filter(|l| l.name == "building") {
         for f in l.features.iter().filter(|f| f.kind == GeomType::Polygon) {
             if matches!(f.prop("is_underground"), Some(Value::Bool(true))) {
@@ -208,6 +265,8 @@ pub fn to_overpass(z: u8, x: u32, y: u32, buildings: &[Layer], transport: &[Laye
 pub struct OvertureFetcher<S: RangeSource> {
     buildings: PmTiles<S>,
     transport: PmTiles<S>,
+    /// land / water / land use (optional: without it there is no ground cover)
+    base: Option<PmTiles<S>>,
     release: String,
     /// decoded z14 parents shared by their four z15 children
     memo: Mutex<Vec<((u32, u32), Arc<String>)>>,
@@ -215,7 +274,16 @@ pub struct OvertureFetcher<S: RangeSource> {
 
 impl<S: RangeSource> OvertureFetcher<S> {
     pub fn new(buildings: S, transport: S, release: &str) -> Result<Self, String> {
-        Ok(OvertureFetcher { buildings: PmTiles::open(buildings)?, transport: PmTiles::open(transport)?, release: release.to_string(), memo: Mutex::new(Vec::new()) })
+        Ok(OvertureFetcher { buildings: PmTiles::open(buildings)?, transport: PmTiles::open(transport)?, base: None, release: release.to_string(), memo: Mutex::new(Vec::new()) })
+    }
+
+    /// Also read ground cover from the base theme.
+    pub fn with_base(mut self, base: S) -> Self {
+        match PmTiles::open(base) {
+            Ok(p) => self.base = Some(p),
+            Err(e) => crate::log::log(&format!("Overture base theme not available ({e}): no water/parks/forests")),
+        }
+        self
     }
 
     pub fn parent_json(&self, px: u32, py: u32) -> Result<Arc<String>, String> {
@@ -231,7 +299,15 @@ impl<S: RangeSource> OvertureFetcher<S> {
         };
         let b = dec(&self.buildings)?;
         let t = dec(&self.transport)?;
-        let j = Arc::new(to_overpass(z, px, py, &b, &t));
+        // ground cover is optional: a failed base read must not lose the roads and buildings
+        let g = match &self.base {
+            Some(p) => dec(p).unwrap_or_else(|e| {
+                crate::log::log(&format!("Overture base {px}/{py}: {e}"));
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+        let j = Arc::new(to_overpass_with_base(z, px, py, &b, &t, &g));
         let mut m = self.memo.lock().unwrap();
         if m.len() >= 8 {
             m.remove(0);
@@ -341,6 +417,40 @@ mod tests {
         // the building's first vertex maps back inside the child tile
         let p = raw.buildings[0].ring[0];
         assert_eq!(TileId::from_lat_lon(p.0, p.1, 15), child);
+    }
+
+    #[test]
+    fn base_theme_water_with_an_island_becomes_a_scene_area() {
+        let t14 = TileId::from_lat_lon(53.9045, 27.5615, 14);
+        let child = TileId { z: 15, x: t14.x * 2, y: t14.y * 2 };
+        // outer ring (100,100)-(1900,1900), hole (800,800)-(1200,1200) wound the other way
+        let g = [9, zz(100), zz(100), 3 << 3 | 2, zz(1800), zz(0), zz(0), zz(1800), zz(-1800), zz(0), 15, 9, zz(700), zz(-1100), 3 << 3 | 2, zz(0), zz(400), zz(400), zz(0), zz(0), zz(-400), 15];
+        let w = layer("water", 3, &g, &["subtype"], &[str_val("lake")]);
+        let park = layer("land_use", 3, &[9, zz(2200), zz(2200), 3 << 3 | 2, zz(500), zz(0), zz(0), zz(500), zz(-500), zz(0), 15], &["subtype", "class"], &[str_val("park"), str_val("park")]);
+        let base: Vec<Layer> = [w, park].iter().flat_map(|l| mvt::decode(l).unwrap()).collect();
+        let json = to_overpass_with_base(14, t14.x, t14.y, &[], &[], &base);
+        let raw = parse_overpass(&json, child).unwrap();
+        assert_eq!(raw.areas.len(), 1, "the park lies in another child tile");
+        assert_eq!(raw.areas[0].kind, scene::model::AreaKind::Water);
+        assert_eq!(raw.areas[0].rings.len(), 2);
+        let frame = crate::geo::LocalFrame::new(53.9045, 27.5615, 0.0);
+        let sc = crate::osm::build_scene(&raw, &frame);
+        assert_eq!(sc.areas.len(), 1);
+        let a = &sc.areas[0];
+        let area: f64 = a.tris.iter().map(|t| {
+            let (p, q, r) = (a.ring[t[0] as usize], a.ring[t[1] as usize], a.ring[t[2] as usize]);
+            ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])).abs() / 2.0
+        }).sum();
+        // z14 tile ~1440 m wide at this latitude: outer 1800/4096 of it squared minus the island
+        let unit = 40_075_016.7 * 53.9045f64.to_radians().cos() / 16384.0 / 4096.0;
+        let expect = ((1800.0 * unit).powi(2) - (400.0 * unit).powi(2)) as f64;
+        assert!((area - expect).abs() < 0.03 * expect, "area {area:.0} m2, expected {expect:.0}");
+        // the other child gets the park, with trees
+        let raw2 = parse_overpass(&json, TileId { z: 15, x: t14.x * 2 + 1, y: t14.y * 2 + 1 }).unwrap();
+        let sc2 = crate::osm::build_scene(&raw2, &frame);
+        assert_eq!(sc2.areas.len(), 1);
+        assert_eq!(sc2.areas[0].kind, scene::model::AreaKind::Park);
+        assert!(!sc2.trees.is_empty());
     }
 
     #[test]

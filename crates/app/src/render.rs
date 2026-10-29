@@ -33,6 +33,10 @@ pub struct FrameParams {
     pub eye: V3f,
     pub target: V3f,
     pub fov_deg: f32,
+    /// camera up vector (tilts with the body in the interior view)
+    pub up: V3f,
+    /// interior (first-person) view: near clip plane must be small
+    pub interior: bool,
     pub body: M4,
     pub wheels: [M4; 4],
     pub draw_car: bool,
@@ -134,14 +138,20 @@ fn link(gl: &Gl, vs: &str, fs: &str, what: &str) -> Result<Prog, String> {
 }
 
 fn upload(gl: &Gl, m: &MeshData) -> GpuMesh {
-    // facade styles are newer than this renderer's shader: draw them as plain walls
+    // facade styles and ground cover are newer than this renderer's shader: walls, ground, dark glassy water
+    use scene::mesh::mat;
+    let newer = |m: f32| mat::is_facade(m) || (13.5..17.5).contains(&m);
     let remapped;
-    let m = if m.verts.chunks_exact(FLOATS_PER_VERTEX).any(|v| scene::mesh::mat::is_facade(v[8])) {
+    let m = if m.verts.chunks_exact(FLOATS_PER_VERTEX).any(|v| newer(v[8])) {
         let mut verts = m.verts.clone();
         for v in verts.chunks_exact_mut(FLOATS_PER_VERTEX) {
-            if scene::mesh::mat::is_facade(v[8]) {
-                v[8] = scene::mesh::mat::WALL;
+            if mat::is_facade(v[8]) {
+                v[8] = mat::WALL;
                 v[6] = 0.5;
+            } else if v[8] == mat::WATER {
+                v[8] = mat::GLASS;
+            } else if newer(v[8]) {
+                v[8] = mat::GROUND;
             }
         }
         remapped = MeshData { verts, ..m.clone() };

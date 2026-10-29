@@ -4,6 +4,28 @@
 //! a wheel's two axle nodes, are kept rigid and spun by the renderer instead.
 
 use crate::dae::{Dae, SubMesh};
+use crate::shape::Shape;
+
+/// A mesh file of a mod: Collada text or BeamNG's binary shape (.cdae / .dts).
+pub enum MeshFile {
+    Dae(Dae),
+    Shape(Shape),
+}
+
+impl MeshFile {
+    pub fn has(&self, name: &str) -> bool {
+        match self {
+            MeshFile::Dae(d) => d.node(name).is_some(),
+            MeshFile::Shape(s) => s.has(name),
+        }
+    }
+    pub fn mesh(&self, name: &str) -> Result<Vec<SubMesh>, String> {
+        match self {
+            MeshFile::Dae(d) => d.mesh(name),
+            MeshFile::Shape(s) => s.objects.get(name).cloned().ok_or_else(|| format!("mesh '{name}' not in the shape")),
+        }
+    }
+}
 use crate::model::{to_ours, Model};
 use crate::vehicle::JbeamVehicle;
 use phys::math::{v3, V3};
@@ -29,6 +51,21 @@ pub struct FlexPart {
     pub wheel: Option<usize>,
     /// nodes this part depends on (for "has it changed" checks)
     pub nodes: Vec<u32>,
+    /// BeamNG damage material swap: when `group` triggers, submeshes using `base` switch to `damaged`
+    pub swap: Option<MaterialSwap>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterialSwap {
+    pub group: String,
+    pub base: String,
+    pub damaged: String,
+}
+
+/// BeamNG's placeholder materials that draw nothing ("invis", "glass_invisible", "null").
+pub fn is_invisible_material(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.contains("invis") || n == "null" || n == "nodraw"
 }
 
 /// frame vector n for an (e1, e2) pair: unit normal scaled to the edge size, so it stretches with the part
@@ -107,7 +144,7 @@ fn to_ours_f(p: [f32; 3]) -> V3 {
 
 /// Build all flexbodies of an assembled vehicle from its .dae files. Positions are converted to the engine frame
 /// and to the vehicle's rest shape (same offsets as `JbeamVehicle` node rest positions).
-pub fn build(m: &Model, v: &JbeamVehicle, daes: &[Dae]) -> (Vec<FlexPart>, Vec<String>) {
+pub fn build(m: &Model, v: &JbeamVehicle, daes: &[MeshFile]) -> (Vec<FlexPart>, Vec<String>) {
     let mut notes = Vec::new();
     // rest positions of the vehicle nodes (engine frame, ground at z = 0 under the wheels)
     let rest: Vec<V3> = v.body.nodes.iter().map(|n| n.rest).collect();
@@ -120,7 +157,11 @@ pub fn build(m: &Model, v: &JbeamVehicle, daes: &[Dae]) -> (Vec<FlexPart>, Vec<S
         let Some(mesh) = r.str("mesh") else { continue };
         let part = &m.asm.parts[pi];
         let groups = r.strings("[group]");
-        let Some(dae) = daes.iter().find(|d| d.node(mesh).is_some()) else {
+        let swap = match (r.str("deformGroup"), r.str("deformMaterialBase"), r.str("deformMaterialDamaged")) {
+            (Some(g), Some(b), Some(d)) if !g.is_empty() && !b.is_empty() => Some(MaterialSwap { group: g.to_string(), base: b.to_string(), damaged: d.to_string() }),
+            _ => None,
+        };
+        let Some(dae) = daes.iter().find(|d| d.has(mesh)) else {
             missing += 1;
             continue;
         };
@@ -171,7 +212,7 @@ pub fn build(m: &Model, v: &JbeamVehicle, daes: &[Dae]) -> (Vec<FlexPart>, Vec<S
         let node_ids: HashSet<u32> = cand.iter().map(|c| c.0).collect();
         let wheel = wheel_nodes.iter().position(|w| !node_ids.is_empty() && node_ids.is_subset(w));
         if let Some(wi) = wheel {
-            parts.push(FlexPart { mesh: mesh.to_string(), submeshes: subs, binds: Vec::new(), wheel: Some(wi), nodes: node_ids.into_iter().collect() });
+            parts.push(FlexPart { mesh: mesh.to_string(), submeshes: subs, binds: Vec::new(), wheel: Some(wi), nodes: node_ids.into_iter().collect(), swap });
             continue;
         }
         if cand.len() < 3 {
@@ -204,7 +245,7 @@ pub fn build(m: &Model, v: &JbeamVehicle, daes: &[Dae]) -> (Vec<FlexPart>, Vec<S
         if unbound > 0 {
             notes.push(format!("{mesh}: {unbound} vertices without a node frame"));
         }
-        parts.push(FlexPart { mesh: mesh.to_string(), submeshes: subs, binds, wheel: None, nodes: used.into_iter().collect() });
+        parts.push(FlexPart { mesh: mesh.to_string(), submeshes: subs, binds, wheel: None, nodes: used.into_iter().collect(), swap });
     }
     if missing > 0 {
         notes.push(format!("{missing} flexbody meshes are not in the mod's .dae files (BeamNG common parts)"));

@@ -32,6 +32,25 @@ impl Library {
         lib
     }
 
+    /// Add the parts of another archive (BeamNG's common.zip) that this library does not have yet.
+    /// Returns how many parts were added.
+    pub fn add_zip_fallback<R: Read + Seek>(&mut self, z: &mut Zip<R>) -> usize {
+        let mut other = Library::from_zip(z);
+        let before = self.parts.len();
+        let mut names: Vec<String> = other.parts.keys().cloned().collect();
+        names.sort();
+        for n in names {
+            if self.parts.contains_key(&n) {
+                continue;
+            }
+            let def = other.parts.remove(&n).unwrap();
+            let ty = def.body.get("slotType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            self.by_type.entry(ty).or_default().push(n.clone());
+            self.parts.insert(n, def);
+        }
+        self.parts.len() - before
+    }
+
     pub fn add_file(&mut self, file: &str, text: &str) {
         if text.trim().is_empty() {
             self.warnings.push(format!("{file}: empty file"));

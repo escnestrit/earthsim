@@ -20,6 +20,11 @@ pub mod mat {
     pub const TRUNK: f32 = 11.0;
     pub const TAILLIGHT: f32 = 12.0;
     pub const RIM: f32 = 13.0;
+    /// ground cover
+    pub const GRASS: f32 = 14.0;
+    pub const WATER: f32 = 15.0;
+    pub const SAND: f32 = 16.0;
+    pub const FOREST_FLOOR: f32 = 17.0;
     /// Facade styles (walls with window rows); the old OpenGL renderer draws them all as WALL.
     pub const WALL_PLASTER: f32 = 20.0;
     pub const WALL_BRICK: f32 = 21.0;
@@ -227,6 +232,30 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
 
     if ground {
         out.push(ground_mesh(sc.extent() + 3000.0));
+    }
+
+    // ground cover, under sidewalks and roads (water a little above grass where they overlap)
+    let mut kinds: Vec<crate::model::AreaKind> = sc.areas.iter().map(|a| a.kind).collect();
+    kinds.sort_by_key(|k| *k as u8);
+    kinds.dedup();
+    for k in kinds {
+        let mut am = Mb::default();
+        let (z, off) = if k == crate::model::AreaKind::Water { (0.006, -0.75) } else { (0.004, -0.5) };
+        for a in sc.areas.iter().filter(|a| a.kind == k) {
+            for t in &a.tris {
+                let p = t.map(|i| {
+                    let q = a.ring[i as usize];
+                    [q[0], q[1], z]
+                });
+                // counter-clockwise from above whatever the ring orientation
+                let up = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]) > 0.0;
+                let (b, c) = if up { (p[1], p[2]) } else { (p[2], p[1]) };
+                for q in [p[0], b, c] {
+                    am.v(q, [0.0, 0.0, 1.0], q[0] / 4.0, q[1] / 4.0, k.material());
+                }
+            }
+        }
+        out.push(MeshData { name: format!("area_{}", k.name()), verts: am.a, polygon_offset: off, casts_shadow: false, colors: Vec::new() });
     }
 
     // sidewalks

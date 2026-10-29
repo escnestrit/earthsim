@@ -11,6 +11,54 @@ pub trait RangeSource: Send + Sync {
     fn describe(&self) -> String;
 }
 
+impl RangeSource for Box<dyn RangeSource> {
+    fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>, String> {
+        (**self).read(offset, len)
+    }
+    fn describe(&self) -> String {
+        (**self).describe()
+    }
+}
+
+/// Byte ranges cached as files (`dir/<hash>.bin`, keyed by source name + range): map tiles once seen work offline.
+pub struct CachedRange<S: RangeSource> {
+    pub inner: S,
+    pub dir: std::path::PathBuf,
+}
+
+impl<S: RangeSource> CachedRange<S> {
+    fn path(&self, offset: u64, len: u64) -> std::path::PathBuf {
+        // FNV-1a over the key
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in format!("{}|{offset}|{len}", self.inner.describe()).bytes() {
+            h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+        }
+        self.dir.join(format!("{h:016x}.bin"))
+    }
+}
+
+impl<S: RangeSource> RangeSource for CachedRange<S> {
+    fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>, String> {
+        let p = self.path(offset, len);
+        if let Ok(b) = std::fs::read(&p) {
+            if b.len() as u64 == len || offset == 0 {
+                return Ok(b);
+            }
+        }
+        let b = self.inner.read(offset, len)?;
+        if std::fs::create_dir_all(&self.dir).is_ok() {
+            let tmp = p.with_extension("tmp");
+            if std::fs::write(&tmp, &b).is_ok() {
+                let _ = std::fs::rename(&tmp, &p);
+            }
+        }
+        Ok(b)
+    }
+    fn describe(&self) -> String {
+        format!("{} (cached)", self.inner.describe())
+    }
+}
+
 pub struct FileSource(pub std::path::PathBuf);
 
 impl RangeSource for FileSource {
@@ -237,6 +285,28 @@ impl<S: RangeSource> PmTiles<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_ranges_are_served_from_disk() {
+        struct Counting(std::sync::atomic::AtomicUsize);
+        impl RangeSource for Counting {
+            fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok((offset..offset + len).map(|i| i as u8).collect())
+            }
+            fn describe(&self) -> String {
+                "counting".into()
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("earthsim_cr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = CachedRange { inner: Counting(Default::default()), dir: dir.clone() };
+        assert_eq!(c.read(10, 4).unwrap(), vec![10, 11, 12, 13]);
+        assert_eq!(c.read(10, 4).unwrap(), vec![10, 11, 12, 13]);
+        assert_eq!(c.read(11, 4).unwrap(), vec![11, 12, 13, 14]);
+        assert_eq!(c.inner.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tile_ids_match_spec_table() {

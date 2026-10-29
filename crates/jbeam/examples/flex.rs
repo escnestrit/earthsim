@@ -7,7 +7,7 @@ fn main() {
     let m = model::build(assemble(&lib, "ravxa20", &HashMap::new()));
     let t0 = std::time::Instant::now();
     let names: Vec<String> = z.entries.iter().filter(|e| e.name.to_lowercase().ends_with(".dae")).map(|e| e.name.clone()).collect();
-    let mut daes = Vec::new();
+    let mut daes: Vec<Dae> = Vec::new();
     for n in &names {
         let bytes = z.read_name(n).unwrap();
         daes.push(Dae::parse(String::from_utf8_lossy(&bytes).into_owned()).unwrap());
@@ -34,7 +34,8 @@ fn main() {
     println!("triangles {tris}, vertices {verts}, parse {:.2} s", t1.elapsed().as_secs_f64());
     let veh = jbeam::vehicle::JbeamVehicle::from_model(&m).unwrap();
     let t2 = std::time::Instant::now();
-    let (parts, notes) = jbeam::flex::build(&m, &veh, &daes);
+    let files: Vec<jbeam::flex::MeshFile> = daes.into_iter().map(jbeam::flex::MeshFile::Dae).collect();
+    let (parts, notes) = jbeam::flex::build(&m, &veh, &files);
     println!("bound {} parts ({} rigid wheels) in {:.2} s; notes {:?}", parts.len(), parts.iter().filter(|p| p.wheel.is_some()).count(), t2.elapsed().as_secs_f64(), notes);
     // skinning cost at rest
     let rest: Vec<phys::math::V3> = veh.body.nodes.iter().map(|n| n.rest).collect();

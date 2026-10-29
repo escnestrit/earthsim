@@ -65,6 +65,49 @@ pub struct Scene {
     pub roads: Vec<Road>,
     pub buildings: Vec<Building>,
     pub trees: Vec<[f64; 2]>,
+    /// ground cover: water, grass, parks, forest floor, sand (flat, drawn under the roads)
+    pub areas: Vec<Area>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AreaKind {
+    Water,
+    Grass,
+    Park,
+    Forest,
+    Sand,
+}
+
+impl AreaKind {
+    pub fn material(self) -> f32 {
+        use crate::mesh::mat;
+        match self {
+            AreaKind::Water => mat::WATER,
+            AreaKind::Grass | AreaKind::Park => mat::GRASS,
+            AreaKind::Forest => mat::FOREST_FLOOR,
+            AreaKind::Sand => mat::SAND,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            AreaKind::Water => "water",
+            AreaKind::Grass => "grass",
+            AreaKind::Park => "park",
+            AreaKind::Forest => "forest",
+            AreaKind::Sand => "sand",
+        }
+    }
+    pub fn parse(s: &str) -> Option<AreaKind> {
+        [AreaKind::Water, AreaKind::Grass, AreaKind::Park, AreaKind::Forest, AreaKind::Sand].into_iter().find(|k| k.name() == s)
+    }
+}
+
+/// A flat ground-cover polygon in local metres, already triangulated.
+#[derive(Clone, Debug)]
+pub struct Area {
+    pub kind: AreaKind,
+    pub ring: Vec<[f64; 2]>,
+    pub tris: Vec<[u32; 3]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -164,6 +207,14 @@ impl Scene {
             let a = t.as_arr().ok_or("tree must be [x,y]")?;
             if a.len() >= 2 {
                 sc.trees.push([num(&a[0])?, num(&a[1])?]);
+            }
+        }
+        for a in j.get("areas").and_then(|v| v.as_arr()).unwrap_or(&[]) {
+            let Some(kind) = a.get("kind").and_then(|v| v.as_str()).and_then(AreaKind::parse) else { continue };
+            let ring = pts2(a.get("ring").ok_or("area without ring")?)?;
+            let tris: Vec<[u32; 3]> = a.get("tris").and_then(|v| v.as_arr()).unwrap_or(&[]).chunks_exact(3).map(|c| [0, 1, 2].map(|k| c[k].as_f64().unwrap_or(0.0) as u32)).collect();
+            if tris.iter().flatten().all(|&i| (i as usize) < ring.len()) {
+                sc.areas.push(Area { kind, ring, tris });
             }
         }
         sc.meta.n_roads = sc.roads.len();

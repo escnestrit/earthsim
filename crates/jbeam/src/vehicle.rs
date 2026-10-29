@@ -77,6 +77,87 @@ pub struct JbeamVehicle {
     pub weak: Vec<bool>,
     /// body-frame orientation of the undamaged rest shape (refNodes need not be exactly axis-aligned)
     q_rest: Quat,
+    /// driver's eye for the interior camera (from `camerasInternal`, else estimated)
+    pub eye: Eye,
+    /// BeamNG breakGroups / deformGroups (glass shattering, parts letting go)
+    pub groups: DamageGroups,
+}
+
+/// `breakGroup`: when one beam of a group breaks, the whole group goes (hinges, mounts, glass).
+/// `deformGroup` + `deformationTriggerRatio`: a beam deformed past the ratio (or broken) triggers its group;
+/// flexbodies switch `deformMaterialBase` -> `deformMaterialDamaged` (cracked glass, hidden straps).
+#[derive(Clone, Debug, Default)]
+pub struct DamageGroups {
+    pub names: Vec<String>,
+    pub triggered: Vec<bool>,
+    /// (beam, group, ratio)
+    triggers: Vec<(usize, u32, f32)>,
+    /// beams of each break group
+    break_groups: Vec<(String, Vec<usize>)>,
+    pub broken_groups: Vec<bool>,
+    /// bumped whenever a group triggers or breaks (cheap change detection for the renderer)
+    pub generation: u32,
+}
+
+impl DamageGroups {
+    pub fn is_triggered(&self, name: &str) -> bool {
+        self.names.iter().position(|n| n == name).is_some_and(|i| self.triggered[i])
+    }
+    pub fn triggered_names(&self) -> Vec<String> {
+        self.names.iter().zip(&self.triggered).filter(|(_, t)| **t).map(|(n, _)| n.clone()).collect()
+    }
+    pub fn broken_group_names(&self) -> Vec<String> {
+        self.break_groups.iter().zip(&self.broken_groups).filter(|(_, b)| **b).map(|(g, _)| g.0.clone()).collect()
+    }
+    pub fn broken_group_count(&self) -> usize {
+        self.broken_groups.iter().filter(|b| **b).count()
+    }
+    fn reset(&mut self) {
+        self.triggered.iter_mut().for_each(|t| *t = false);
+        self.broken_groups.iter_mut().for_each(|t| *t = false);
+        self.generation = self.generation.wrapping_add(1);
+    }
+    fn update(&mut self, body: &mut SoftBody) {
+        for gi in 0..self.break_groups.len() {
+            if !self.broken_groups[gi] && self.break_groups[gi].1.iter().any(|&b| body.beams[b].broken) {
+                for &b in &self.break_groups[gi].1 {
+                    body.beams[b].broken = true;
+                }
+                self.broken_groups[gi] = true;
+                self.generation = self.generation.wrapping_add(1);
+            }
+        }
+        for &(bi, g, ratio) in &self.triggers {
+            if self.triggered[g as usize] {
+                continue;
+            }
+            let b = &body.beams[bi];
+            if b.broken || (b.rest - b.rest0).abs() > ratio as f64 * b.rest0 {
+                self.triggered[g as usize] = true;
+                self.generation = self.generation.wrapping_add(1);
+            }
+        }
+    }
+}
+
+/// Interior camera: eye position in the rest shape, carried by the centroid of `refs` (the nodes BeamNG binds it to).
+#[derive(Clone, Debug)]
+pub struct Eye {
+    pub rest: V3,
+    pub fov_deg: f64,
+    pub refs: Vec<usize>,
+    /// true when the mod declares it (`camerasInternal` "driver"/"dash"), false when estimated from the body size
+    pub from_mod: bool,
+}
+
+/// The mod's driver camera: first `camerasInternal` row of type "driver", else "dash", else any `isInside` one.
+pub fn eye_from_model(m: &Model) -> Option<Eye> {
+    let rows = m.table("camerasInternal");
+    let pick = |want: &dyn Fn(&crate::table::Row) -> bool| rows.iter().map(|(_, r)| r).find(|r| want(r)).cloned();
+    let r = pick(&|r| r.str("type") == Some("driver")).or_else(|| pick(&|r| r.str("type") == Some("dash"))).or_else(|| pick(&|r| r.flag("isInside")))?;
+    let p = to_ours([r.num_or("x", 0.0), r.num_or("y", 0.0), r.num_or("z", 1.2)]);
+    let refs: Vec<usize> = (1..=8).filter_map(|i| idx(m, r.str(&format!("id{i}")))).collect();
+    Some(Eye { rest: v3(p[0], p[1], p[2]), fov_deg: r.num_or("fov", 60.0).clamp(30.0, 110.0), refs, from_mod: true })
 }
 
 fn idx(m: &Model, name: Option<&str>) -> Option<usize> {
@@ -150,10 +231,31 @@ impl JbeamVehicle {
                 }
             }
         }
+        let mut groups = DamageGroups::default();
+        let mut bg_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for b in &m.beams {
             let k = b.spring();
             let c = b.damp();
             let bi = body.add_beam(b.a, b.b, k, c);
+            for name in b.row.strings("breakGroup") {
+                let gi = *bg_index.entry(name.clone()).or_insert_with(|| {
+                    groups.break_groups.push((name.clone(), Vec::new()));
+                    groups.break_groups.len() - 1
+                });
+                groups.break_groups[gi].1.push(bi);
+            }
+            if let Some(ratio) = b.row.num("deformationTriggerRatio") {
+                for name in b.row.strings("deformGroup") {
+                    let gi = match groups.names.iter().position(|n| *n == name) {
+                        Some(i) => i,
+                        None => {
+                            groups.names.push(name);
+                            groups.names.len() - 1
+                        }
+                    };
+                    groups.triggers.push((bi, gi as u32, ratio.max(0.0) as f32));
+                }
+            }
             let be = &mut body.beams[bi];
             let pre = b.row.num_or("beamPrecompression", 1.0);
             if pre > 0.0 && (pre - 1.0).abs() > 1e-9 {
@@ -344,7 +446,14 @@ impl JbeamVehicle {
             steer_cmd: 0.0,
             q_rest: Quat::from_yaw(0.0),
             weak: Vec::new(),
+            eye: eye_from_model(m).unwrap_or(Eye { rest: V3::ZERO, fov_deg: 60.0, refs: Vec::new(), from_mod: false }),
+            groups,
         };
+        v.groups.triggered = vec![false; v.groups.names.len()];
+        v.groups.broken_groups = vec![false; v.groups.break_groups.len()];
+        if !v.groups.names.is_empty() || !v.groups.break_groups.is_empty() {
+            v.notes.push(format!("damage groups: {} break groups, {} deform groups", v.groups.break_groups.len(), v.groups.names.len()));
+        }
         let mut deg = vec![0usize; v.body.nodes.len()];
         for b in &v.body.beams {
             deg[b.a] += 1;
@@ -361,6 +470,25 @@ impl JbeamVehicle {
             n.p.z -= bottom;
             n.rest = n.p;
         }
+        if v.eye.from_mod {
+            v.eye.rest.z -= bottom;
+        } else {
+            // no camera in the mod: left seat, a little behind the middle, 1.15 m up (or 0.35 m under the roof)
+            let (mut lo, mut hi) = (V3::splat(f64::MAX), V3::splat(f64::MIN));
+            for n in &v.body.nodes {
+                lo = lo.min(n.p);
+                hi = hi.max(n.p);
+            }
+            let len = hi.x - lo.x;
+            v.eye.rest = v3(lo.x + 0.45 * len, (lo.y + hi.y) / 2.0 + 0.37, (hi.z - 0.35).min(1.15).max(0.8));
+            v.notes.push("interior camera: none in mod, eye position estimated".into());
+        }
+        if v.eye.refs.is_empty() {
+            // carried by the nodes nearest to the eye
+            let mut d: Vec<(f64, usize)> = v.body.nodes.iter().enumerate().filter(|(i, _)| !v.weak[*i]).map(|(i, n)| ((n.p - v.eye.rest).len(), i)).collect();
+            d.sort_by(|a, b| a.0.total_cmp(&b.0));
+            v.eye.refs = d.iter().take(6).map(|x| x.1).collect();
+        }
         v.refresh_frame();
         v.q_rest = v.q;
         Ok(v)
@@ -368,6 +496,22 @@ impl JbeamVehicle {
 
     pub fn total_mass(&self) -> f64 {
         self.body.total_mass()
+    }
+
+    /// Interior camera pose now: eye position (world), body rotation, vertical fov in degrees.
+    /// The eye follows its reference nodes, so a crushed roof or pillar moves it.
+    pub fn eye_pose(&self) -> (V3, Quat, f64) {
+        let r = self.body_rotation();
+        if self.eye.refs.is_empty() {
+            return (self.pos, r, self.eye.fov_deg);
+        }
+        let (mut now, mut rest) = (V3::ZERO, V3::ZERO);
+        for &i in &self.eye.refs {
+            now += self.body.nodes[i].p;
+            rest += self.body.nodes[i].rest;
+        }
+        let k = 1.0 / self.eye.refs.len() as f64;
+        (now * k + r.rotate(self.eye.rest - rest * k), r, self.eye.fov_deg)
     }
 
     pub fn axes(&self) -> (V3, V3, V3) {
@@ -430,6 +574,7 @@ impl JbeamVehicle {
             b.broken = false;
             b.rest = b.rest0;
         }
+        self.groups.reset();
         for p in self.body.pins.iter_mut() {
             p.broken = false;
         }
@@ -488,10 +633,44 @@ impl JbeamVehicle {
         self.body.nodes.iter().map(|n| (n.p - (r.rotate(n.rest - rc) + self.pos)).len()).collect()
     }
 
+    /// Nodes still joined to the body (through unbroken beams or pins, starting from the body frame's reference
+    /// node). Parts that came off are not.
+    pub fn attached(&self) -> Vec<bool> {
+        let n = self.body.nodes.len();
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for b in self.body.beams.iter().filter(|b| !b.broken) {
+            adj[b.a].push(b.b);
+            adj[b.b].push(b.a);
+        }
+        for p in self.body.pins.iter().filter(|p| !p.broken) {
+            adj[p.a].push(p.b);
+            adj[p.b].push(p.a);
+        }
+        let mut seen = vec![false; n];
+        let mut stack = vec![self.frame_nodes[0]];
+        seen[self.frame_nodes[0]] = true;
+        while let Some(i) = stack.pop() {
+            for &j in &adj[i] {
+                if !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        seen
+    }
+
+    /// (deepest deformation of the parts still attached (m), broken beams). Loose pieces lying around are not
+    /// deformation; `detached_nodes` counts them.
     pub fn damage(&self) -> (f64, usize) {
         let dev = self.deviations();
-        let worst = dev.iter().zip(&self.weak).filter(|(_, w)| !**w).map(|(d, _)| *d).fold(0.0, f64::max);
+        let att = self.attached();
+        let worst = dev.iter().zip(&self.weak).zip(&att).filter(|((_, w), a)| !**w && **a).map(|((d, _), _)| *d).fold(0.0, f64::max);
         (worst, self.body.beams.iter().filter(|b| b.broken).count())
+    }
+
+    pub fn detached_nodes(&self) -> usize {
+        self.attached().iter().zip(&self.weak).filter(|(a, w)| !**a && !**w).count()
     }
 
     pub fn step(&mut self, dt: f64, inp: &Input, ground: &dyn Ground, world: &dyn Obstacles) {
@@ -503,6 +682,7 @@ impl JbeamVehicle {
             impact = impact.max(self.body.peak_world);
         }
         self.impact = if impact > 3000.0 { 1000.0 } else { 0.0 };
+        self.groups.update(&mut self.body);
         self.refresh_frame();
         let a = (self.vel - self.last_vel) / dt - v3(0.0, 0.0, -9.81);
         self.last_vel = self.vel;
@@ -797,5 +977,74 @@ mod tests {
         assert!(v.vel.len() < 0.3, "still moving at {:.2} m/s", v.vel.len());
         let (_, broken) = v.damage();
         assert_eq!(broken, 0);
+    }
+
+    #[test]
+    fn interior_camera_from_mod_follows_the_body() {
+        // no camerasInternal: estimated eye inside the box, carried along when the car moves
+        let mut v = vehicle();
+        assert!(!v.eye.from_mod);
+        let (e, _, fov) = v.eye_pose();
+        assert!(e.x.abs() < 1.2 && e.y > 0.0 && e.z > 0.5 && e.z < 1.2, "estimated eye {e:?}");
+        assert_eq!(fov, 60.0);
+        let g = FlatGround { grip: 1.0 };
+        v.place(100.0, 50.0, std::f64::consts::FRAC_PI_2, 0.0, &g);
+        let (e2, r, _) = v.eye_pose();
+        assert!((e2.x - 100.0).abs() < 1.0 && (e2.y - 50.0).abs() < 1.5, "eye after placing {e2:?}");
+        // facing +Y now: body forward rotated onto +Y
+        assert!(r.rotate(v3(1.0, 0.0, 0.0)).y > 0.99);
+
+        // the mod's "driver" camera row wins (jbeam x = left, y = back)
+        let src = synthetic_jbeam().replacen(
+            r#""refNodes""#,
+            r#""camerasInternal":[["type","x","y","z","fov","id1:","id2:","id3:"],["dash",0.1,0.0,1.0,50,"cfllo","cfrlo","crllo"],["driver",0.35,0.2,0.75,58,"cfllo","cfrlo","crllo",{"isInside":true}]],"refNodes""#,
+            1,
+        );
+        let mut lib = Library::default();
+        lib.add_file("car.jbeam", &src);
+        let v = JbeamVehicle::from_model(&build(assemble(&lib, "car", &HashMap::new()))).unwrap();
+        assert!(v.eye.from_mod);
+        assert_eq!(v.eye.fov_deg, 58.0);
+        assert_eq!(v.eye.refs.len(), 3);
+        assert!((v.eye.rest.x + 0.2).abs() < 1e-9 && (v.eye.rest.y - 0.35).abs() < 1e-9);
+    }
+
+    #[test]
+    fn break_groups_go_together_and_deform_groups_trigger() {
+        // a mirror on two weak mounts (one break group) and a "glass" beam that triggers a deform group
+        let src = synthetic_jbeam().replacen(
+            r#"["sl","cfllo"]"#,
+            r#"["sl","cfllo"],
+               {"beamSpring":200000,"beamDamp":50,"precompressionRange":0,"beamStrength":4000,"breakGroup":"mirror_L"},["mir","cflhi"],["mir","cfllo"],
+               {"beamStrength":"FLT_MAX","breakGroup":"","beamDeform":2000,"deformGroup":"windshield_break","deformationTriggerRatio":0.05},["mir","crlhi"]"#,
+            1,
+        ).replacen(r#"["sl",0.0,0.0,0.55]"#, r#"["sl",0.0,0.0,0.55],["mir",0.9,-1.0,0.9]"#, 1);
+        let mut lib = Library::default();
+        lib.add_file("car.jbeam", &src);
+        let mut v = JbeamVehicle::from_model(&build(assemble(&lib, "car", &HashMap::new()))).unwrap();
+        assert_eq!(v.groups.break_groups.len(), 1);
+        assert_eq!(v.groups.break_groups[0].1.len(), 2);
+        assert_eq!(v.groups.names, vec!["windshield_break".to_string()]);
+        let g = FlatGround { grip: 1.0 };
+        let w = StaticWorld::new(10.0);
+        v.place(0.0, 0.0, 0.0, 0.0, &g);
+        let inp = Input::default();
+        for _ in 0..200 {
+            v.step(0.001, &inp, &g, &w);
+        }
+        assert!(!v.groups.triggered[0] && !v.groups.broken_groups[0], "settling must not damage anything: {:?} {:?} {:?}", v.groups.triggered, v.groups.broken_groups, v.groups.break_groups[0].1.iter().map(|&b| (v.body.beams[b].k * ((v.body.nodes[v.body.beams[b].a].p - v.body.nodes[v.body.beams[b].b].p).len() - v.body.beams[b].rest))).collect::<Vec<_>>());
+        // yank the mirror outwards: one mount fails, the group takes the other with it; the glass beam deforms
+        let mi = v.names.iter().position(|n| n == "mir").unwrap();
+        let gen0 = v.groups.generation;
+        for _ in 0..300 {
+            v.body.nodes[mi].v.y += 2.0;
+            v.step(0.001, &inp, &g, &w);
+        }
+        assert!(v.groups.broken_groups[0], "mounts must have broken");
+        assert!(v.groups.break_groups[0].1.iter().all(|&b| v.body.beams[b].broken), "the whole break group goes");
+        assert!(v.groups.is_triggered("windshield_break"));
+        assert!(v.groups.generation != gen0);
+        v.place(0.0, 0.0, 0.0, 0.0, &g);
+        assert!(!v.groups.is_triggered("windshield_break") && v.groups.broken_group_count() == 0, "repair resets the groups");
     }
 }

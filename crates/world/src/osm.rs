@@ -44,6 +44,8 @@ pub struct TileRaw {
     pub roads: Vec<RawRoad>,
     pub buildings: Vec<RawBuilding>,
     pub trees: Vec<(f64, f64)>,
+    /// ground cover clipped to the tile
+    pub areas: Vec<crate::areas::RawArea>,
     pub elements: usize,
 }
 
@@ -51,7 +53,10 @@ pub fn overpass_query(b: &Bounds) -> String {
     let hw: Vec<&str> = DRIVABLE.iter().map(|d| d.0).collect();
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);
     format!(
-        "[out:json][timeout:30];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb}););out geom;",
+        "[out:json][timeout:30];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb});\
+         way[\"natural\"~\"^(water|wood|scrub|heath|grassland|wetland|sand|beach)$\"]({bb});\
+         way[\"landuse\"~\"^(forest|grass|meadow|village_green|recreation_ground|cemetery|reservoir|basin|allotments|orchard)$\"]({bb});\
+         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb}););out geom;",
         hw.join("|")
     )
 }
@@ -116,7 +121,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
     }
     let mut pend: Vec<Pending> = Vec::new();
     let mut node_use: HashMap<i64, u32> = HashMap::new();
-    let mut out = TileRaw { tile, roads: Vec::new(), buildings: Vec::new(), trees: Vec::new(), elements: elements.len() };
+    let mut out = TileRaw { tile, roads: Vec::new(), buildings: Vec::new(), trees: Vec::new(), areas: Vec::new(), elements: elements.len() };
 
     for el in elements {
         let ty = el.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -151,6 +156,14 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                         *node_use.entry(*n).or_default() += 1;
                     }
                     pend.push(Pending { cls: hw.to_string(), width, from_tag, name: tg("name").unwrap_or("").to_string(), pts, nodes });
+                } else if let Some(kind) = crate::areas::area_kind(&tags) {
+                    // closed ways only (multipolygon relations come through Overture, not Overpass)
+                    if pts.len() >= 4 && pts.first() == pts.last() {
+                        let r = crate::areas::clip_to_bounds(&pts, &b);
+                        if r.len() >= 3 {
+                            out.areas.push(crate::areas::RawArea { kind, rings: vec![r] });
+                        }
+                    }
                 } else if tg("building").is_some() {
                     if pts.len() < 4 || pts.first() != pts.last() {
                         continue;
@@ -162,6 +175,21 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                     }
                     let id = el.get("id").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
                     out.buildings.push(RawBuilding { id, tags, ring: pts });
+                }
+            }
+            // Overture polygons with holes (see overture::to_overpass)
+            "earthsim_area" => {
+                let Some(kind) = crate::areas::area_kind(&tags) else { continue };
+                let rings: Vec<Vec<(f64, f64)>> = el
+                    .get("rings")
+                    .and_then(|r| r.as_arr())
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|r| r.as_arr().unwrap_or(&[]).iter().filter_map(|p| Some((p.get("lat")?.as_f64()?, p.get("lon")?.as_f64()?))).collect::<Vec<_>>())
+                    .map(|r: Vec<(f64, f64)>| crate::areas::clip_to_bounds(&r, &b))
+                    .collect();
+                if rings.first().is_some_and(|r| r.len() >= 3) {
+                    out.areas.push(crate::areas::RawArea { kind, rings: rings.into_iter().filter(|r| r.len() >= 3).collect() });
                 }
             }
             _ => {}
@@ -188,6 +216,13 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
     Ok(out)
 }
 
+fn seg_dist(x: f64, y: f64, a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 { (((x - a[0]) * dx + (y - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (x - a[0] - t * dx).hypot(y - a[1] - t * dy)
+}
+
 /// Convert raw tile data to a scene in `frame` (east/north metres). Cheap enough to redo after a re-base.
 pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
     let mut sc = Scene::default();
@@ -210,6 +245,30 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
     for t in &raw.trees {
         sc.trees.push(loc(t.0, t.1));
     }
+    // ground cover, and trees in forests and parks kept off the roads
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, r) in sc.roads.iter().enumerate() {
+        for p in &r.pts {
+            grid.entry(((p[0] / 25.0).floor() as i64, (p[1] / 25.0).floor() as i64)).or_default().push(i);
+        }
+    }
+    let roads = &sc.roads;
+    let on_road = |x: f64, y: f64| {
+        let (ci, cj) = ((x / 25.0).floor() as i64, (y / 25.0).floor() as i64);
+        (ci - 1..=ci + 1).any(|i| {
+            (cj - 1..=cj + 1).any(|j| {
+                grid.get(&(i, j)).is_some_and(|v| {
+                    v.iter().any(|&k| {
+                        let r = &roads[k];
+                        r.pts.windows(2).any(|w| seg_dist(x, y, w[0], w[1]) < r.width / 2.0 + 2.5)
+                    })
+                })
+            })
+        })
+    };
+    let (areas, area_trees) = crate::areas::build_areas(&raw.areas, frame, &on_road);
+    sc.areas = areas;
+    sc.trees.extend(area_trees);
     let mut sv: Vec<_> = status.into_iter().collect();
     sv.sort();
     let mut ov: Vec<_> = origins.into_iter().collect();
