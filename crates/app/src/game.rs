@@ -187,6 +187,27 @@ impl Game {
         self.sync_from_soft_if_on();
     }
 
+    /// Crash test: a 3 m wide, 3 m high concrete block `gap` metres ahead of the bumper, the car facing it (+X)
+    /// at `speed` m/s.
+    pub fn crash_test(&mut self, speed: f64, gap: f64) {
+        let (x, y) = (self.car.pos.x, self.car.pos.y);
+        let front = match self.jcar.as_ref() {
+            Some(j) => {
+                let rc = j.rest_com();
+                j.body.nodes.iter().map(|n| n.rest.x - rc.x).fold(f64::MIN, f64::max)
+            }
+            None => 2.3,
+        };
+        let wx = x + front + gap;
+        self.world.add_poly(vec![(wx, y - 1.5), (wx + 1.0, y - 1.5), (wx + 1.0, y + 1.5), (wx, y + 1.5)]);
+        let mut mb = scene::mesh::Mb::default();
+        mb.box_(wx, y - 1.5, 0.0, wx + 1.0, y + 1.5, 3.0, &[scene::mesh::mat::SIDEWALK]);
+        let mesh = MeshData { name: "crash_block".into(), verts: mb.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() };
+        self.render_ops.push(RenderOp::AddTile(u64::MAX - 1, Arc::new(vec![mesh])));
+        self.place_car(x, y, 0.0, speed);
+        self.driver = Driver::new(self.car.p.steer_max);
+    }
+
     /// Drive a BeamNG vehicle mod instead of the built-in car.
     pub fn set_jbeam_car(&mut self, mut lv: jbeam::LoadedVehicle, name: &str) {
         self.jcar_visual = lv.visual.take();

@@ -109,6 +109,16 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
                 sim.g().update(0.02);
                 t += 0.02;
             }
+            // EARTHSIM_SHOT_CRASH=<km/h>: drive into a concrete block, let it settle, then capture
+            if let Some(kmh) = std::env::var("EARTHSIM_SHOT_CRASH").ok().and_then(|v| v.parse::<f64>().ok()) {
+                let mut g = sim.g();
+                g.crash_test(kmh / 3.6, 2.0);
+                let mut t = 0.0;
+                while t < 2.5 {
+                    g.update(0.02);
+                    t += 0.02;
+                }
+            }
         }
         let mut g = sim.g();
         g.update(1.0 / 60.0);
@@ -118,9 +128,16 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
             let left = phys::v3(-f.y, f.x, 0.0);
             let eye = match view.as_str() {
                 "front" => p + f * 6.0 + left * 2.5 + phys::v3(0.0, 0.0, 0.8),
+                "crash" => p + f * 2.2 + left * 4.2 + phys::v3(0.0, 0.0, 1.3),
+                "crashfront" => p + f * 4.6 + left * 3.4 + phys::v3(0.0, 0.0, 1.5),
                 _ => p + left * 5.5 + f * 1.5 + phys::v3(0.0, 0.0, 0.6),
             };
-            g.cam_override = Some(([eye.x as f32, eye.y as f32, eye.z as f32], [p.x as f32, p.y as f32, (p.z - 0.1) as f32], 50.0));
+            let tgt = match view.as_str() {
+                "crash" => p + f * 1.2,
+                "crashfront" => p + f * 1.9,
+                _ => p,
+            };
+            g.cam_override = Some(([eye.x as f32, eye.y as f32, eye.z as f32], [tgt.x as f32, tgt.y as f32, (tgt.z - 0.1) as f32], 50.0));
         }
     } else {
         sim.g().update(time.delta_secs_f64());
