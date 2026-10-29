@@ -22,7 +22,11 @@ struct Px {
     rough: f32,
     metal: f32,
     lit: f32,
+    /// relief for parallax mapping: 0 = proud (sills, pilasters), 0.1 = wall plane, up to 1 = deepest (glass)
+    depth: f32,
 }
+
+const WALL_D: f32 = 0.1;
 
 fn hash(a: u32, b: u32) -> f32 {
     let mut h = a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA77);
@@ -47,7 +51,7 @@ fn plaster(x: f32, y: f32, _: usize, _: usize) -> Px {
     let n = hash((x * 40.0) as u32, (y * 40.0) as u32) * 0.04;
     // cornice line at each floor slab
     let band = if y < 0.12 { 0.88 } else { 0.97 };
-    Px { c: [band - n, band - n, band - n], rough: 0.9, metal: 0.0, lit: 0.0 }
+    Px { c: [band - n, band - n, band - n], rough: 0.9, metal: 0.0, lit: 0.0, depth: WALL_D }
 }
 
 fn brick(x: f32, y: f32, _: usize, _: usize) -> Px {
@@ -58,9 +62,9 @@ fn brick(x: f32, y: f32, _: usize, _: usize) -> Px {
     let mortar = bx < 0.05 || by < 0.13;
     let v = hash(((x + off) / 0.25) as u32, course) * 0.18;
     if mortar {
-        Px { c: [1.25, 1.2, 1.1], rough: 0.95, metal: 0.0, lit: 0.0 }
+        Px { c: [1.25, 1.2, 1.1], rough: 0.95, metal: 0.0, lit: 0.0, depth: 0.22 }
     } else {
-        Px { c: [0.92 - v, 0.9 - v, 0.9 - v], rough: 0.85, metal: 0.0, lit: 0.0 }
+        Px { c: [0.92 - v, 0.9 - v, 0.9 - v], rough: 0.85, metal: 0.0, lit: 0.0, depth: WALL_D }
     }
 }
 
@@ -69,7 +73,7 @@ fn panel(x: f32, y: f32, bx: usize, by: usize) -> Px {
     let seam = x < 0.03 || y < 0.03;
     let n = hash(bx as u32 * 7 + (x * 8.0) as u32, by as u32 * 13 + (y * 8.0) as u32) * 0.06;
     let v = if seam { 0.55 } else { 0.95 - n };
-    Px { c: [v, v, v], rough: 0.92, metal: 0.0, lit: 0.0 }
+    Px { c: [v, v, v], rough: 0.92, metal: 0.0, lit: 0.0, depth: if seam { 0.35 } else { WALL_D } }
 }
 
 fn glass(x: f32, y: f32, _: usize, _: usize) -> Px {
@@ -77,24 +81,24 @@ fn glass(x: f32, y: f32, _: usize, _: usize) -> Px {
     let mull = (x / 1.5).fract() < 0.03 || y < 0.04;
     let spandrel = y < 0.7;
     if mull {
-        Px { c: [0.55, 0.57, 0.6], rough: 0.4, metal: 0.8, lit: 0.0 }
+        Px { c: [0.55, 0.57, 0.6], rough: 0.4, metal: 0.8, lit: 0.0, depth: WALL_D }
     } else if spandrel {
-        Px { c: [0.35, 0.38, 0.42], rough: 0.3, metal: 0.2, lit: 0.0 }
+        Px { c: [0.35, 0.38, 0.42], rough: 0.3, metal: 0.2, lit: 0.0, depth: WALL_D }
     } else {
-        Px { c: [0.20, 0.27, 0.33], rough: 0.06, metal: 0.0, lit: 1.0 }
+        Px { c: [0.20, 0.27, 0.33], rough: 0.06, metal: 0.0, lit: 1.0, depth: WALL_D }
     }
 }
 
 fn wood(_x: f32, y: f32, _: usize, by: usize) -> Px {
     let board = (y / 0.18).fract();
     let v = 0.9 - hash((y / 0.18) as u32, by as u32) * 0.15 - if board < 0.08 { 0.3 } else { 0.0 };
-    Px { c: [v, v, v], rough: 0.85, metal: 0.0, lit: 0.0 }
+    Px { c: [v, v, v], rough: 0.85, metal: 0.0, lit: 0.0, depth: WALL_D }
 }
 
 fn metal(x: f32, y: f32, _: usize, _: usize) -> Px {
     let rib = ((x / 0.2).fract() - 0.5).abs() * 2.0;
     let v = 0.82 + rib * 0.15 - if y < 0.05 { 0.2 } else { 0.0 };
-    Px { c: [v, v, v], rough: 0.45, metal: 0.6, lit: 0.0 }
+    Px { c: [v, v, v], rough: 0.45, metal: 0.6, lit: 0.0, depth: WALL_D }
 }
 
 fn tile_panel(x: f32, y: f32, bx: usize, by: usize) -> Px {
@@ -104,7 +108,7 @@ fn tile_panel(x: f32, y: f32, bx: usize, by: usize) -> Px {
     let grout = tx < 0.12 || ty < 0.12;
     let n = hash((x / 0.12) as u32 + bx as u32 * 97, (y / 0.12) as u32 + by as u32 * 89) * 0.08;
     let v = if seam { 0.5 } else if grout { 0.8 } else { 0.97 - n };
-    Px { c: [v, v, v], rough: if grout { 0.95 } else { 0.35 }, metal: 0.0, lit: 0.0 }
+    Px { c: [v, v, v], rough: if grout { 0.95 } else { 0.35 }, metal: 0.0, lit: 0.0, depth: if seam { 0.35 } else if grout { 0.16 } else { WALL_D } }
 }
 
 fn silicate(x: f32, y: f32, bx: usize, by: usize) -> Px {
@@ -116,9 +120,9 @@ fn silicate(x: f32, y: f32, bx: usize, by: usize) -> Px {
     let mortar = fx < 0.04 || fy < 0.11;
     let v = hash(((x + off) / 0.25) as u32 + bx as u32 * 7, course + by as u32 * 31) * 0.07;
     if mortar {
-        Px { c: [0.8, 0.79, 0.76], rough: 0.95, metal: 0.0, lit: 0.0 }
+        Px { c: [0.8, 0.79, 0.76], rough: 0.95, metal: 0.0, lit: 0.0, depth: 0.2 }
     } else {
-        Px { c: [0.97 - v, 0.96 - v, 0.93 - v], rough: 0.85, metal: 0.0, lit: 0.0 }
+        Px { c: [0.97 - v, 0.96 - v, 0.93 - v], rough: 0.85, metal: 0.0, lit: 0.0, depth: WALL_D }
     }
 }
 
@@ -126,7 +130,7 @@ fn glass_ribbon(x: f32, y: f32, bx: usize, by: usize) -> Px {
     // ribbon windows: a solid band at each slab, continuous glazing above
     if y < 1.0 {
         let v = 0.9 - hash(bx as u32, by as u32) * 0.03;
-        Px { c: [v, v, v], rough: 0.6, metal: 0.1, lit: 0.0 }
+        Px { c: [v, v, v], rough: 0.6, metal: 0.1, lit: 0.0, depth: WALL_D }
     } else {
         glass(x, y, bx, by)
     }
@@ -172,13 +176,15 @@ fn pixel(st: &Style, px: usize, py_from_bottom: usize) -> Px {
     // pilasters at the bay edges and recessed loggia bands
     if st.pilaster > 0.0 && (x < st.pilaster / 2.0 || x > 3.0 - st.pilaster / 2.0) {
         let mut p = (st.wall)(x, y, bx, by);
-        p.c = p.c.map(|v| v * 0.86);
+        p.c = p.c.map(|v| v * 0.9);
+        p.depth = 0.0;
         return p;
     }
     if let Some((l0, l1)) = st.loggia {
         if y > l0 && y < l1 && x > 0.3 && x < 2.7 {
             let mut p = (st.wall)(x, y, bx, by);
             p.c = p.c.map(|v| v * 0.62);
+            p.depth = 0.75;
             return p;
         }
     }
@@ -187,18 +193,35 @@ fn pixel(st: &Style, px: usize, py_from_bottom: usize) -> Px {
         if x >= x0 - f && x <= x1 + f && y >= y0 - f && y <= y1 + f {
             let inside = x >= x0 && x <= x1 && y >= y0 && y <= y1;
             if !inside || (x - (x0 + x1) / 2.0).abs() < 0.03 {
-                return Px { c: st.frame, rough: 0.5, metal: 0.0, lit: 0.0 };
+                // frame set back into the opening; the mullion a little deeper
+                return Px { c: st.frame, rough: 0.5, metal: 0.0, lit: 0.0, depth: if inside { 0.55 } else { 0.4 } };
             }
-            // glass: darker at the top (reveal shadow), occasional curtains
+            // glass deep in the reveal: ambient occlusion near the edges, occasional curtains, reflections
             let curtain = hash(bx as u32 * 31 + 1, by as u32 * 17 + 3) > 0.7 && y > y1 - (y1 - y0) * 0.35;
             let g = if curtain { [0.55, 0.52, 0.48] } else { [0.10, 0.13, 0.17] };
-            let shade = 1.0 - ((y1 - y) / (y1 - y0) < 0.12) as i32 as f32 * 0.4;
-            return Px { c: [g[0] * shade, g[1] * shade, g[2] * shade], rough: 0.05, metal: 0.0, lit: 1.0 };
+            let edge = (x - x0).min(x1 - x).min(y - y0).min(y1 - y);
+            let ao = 0.55 + 0.45 * (edge / 0.25).clamp(0.0, 1.0);
+            let sky = if curtain { 1.0 } else { 1.0 + 0.6 * ((y - y0) / (y1 - y0)) };
+            let k = ao * sky;
+            return Px { c: [g[0] * k, g[1] * k, g[2] * k], rough: 0.04, metal: 0.0, lit: 1.0, depth: 1.0 };
         }
-        // sill shadow under the window
-        if x >= x0 && x <= x1 && y < y0 - f && y > y0 - f - 0.08 {
+        // sill: a proud ledge under the window, its shadow below
+        if x >= x0 - 0.1 && x <= x1 + 0.1 && y < y0 - f && y > y0 - f - 0.06 {
             let mut p = (st.wall)(x, y, bx, by);
-            p.c = p.c.map(|v| v * 0.7);
+            p.c = p.c.map(|v| v * 1.05);
+            p.depth = 0.0;
+            return p;
+        }
+        if x >= x0 && x <= x1 && y < y0 - f - 0.06 && y > y0 - f - 0.16 {
+            let mut p = (st.wall)(x, y, bx, by);
+            p.c = p.c.map(|v| v * 0.75);
+            return p;
+        }
+        // weathering: faint streaks running down from the sill corners
+        if ((x - x0).abs() < 0.08 || (x - x1).abs() < 0.08) && y < y0 - 0.16 && y > y0 - 1.4 {
+            let mut p = (st.wall)(x, y, bx, by);
+            let k = 0.93 + 0.07 * ((y0 - y) / 1.4) + hash((x * 50.0) as u32, (y * 30.0) as u32) * 0.02;
+            p.c = p.c.map(|v| v * k);
             return p;
         }
     }
@@ -206,15 +229,18 @@ fn pixel(st: &Style, px: usize, py_from_bottom: usize) -> Px {
 }
 
 /// RGBA8 images (base level + full mip chain): albedo, metallic-roughness, emissive.
-pub fn generate(id: f32) -> [Vec<u8>; 3] {
+/// Facade images (base level + full mip chain): albedo, metallic-roughness, emissive (RGBA8), relief (R8).
+pub fn generate(id: f32) -> [Vec<u8>; 4] {
     let st = style(id);
     let mut alb = vec![0u8; TEX * TEX * 4];
     let mut mr = vec![0u8; TEX * TEX * 4];
     let mut em = vec![0u8; TEX * TEX * 4];
+    let mut dep = vec![0u8; TEX * TEX];
     for row in 0..TEX {
         let py = TEX - 1 - row; // image rows go down, metres go up
         for px in 0..TEX {
             let p = pixel(&st, px, py);
+            dep[row * TEX + px] = (p.depth.clamp(0.0, 1.0) * 255.0) as u8;
             let i = (row * TEX + px) * 4;
             for k in 0..3 {
                 alb[i + k] = (p.c[k].clamp(0.0, 1.0) * 255.0) as u8;
@@ -235,7 +261,7 @@ pub fn generate(id: f32) -> [Vec<u8>; 3] {
             em[i + 3] = 255;
         }
     }
-    [with_mips(alb), with_mips(mr), with_mips(em)]
+    [with_mips(alb, 4), with_mips(mr, 4), with_mips(em, 4), with_mips(dep, 1)]
 }
 
 pub fn mip_count() -> u32 {
@@ -243,18 +269,18 @@ pub fn mip_count() -> u32 {
 }
 
 /// Box-filtered mip chain appended after the base level (wgpu's layer-major order for a single layer).
-fn with_mips(base: Vec<u8>) -> Vec<u8> {
+fn with_mips(base: Vec<u8>, ch: usize) -> Vec<u8> {
     let mut out = base.clone();
     let mut cur = base;
     let mut size = TEX;
     while size > 1 {
         let ns = size / 2;
-        let mut next = vec![0u8; ns * ns * 4];
+        let mut next = vec![0u8; ns * ns * ch];
         for y in 0..ns {
             for x in 0..ns {
-                for k in 0..4 {
-                    let s = |dx: usize, dy: usize| cur[((y * 2 + dy) * size + x * 2 + dx) * 4 + k] as u32;
-                    next[(y * ns + x) * 4 + k] = ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1) + 2) / 4) as u8;
+                for k in 0..ch {
+                    let s = |dx: usize, dy: usize| cur[((y * 2 + dy) * size + x * 2 + dx) * ch + k] as u32;
+                    next[(y * ns + x) * ch + k] = ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1) + 2) / 4) as u8;
                 }
             }
         }
@@ -266,12 +292,11 @@ fn with_mips(base: Vec<u8>) -> Vec<u8> {
 }
 
 pub fn image(data: Vec<u8>, srgb: bool) -> Image {
-    let mut img = Image::new_uninit(
-        Extent3d { width: TEX as u32, height: TEX as u32, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
-        RenderAssetUsages::RENDER_WORLD,
-    );
+    image_fmt(data, if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm })
+}
+
+pub fn image_fmt(data: Vec<u8>, fmt: TextureFormat) -> Image {
+    let mut img = Image::new_uninit(Extent3d { width: TEX as u32, height: TEX as u32, depth_or_array_layers: 1 }, TextureDimension::D2, fmt, RenderAssetUsages::RENDER_WORLD);
     img.data = Some(data);
     img.texture_descriptor.mip_level_count = mip_count();
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -295,12 +320,14 @@ mod tests {
     #[test]
     fn textures_have_full_mip_chains_and_windows() {
         for s in styles() {
-            let [a, m, e] = generate(s);
+            let [a, m, e, d] = generate(s);
             let expect: usize = (0..mip_count()).map(|l| (TEX >> l).max(1).pow(2) * 4).sum();
-            assert_eq!((a.len(), m.len(), e.len()), (expect, expect, expect));
+            assert_eq!((a.len(), m.len(), e.len(), d.len() * 4), (expect, expect, expect, expect));
         }
-        // plaster: some windows lit (emissive), most of the wall not
-        let [_, _, e] = generate(mat::WALL_PLASTER);
+        // plaster: some windows lit (emissive), most of the wall not; glass is the deepest relief
+        let [_, _, e, d] = generate(mat::WALL_PLASTER);
+        let deep = d[..TEX * TEX].iter().filter(|v| **v == 255).count();
+        assert!(deep > 1000 && deep < TEX * TEX / 3, "{deep}");
         let lit = e[..TEX * TEX * 4].chunks_exact(4).filter(|p| p[0] > 0).count();
         assert!(lit > 1000 && lit < TEX * TEX / 4, "{lit}");
     }

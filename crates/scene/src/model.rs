@@ -127,6 +127,30 @@ pub struct Scene {
     pub areas: Vec<Area>,
     /// building doors from OSM entrance nodes, snapped to a wall
     pub entrances: Vec<Entrance>,
+    /// parked cars: (x, y, heading rad, seed)
+    pub parked: Vec<ParkedCar>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ParkedCar {
+    pub x: f64,
+    pub y: f64,
+    pub yaw: f64,
+    pub seed: u64,
+}
+
+impl ParkedCar {
+    /// Length and width (m) of this car (compact to estate/SUV by seed).
+    pub fn size(&self) -> (f64, f64) {
+        let k = (self.seed % 1000) as f64 / 1000.0;
+        (3.9 + k * 1.0, 1.72 + k * 0.18)
+    }
+    /// Outline corners in plan view.
+    pub fn outline(&self) -> Vec<(f64, f64)> {
+        let (l, w) = self.size();
+        let (c, s) = (self.yaw.cos(), self.yaw.sin());
+        [(-l / 2.0, -w / 2.0), (l / 2.0, -w / 2.0), (l / 2.0, w / 2.0), (-l / 2.0, w / 2.0)].iter().map(|(a, b)| (self.x + a * c - b * s, self.y + a * s + b * c)).collect()
+    }
 }
 
 #[derive(Clone, Debug)]

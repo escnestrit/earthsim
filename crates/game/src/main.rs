@@ -6,6 +6,7 @@
 
 mod car_visual;
 mod facade;
+mod ground;
 mod hud;
 mod input;
 mod lights;
@@ -92,15 +93,14 @@ fn main() {
         .insert_resource(s.clone())
         // The dev sandbox renders with software OpenGL, where one optional compute shader (SSAO depth
         // pre-pass) fails to compile; ignore that instead of quitting. Not used for the real window.
-        .insert_resource(bevy::render::error_handler::RenderErrorHandler(|e, _, _| {
-            eprintln!("earthsim: ignoring render error in capture mode: {:?}", e.ty);
-            bevy::render::error_handler::RenderErrorPolicy::Ignore
-        }));
+        .insert_resource(bevy::render::error_handler::RenderErrorHandler(settings::on_render_error));
     } else {
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window { title: "BeamNG.Earth prototype (earthsim)".into(), resolution: (1600u32, 900u32).into(), ..default() }),
             ..default()
-        }));
+        }))
+        // a post effect this GPU cannot do drops the game into safe mode instead of stopping it
+        .insert_resource(bevy::render::error_handler::RenderErrorHandler(settings::on_render_error));
     }
     app.insert_resource(Sim(std::sync::Mutex::new(game)))
         .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin, settings::SettingsPlugin, lights::LightsPlugin, terrain::TerrainPlugin))

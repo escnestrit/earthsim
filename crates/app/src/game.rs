@@ -629,6 +629,9 @@ impl Game {
                     for t in &scene.trees {
                         self.world.add_circle_tagged(key, t[0], t[1], 0.35);
                     }
+                    for c in &scene.parked {
+                        self.world.add_poly_tagged(key, c.outline());
+                    }
                     self.lamps.insert(key, scene::mesh::street_lamps(&scene));
                     st.scenes.insert(key, scene);
                     let draped = if self.ground.field.is_empty() { meshes.clone() } else { Arc::new(drape(&meshes, &self.ground.field)) };

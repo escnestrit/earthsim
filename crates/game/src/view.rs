@@ -52,10 +52,11 @@ pub struct Sun;
 #[derive(Resource, Default)]
 pub struct Tiles {
     map: HashMap<u64, Vec<Entity>>,
-    materials: HashMap<u32, Handle<StandardMaterial>>,
+    pub materials: HashMap<u32, Handle<StandardMaterial>>,
     root: Option<Entity>,
     soft_mesh: Option<Handle<Mesh>>,
-    facades: Vec<Handle<StandardMaterial>>,
+    pub facades: Vec<Handle<StandardMaterial>>,
+    pub facade_depth: Vec<Handle<Image>>,
 }
 
 /// PBR parameters per material id of the shared mesh format (colour, roughness, metallic, depth bias).
@@ -97,15 +98,43 @@ pub fn material_for(id: u32) -> StandardMaterial {
 }
 
 /// Split one interleaved mesh (position, normal, uv, material id) into one Bevy mesh per material.
+/// Per-triangle tangents (xyz + handedness) for a non-indexed triangle list; `flip_v` when the material
+/// samples the texture with v negated.
+pub fn tangents(p: &[[f32; 3]], n: &[[f32; 3]], uv: &[[f32; 2]], flip_v: bool) -> Vec<[f32; 4]> {
+    let mut out = vec![[1.0, 0.0, 0.0, 1.0]; p.len()];
+    let sv = if flip_v { -1.0 } else { 1.0 };
+    for t in (0..p.len() / 3).map(|k| k * 3) {
+        let (p0, p1, p2) = (Vec3::from(p[t]), Vec3::from(p[t + 1]), Vec3::from(p[t + 2]));
+        let (u0, u1, u2) = (Vec2::new(uv[t][0], uv[t][1] * sv), Vec2::new(uv[t + 1][0], uv[t + 1][1] * sv), Vec2::new(uv[t + 2][0], uv[t + 2][1] * sv));
+        let (e1, e2) = (p1 - p0, p2 - p0);
+        let (d1, d2) = (u1 - u0, u2 - u0);
+        let r = d1.x * d2.y - d2.x * d1.y;
+        if r.abs() < 1e-12 {
+            continue;
+        }
+        let tan = (e1 * d2.y - e2 * d1.y) / r;
+        let bit = (e2 * d1.x - e1 * d2.x) / r;
+        for k in 0..3 {
+            let nn = Vec3::from(n[t + k]);
+            let tt = (tan - nn * nn.dot(tan)).normalize_or(Vec3::X);
+            let w = if nn.cross(tt).dot(bit) < 0.0 { -1.0 } else { 1.0 };
+            out[t + k] = [tt.x, tt.y, tt.z, w];
+        }
+    }
+    out
+}
+
 pub fn to_bevy_meshes(m: &MeshData) -> Vec<(u32, Mesh)> {
     type Parts = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>);
     let mut by_mat: HashMap<u32, Parts> = HashMap::new();
     let has_col = m.colors.len() * FLOATS_PER_VERTEX == m.verts.len() * 3;
     for (i, v) in m.verts.chunks_exact(FLOATS_PER_VERTEX).enumerate() {
-        let e = by_mat.entry(v[8].round() as u32).or_default();
+        let id = v[8].round() as u32;
+        let e = by_mat.entry(id).or_default();
         e.0.push([v[0], v[1], v[2]]);
         e.1.push([v[3], v[4], v[5]]);
-        e.2.push([v[6], v[7]]);
+        // textured ground is mapped by world position (metres), so ribbons and polygons do not stretch it
+        e.2.push(if crate::ground::is_textured(id) { [v[0], v[1]] } else { [v[6], v[7]] });
         if has_col {
             // colours are sRGB; vertex colours are linear
             let c = LinearRgba::from(Color::srgb(m.colors[i * 3], m.colors[i * 3 + 1], m.colors[i * 3 + 2]));
@@ -122,6 +151,17 @@ pub fn to_bevy_meshes(m: &MeshData) -> Vec<(u32, Mesh)> {
                 .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv);
             if !col.is_empty() {
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+            }
+            // relief-mapped materials need tangents (facades sample v flipped, see the uv transform)
+            if mat::is_facade(id as f32) || crate::ground::is_textured(id) {
+                let flip = mat::is_facade(id as f32);
+                let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(bevy::mesh::VertexAttributeValues::Float32x3(n)), Some(bevy::mesh::VertexAttributeValues::Float32x2(uv))) =
+                    (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.attribute(Mesh::ATTRIBUTE_NORMAL), mesh.attribute(Mesh::ATTRIBUTE_UV_0))
+                else {
+                    return (id, mesh);
+                };
+                let t = tangents(p, n, uv, flip);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, t);
             }
             (id, mesh)
         })
@@ -158,12 +198,13 @@ fn setup(
 ) {
     // facade materials (textures generated once at startup)
     let ids = crate::facade::styles();
-    let generated: Vec<[Vec<u8>; 3]> = std::thread::scope(|sc| {
+    let generated: Vec<[Vec<u8>; 4]> = std::thread::scope(|sc| {
         let hs: Vec<_> = ids.iter().map(|&id| sc.spawn(move || crate::facade::generate(id))).collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    for (st, [a, m, e]) in ids.into_iter().zip(generated) {
+    for (st, [a, m, e, d]) in ids.into_iter().zip(generated) {
         let (a, m, e) = (images.add(crate::facade::image(a, true)), images.add(crate::facade::image(m, false)), images.add(crate::facade::image(e, true)));
+        let d = images.add(crate::facade::image_fmt(d, TextureFormat::R8Unorm));
         let k = 1.0 / crate::facade::REPEAT_M;
         let h = materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -174,16 +215,55 @@ fn setup(
             emissive_texture: Some(e),
             emissive: LinearRgba::BLACK,
             uv_transform: bevy::math::Affine2::from_scale(Vec2::new(k, -k)),
+            // recessed windows, reveals, sills, joints: parallax relief (quality settings tune or disable it)
+            depth_map: Some(d.clone()),
+            parallax_depth_scale: 0.022,
+            max_parallax_layer_count: 16.0,
+            parallax_mapping_method: bevy::pbr::ParallaxMappingMethod::Occlusion,
             ..default()
         });
+        tiles.facade_depth.push(d);
         tiles.materials.insert(st as u32, h.clone());
         tiles.facades.push(h);
     }
+    // textured ground materials (asphalt, pavers, grass...), generated in parallel
+    let gids: Vec<u32> = [mat::ASPHALT, mat::SIDEWALK, mat::GRASS, mat::FOREST_FLOOR, mat::SAND, mat::PARKING, mat::GROUND].iter().map(|m| *m as u32).collect();
+    let gtex: Vec<[Vec<u8>; 3]> = std::thread::scope(|sc| {
+        let hs: Vec<_> = gids.iter().map(|&id| sc.spawn(move || crate::ground::generate(id))).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for (id, [a, m, n]) in gids.iter().zip(gtex) {
+        let img = |d: Vec<u8>, f: TextureFormat| crate::facade::image_fmt(d, f);
+        let k = 1.0 / crate::ground::repeat_m(*id);
+        let mut gm = StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(images.add(img(a, TextureFormat::Rgba8UnormSrgb))),
+            metallic_roughness_texture: Some(images.add(img(m, TextureFormat::Rgba8Unorm))),
+            perceptual_roughness: 1.0,
+            metallic: 1.0,
+            normal_map_texture: Some(images.add(img(n, TextureFormat::Rgba8Unorm))),
+            uv_transform: bevy::math::Affine2::from_scale(Vec2::splat(k)),
+            depth_bias: material_for(*id).depth_bias,
+            reflectance: 0.35,
+            ..default()
+        };
+        if *id == mat::GROUND as u32 {
+            gm.depth_bias = -0.5;
+        }
+        let h = materials.add(gm);
+        tiles.materials.insert(*id, h);
+    }
     let root = commands.spawn((WorldRoot, Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)), Visibility::default())).id();
     tiles.root = Some(root);
-    // ground: a large plane that follows the car (the map is flat for now)
-    let ground = materials.add(material_for(mat::GROUND as u32));
-    commands.spawn((GroundPlane, Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(4000.0)).mesh())), MeshMaterial3d(ground), Transform::from_xyz(0.0, -0.02, 0.0)));
+    // ground: a large plane that follows the car (beyond the terrain mesh); grass every 10 m (the plane
+    // snaps in 100 m steps, a whole number of repeats, so the texture does not jump)
+    let mut gp = materials.get(&tiles.materials[&(mat::GROUND as u32)]).cloned().unwrap_or_else(|| material_for(mat::GROUND as u32));
+    gp.uv_transform = bevy::math::Affine2::from_scale(Vec2::splat(8000.0 / 10.0));
+    gp.depth_bias = 0.0;
+    let ground = materials.add(gp);
+    let mut plane = Plane3d::new(Vec3::Y, Vec2::splat(4000.0)).mesh().build();
+    plane.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, 1.0]; plane.count_vertices()]);
+    commands.spawn((GroundPlane, Mesh3d(meshes.add(plane)), MeshMaterial3d(ground), Transform::from_xyz(0.0, -0.02, 0.0)));
     // whole non-streamed scene (demo / scene file)
     if !sim.g().is_streaming() {
         let ms = sim.g().meshes.clone();

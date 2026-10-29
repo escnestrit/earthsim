@@ -337,6 +337,129 @@ pub fn estimate_entrances(sc: &mut Scene) {
     sc.entrances.extend(out);
 }
 
+/// Parked cars: along the kerbs of residential/minor streets (on the sidewalk edge, as is common in
+/// courtyards), and in rows in surface car parks. About half the places are taken. Which places are taken
+/// and which car stands there follows from the place's latitude/longitude, so it is the same every time.
+pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar> {
+    const MAX: usize = 600;
+    let mut out: Vec<scene::model::ParkedCar> = Vec::new();
+    let hash = |x: f64, y: f64, k: u64| {
+        let (la, lo, _) = frame.from_local(x, y, 0.0);
+        let mut h = ((la * 2e5).round() as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((lo * 2e5).round() as i64 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ k;
+        h ^= h >> 31;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^ (h >> 29)
+    };
+    // building outlines in a coarse grid, so cars never stand inside a house
+    let mut bgrid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, b) in sc.buildings.iter().enumerate() {
+        for p in &b.footprint {
+            bgrid.entry(((p[0] / 30.0).floor() as i64, (p[1] / 30.0).floor() as i64)).or_default().push(i);
+        }
+    }
+    let in_building = |x: f64, y: f64| {
+        let (ci, cj) = ((x / 30.0).floor() as i64, (y / 30.0).floor() as i64);
+        (ci - 1..=ci + 1).any(|i| {
+            (cj - 1..=cj + 1).any(|j| {
+                bgrid.get(&(i, j)).is_some_and(|v| {
+                    v.iter().any(|&k| {
+                        let f = &sc.buildings[k].footprint;
+                        let mut ins = false;
+                        for a in 0..f.len() {
+                            let (p, q) = (f[a], f[(a + 1) % f.len()]);
+                            if (p[1] > y) != (q[1] > y) && x < p[0] + (y - p[1]) / (q[1] - p[1]) * (q[0] - p[0]) {
+                                ins = !ins;
+                            }
+                        }
+                        ins
+                    })
+                })
+            })
+        })
+    };
+    let junctions: Vec<[f64; 2]> = sc.roads.iter().flat_map(|r| r.pts.iter().zip(&r.junction).filter(|(_, j)| **j).map(|(p, _)| *p)).collect();
+    let near_junction = |x: f64, y: f64| junctions.iter().any(|j| (j[0] - x).hypot(j[1] - y) < 12.0);
+    for r in &sc.roads {
+        if !matches!(r.cls.as_str(), "residential" | "living_street" | "unclassified" | "tertiary" | "service") || r.width < 4.0 {
+            continue;
+        }
+        let mut cum = 0.0;
+        for w in r.pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = dx.hypot(dy);
+            if l < 1e-6 {
+                continue;
+            }
+            let (ux, uy) = (dx / l, dy / l);
+            let mut k = (cum / 6.0f64).ceil();
+            while k * 6.0 < cum + l {
+                let s = k * 6.0 - cum;
+                k += 1.0;
+                for side in [-1.0, 1.0] {
+                    let off = r.width / 2.0 + 1.0;
+                    let (x, y) = (a[0] + ux * s - uy * off * side, a[1] + uy * s + ux * off * side);
+                    let h = hash(x, y, 1);
+                    if h % 100 >= 50 || near_junction(x, y) || in_building(x, y) || out.len() >= MAX {
+                        continue;
+                    }
+                    // a little untidy: small offsets and angles
+                    let yaw = uy.atan2(ux) + if (h >> 8) % 2 == 0 { 0.0 } else { std::f64::consts::PI } + ((h >> 12) % 100) as f64 / 100.0 * 0.08 - 0.04;
+                    out.push(scene::model::ParkedCar { x, y, yaw, seed: h });
+                }
+            }
+            cum += l;
+        }
+    }
+    // car parks: rows of bays 2.6 m x 5.5 m along the area's longest side
+    for a in sc.areas.iter().filter(|a| a.kind == scene::model::AreaKind::Parking) {
+        let f = &a.ring;
+        let n = f.len();
+        if n < 3 {
+            continue;
+        }
+        let e = (0..n).max_by(|&i, &j| {
+            let l = |k: usize| (f[(k + 1) % n][0] - f[k][0]).hypot(f[(k + 1) % n][1] - f[k][1]);
+            l(i).total_cmp(&l(j))
+        }).unwrap();
+        let (p0, p1) = (f[e], f[(e + 1) % n]);
+        let l = (p1[0] - p0[0]).hypot(p1[1] - p0[1]).max(1e-6);
+        let (ux, uy) = ((p1[0] - p0[0]) / l, (p1[1] - p0[1]) / l);
+        let (vx, vy) = (-uy, ux);
+        let proj: Vec<(f64, f64)> = f.iter().map(|p| ((p[0] - p0[0]) * ux + (p[1] - p0[1]) * uy, (p[0] - p0[0]) * vx + (p[1] - p0[1]) * vy)).collect();
+        let (s0, s1) = proj.iter().fold((f64::MAX, f64::MIN), |m, p| (m.0.min(p.0), m.1.max(p.0)));
+        let (t0, t1) = proj.iter().fold((f64::MAX, f64::MIN), |m, p| (m.0.min(p.1), m.1.max(p.1)));
+        let inside = |x: f64, y: f64| {
+            let mut ins = false;
+            for i in 0..n {
+                let (p, q) = (f[i], f[(i + 1) % n]);
+                if (p[1] > y) != (q[1] > y) && x < p[0] + (y - p[1]) / (q[1] - p[1]) * (q[0] - p[0]) {
+                    ins = !ins;
+                }
+            }
+            ins
+        };
+        // rows: bays 5.5 m deep, a 6 m aisle after every two rows
+        let mut t = t0 + 3.0;
+        let mut row = 0;
+        while t < t1 - 2.5 && out.len() < MAX {
+            let mut s = s0 + 1.5;
+            while s < s1 - 1.3 && out.len() < MAX {
+                let (x, y) = (p0[0] + ux * s + vx * t, p0[1] + uy * s + vy * t);
+                let h = hash(x, y, 2);
+                if inside(x, y) && h % 100 < 70 && !in_building(x, y) {
+                    let yaw = vy.atan2(vx) + if row % 2 == 0 { 0.0 } else { std::f64::consts::PI } + ((h >> 12) % 100) as f64 / 100.0 * 0.06 - 0.03;
+                    out.push(scene::model::ParkedCar { x, y, yaw, seed: h });
+                }
+                s += 2.6;
+            }
+            row += 1;
+            t += if row % 2 == 0 { 5.5 + 6.0 } else { 5.5 };
+        }
+    }
+    out
+}
+
 fn seg_dist(x: f64, y: f64, a: [f64; 2], b: [f64; 2]) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let l2 = dx * dx + dy * dy;
@@ -450,6 +573,7 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
     sc.trees.extend(area_trees);
     // buildings without mapped entrances get typical ones (estimated, see README)
     estimate_entrances(&mut sc);
+    sc.parked = park_cars(&sc, frame);
     let mut sv: Vec<_> = status.into_iter().collect();
     sv.sort();
     let mut ov: Vec<_> = origins.into_iter().collect();

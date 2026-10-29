@@ -152,6 +152,19 @@ impl Mb {
             }
         }
     }
+    /// Box turned by `yaw` about Z: centre (cx, cy), length along the heading, width across, z0..z1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn obox(&mut self, cx: f64, cy: f64, yaw: f64, l: f64, w: f64, z0: f64, z1: f64, m: f32) {
+        let (c, s) = (yaw.cos(), yaw.sin());
+        let pt = |a: f64, b: f64, z: f64| [cx + a * c - b * s, cy + a * s + b * c, z];
+        let (hl, hw) = (l / 2.0, w / 2.0);
+        let p = [pt(-hl, -hw, z0), pt(hl, -hw, z0), pt(hl, hw, z0), pt(-hl, hw, z0), pt(-hl, -hw, z1), pt(hl, -hw, z1), pt(hl, hw, z1), pt(-hl, hw, z1)];
+        let ctr = [cx, cy, (z0 + z1) / 2.0];
+        for f in [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]] {
+            let pts: Vec<V> = f.iter().map(|&k| p[k]).collect();
+            self.face(&pts, ctr, m);
+        }
+    }
     /// Cylinder with its axis along Y.
     pub fn cyl(&mut self, cx: f64, cz: f64, r: f64, y0: f64, y1: f64, m: f32, seg: usize) {
         let pi = std::f64::consts::PI;
@@ -432,6 +445,38 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     out.push(MeshData { name: "buildings".into(), verts: bm.a, polygon_offset: 0.0, casts_shadow: true, colors: bcol });
     out.push(building_details(sc));
 
+    // parked cars: body, glazed cabin with a painted roof, wheels; colours in typical proportions
+    let mut pm = Mb::default();
+    let mut pcol: Vec<f32> = Vec::new();
+    let fill = |m: &Mb, col: &mut Vec<f32>, c: [f32; 3]| {
+        while col.len() / 3 < m.a.len() / FLOATS_PER_VERTEX {
+            col.extend_from_slice(&c);
+        }
+    };
+    for c in &sc.parked {
+        let (l, w) = c.size();
+        let pal: [[f32; 3]; 10] = [[0.92, 0.92, 0.92], [0.92, 0.92, 0.92], [0.62, 0.64, 0.66], [0.62, 0.64, 0.66], [0.06, 0.06, 0.07], [0.06, 0.06, 0.07], [0.32, 0.34, 0.36], [0.55, 0.06, 0.06], [0.08, 0.16, 0.36], [0.55, 0.50, 0.42]];
+        let paint = pal[(c.seed >> 20) as usize % pal.len()];
+        let tall = (c.seed % 1000) > 700; // SUV/estate: taller cabin
+        let (zb, zt) = (0.32, if tall { 1.0 } else { 0.85 });
+        pm.obox(c.x, c.y, c.yaw, l, w, zb, zt, mat::MARKING);
+        fill(&pm, &mut pcol, [paint[0] / 0.85, paint[1] / 0.85, paint[2] / 0.82]);
+        let (cl, ch) = (l * if tall { 0.62 } else { 0.5 }, if tall { 1.75 } else { 1.42 });
+        let back = -l * 0.06;
+        let (cx, cy) = (c.x + c.yaw.cos() * back, c.y + c.yaw.sin() * back);
+        pm.obox(cx, cy, c.yaw, cl, w * 0.9, zt, ch - 0.06, mat::GLASS);
+        fill(&pm, &mut pcol, [1.0, 1.0, 1.0]);
+        pm.obox(cx, cy, c.yaw, cl * 0.96, w * 0.86, ch - 0.06, ch, mat::MARKING);
+        fill(&pm, &mut pcol, [paint[0] / 0.85, paint[1] / 0.85, paint[2] / 0.82]);
+        for (a, b) in [(0.33, 0.5), (0.33, -0.5), (-0.33, 0.5), (-0.33, -0.5)] {
+            let (da, db) = (a * l, b * (w - 0.18));
+            let (wx, wy) = (c.x + c.yaw.cos() * da - c.yaw.sin() * db, c.y + c.yaw.sin() * da + c.yaw.cos() * db);
+            pm.obox(wx, wy, c.yaw, 0.64, 0.2, 0.0, 0.64, mat::TIRE);
+        }
+        fill(&pm, &mut pcol, [1.0, 1.0, 1.0]);
+    }
+    out.push(MeshData { name: "parked_cars".into(), verts: pm.a, polygon_offset: 0.0, casts_shadow: true, colors: pcol });
+
     // entrances: door in the wall, and for doors people use a porch slab and a canopy (the common Soviet
     // and modern block layout); sizes are typical, not measured
     let mut em = Mb::default();
@@ -484,15 +529,63 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "entrances".into(), verts: em.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
 
-    // trees
+    // trees: broadleaf crowns of 1-3 overlapping clumps or conifers, each with its own size and shade
     let mut tm = Mb::default();
-    for (i, t) in sc.trees.iter().enumerate() {
-        let s = (i as f64 * 0.7548776662).fract();
-        let rr = 1.9 + s * 1.3;
-        tm.box_(t[0] - 0.15, t[1] - 0.15, 0.0, t[0] + 0.15, t[1] + 0.15, 2.3, &[mat::TRUNK]);
-        tm.sphere(t[0], t[1], 2.3 + rr * 0.8, rr, rr * 1.1, mat::FOLIAGE, s, 6, 3);
+    let mut tcol: Vec<f32> = Vec::new();
+    for t in sc.trees.iter() {
+        let seed = ((t[0] * 7.31).floor() as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((t[1] * 3.17).floor() as i64 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        let r = |k: u64| hash01(seed, k);
+        let conifer = r(1) < 0.22;
+        let scale = 0.75 + r(2) * 0.6;
+        let trunk_h = if conifer { 1.2 } else { 1.8 + r(3) * 1.2 } * scale;
+        let tw = 0.12 + 0.08 * scale;
+        tm.box_(t[0] - tw, t[1] - tw, 0.0, t[0] + tw, t[1] + tw, trunk_h + 0.4, &[mat::TRUNK]);
+        let bark = 0.8 + r(4) as f32 * 0.4;
+        let n0 = tm.a.len() / FLOATS_PER_VERTEX;
+        while tcol.len() / 3 < n0 {
+            tcol.extend_from_slice(&[1.0, 1.0, 1.0]);
+        }
+        let _ = bark;
+        // leaf colour: from yellow-green to deep green, conifers darker and bluer
+        let (lr, lg, lb) = if conifer { (0.55 + r(5) as f32 * 0.2, 0.75 + r(6) as f32 * 0.2, 0.75 + r(7) as f32 * 0.3) } else { (0.8 + r(5) as f32 * 0.5, 0.85 + r(6) as f32 * 0.35, 0.6 + r(7) as f32 * 0.4) };
+        if conifer {
+            let hgt = (6.0 + r(8) * 6.0) * scale;
+            let rad = hgt * 0.28;
+            // two stacked cones
+            for (z0, rr, hh) in [(trunk_h, rad, hgt * 0.65), (trunk_h + hgt * 0.4, rad * 0.7, hgt * 0.6)] {
+                let segs = 7;
+                let apex = [t[0], t[1], z0 + hh];
+                for k in 0..segs {
+                    let (a0, a1) = (k as f64 / segs as f64 * std::f64::consts::TAU, (k + 1) as f64 / segs as f64 * std::f64::consts::TAU);
+                    let p0 = [t[0] + a0.cos() * rr, t[1] + a0.sin() * rr, z0];
+                    let p1 = [t[0] + a1.cos() * rr, t[1] + a1.sin() * rr, z0];
+                    let am = (a0 + a1) / 2.0;
+                    let nrm = norm([am.cos(), am.sin(), rr / hh]);
+                    tm.v(p0, nrm, 0.0, 0.0, mat::FOLIAGE);
+                    tm.v(p1, nrm, 0.0, 0.0, mat::FOLIAGE);
+                    tm.v(apex, nrm, 0.0, 0.0, mat::FOLIAGE);
+                    tm.v(p1, [0.0, 0.0, -1.0], 0.0, 0.0, mat::FOLIAGE);
+                    tm.v(p0, [0.0, 0.0, -1.0], 0.0, 0.0, mat::FOLIAGE);
+                    tm.v([t[0], t[1], z0], [0.0, 0.0, -1.0], 0.0, 0.0, mat::FOLIAGE);
+                }
+            }
+        } else {
+            let rr = (1.7 + r(9) * 1.4) * scale;
+            let clumps = 1 + (r(10) * 2.99) as usize;
+            for c in 0..clumps {
+                let ang = r(11 + c as u64) * std::f64::consts::TAU;
+                let off = if c == 0 { 0.0 } else { rr * 0.55 };
+                let cr = if c == 0 { rr } else { rr * (0.6 + r(14 + c as u64) * 0.25) };
+                let cz = trunk_h + rr * 0.85 + if c == 0 { 0.0 } else { rr * (r(17 + c as u64) - 0.3) * 0.6 };
+                tm.sphere(t[0] + ang.cos() * off, t[1] + ang.sin() * off, cz, cr, cr * (0.9 + r(20) * 0.3), mat::FOLIAGE, 0.0, 7, 4);
+            }
+        }
+        let n1 = tm.a.len() / FLOATS_PER_VERTEX;
+        while tcol.len() / 3 < n1 {
+            tcol.extend_from_slice(&[lr, lg, lb]);
+        }
     }
-    out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
+    out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: tcol });
     out
 }
 
