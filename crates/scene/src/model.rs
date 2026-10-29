@@ -10,6 +10,8 @@ pub struct Road {
     pub junction: Vec<bool>,
     /// a bridge (`bridge=*` / Overture is_bridge): drawn as a raised deck, see `mesh::bridge_profile`
     pub bridge: bool,
+    /// one-way: 1 along the points, -1 against them, 0 both ways
+    pub oneway: i8,
 }
 
 #[derive(Clone, Debug)]
@@ -288,6 +290,7 @@ impl Scene {
                 pts,
                 junction,
                 bridge: r.get("bridge").and_then(|v| v.as_bool()).unwrap_or(false),
+                oneway: 0,
             });
         }
         for b in j.get("buildings").and_then(|v| v.as_arr()).unwrap_or(&[]) {

@@ -102,6 +102,47 @@ fn is_whole(flags: &str, flag: &str) -> bool {
     false
 }
 
+/// One-way from Overture `access_restrictions`: a rule denying cars (or all vehicles) travel against
+/// (`heading: backward`) or along (`forward`) the segment, over the whole of it. 1 = along, -1 = against.
+fn oneway_of(ar: &str) -> i8 {
+    let mut from = 0;
+    while let Some(i) = ar[from..].find("denied").map(|i| i + from) {
+        from = i + 6;
+        let start = ar[..i].rfind('{').unwrap_or(0);
+        // the rule object: up to the brace that closes it
+        let mut depth = 0;
+        let mut end = ar.len();
+        for (k, c) in ar[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + k + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let rule = &ar[start..end];
+        if rule.contains("between") {
+            continue;
+        }
+        let cars = !rule.contains("mode") || ["\"vehicle\"", "\"motor_vehicle\"", "\"car\""].iter().any(|m| rule.contains(m));
+        if !cars {
+            continue;
+        }
+        if rule.contains("\"backward\"") {
+            return 1;
+        }
+        if rule.contains("\"forward\"") {
+            return -1;
+        }
+    }
+    0
+}
+
 /// Overture segment -> (highway class, extra tags), or None if not a drivable road.
 pub fn road_tags(f: &Feature) -> Option<Vec<(String, String)>> {
     if s(f.prop("subtype")).as_deref() != Some("road") {
@@ -121,6 +162,11 @@ pub fn road_tags(f: &Feature) -> Option<Vec<(String, String)>> {
     if let Some(n) = s(f.prop("@name")) {
         t.push(("name".into(), n));
     }
+    match oneway_of(&s(f.prop("access_restrictions")).unwrap_or_default()) {
+        1 => t.push(("oneway".into(), "yes".into())),
+        -1 => t.push(("oneway".into(), "-1".into())),
+        _ => {}
+    }
     Some(t)
 }
 
@@ -133,6 +179,11 @@ mod flag_tests {
         assert!(super::is_whole(r#"[{"values":["is_bridge"],"between":[0.05,0.97]}]"#, "is_bridge"));
         assert!(!super::is_whole(r#"[{"values":["is_bridge"],"between":[0.4,0.6]}]"#, "is_bridge"));
         assert!(!super::is_whole(r#"[{"values":["is_tunnel"]}]"#, "is_bridge"));
+        assert_eq!(super::oneway_of(r#"[{"access_type":"denied","when":{"heading":"backward"}}]"#), 1);
+        assert_eq!(super::oneway_of(r#"[{"access_type":"denied","when":{"heading":"forward","mode":["motor_vehicle"]}}]"#), -1);
+        assert_eq!(super::oneway_of(r#"[{"access_type":"denied","when":{"heading":"backward","mode":["hgv"]}}]"#), 0);
+        assert_eq!(super::oneway_of(r#"[{"access_type":"denied","when":{"heading":"backward"},"between":[0.2,0.4]}]"#), 0);
+        assert_eq!(super::oneway_of(""), 0);
     }
 }
 

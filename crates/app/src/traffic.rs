@@ -161,9 +161,15 @@ impl Traffic {
                 let Some(v) = vmax(&r.cls) else { continue };
                 let lane = (r.width / 4.0).clamp(1.4, 3.6) as f32;
                 let ids: Vec<u32> = r.pts.iter().map(|p| g.node(*p)).collect();
+                // one-way streets: a narrow one is driven in the middle
+                let lane = if r.oneway != 0 && r.width < 6.0 { 0.0 } else { lane };
                 for w in ids.windows(2) {
-                    g.link(w[0], w[1], v, lane);
-                    g.link(w[1], w[0], v, lane);
+                    if r.oneway >= 0 {
+                        g.link(w[0], w[1], v, lane);
+                    }
+                    if r.oneway <= 0 {
+                        g.link(w[1], w[0], v, lane);
+                    }
                 }
             }
         }
@@ -422,7 +428,7 @@ mod tests {
 
     fn grid() -> Scene {
         let mut sc = Scene::default();
-        let road = |pts: Vec<[f64; 2]>| Road { cls: "residential".into(), width: 7.0, junction: vec![false; pts.len()], pts, bridge: false };
+        let road = |pts: Vec<[f64; 2]>| Road { cls: "residential".into(), width: 7.0, junction: vec![false; pts.len()], pts, bridge: false, oneway: 0 };
         for k in -3..=3 {
             let c = k as f64 * 100.0;
             sc.roads.push(road((-30..=30).map(|i| [i as f64 * 10.0, c]).collect()));
@@ -470,9 +476,26 @@ mod tests {
     }
 
     #[test]
+    fn one_way_streets_are_driven_one_way() {
+        let mut sc = Scene::default();
+        let pts: Vec<[f64; 2]> = (-30..=30).map(|i| [i as f64 * 10.0, 0.0]).collect();
+        sc.roads.push(Road { cls: "residential".into(), width: 7.0, junction: vec![false; pts.len()], pts, bridge: false, oneway: -1 });
+        let mut t = Traffic { target: 6, ..Default::default() };
+        t.rebuild(std::iter::once(&sc), &mut Events::default());
+        for _ in 0..600 {
+            t.step(1.0 / 60.0, (0.0, 0.0, 0.0, 0.0), &|_, _, _| 0.0);
+        }
+        assert!(!t.agents.is_empty());
+        for a in &t.agents {
+            // against the points: westwards
+            assert!(a.yaw.cos() < -0.9, "car {} heading {}", a.id, a.yaw);
+        }
+    }
+
+    #[test]
     fn hitting_a_car_wrecks_it() {
         let mut sc = Scene::default();
-        sc.roads.push(Road { cls: "residential".into(), width: 7.0, junction: vec![false; 61], pts: (-30..=30).map(|i| [i as f64 * 10.0, 0.0]).collect(), bridge: false });
+        sc.roads.push(Road { cls: "residential".into(), width: 7.0, junction: vec![false; 61], pts: (-30..=30).map(|i| [i as f64 * 10.0, 0.0]).collect(), bridge: false, oneway: 0 });
         let mut t = Traffic { target: 1, ..Default::default() };
         t.rebuild(std::iter::once(&sc), &mut Events::default());
         t.step(0.016, (0.0, 0.0, 0.0, 0.0), &|_, _, _| 0.0);

@@ -115,6 +115,37 @@ pub fn deck_segs(sc: &Scene, ground: &dyn Fn(f64, f64) -> f64) -> Vec<phys::Deck
     out
 }
 
+/// Lamp posts of a bridge: (point index, side +1 left / -1 right), every 30 m, alternating.
+fn lamp_spots(pts: &[[f64; 2]]) -> Vec<(usize, f64)> {
+    let ch = chainage(pts);
+    let len = *ch.last().unwrap();
+    let (mut next, mut side, mut out) = (10.0, 1.0, Vec::new());
+    for i in 0..pts.len() {
+        if ch[i] >= next && ch[i] < len - 5.0 {
+            next = ch[i] + 30.0;
+            out.push((i, side));
+            side = -side;
+        }
+    }
+    out
+}
+
+/// Lamp heads of the scene's bridges for lighting: (x, y, height above the deck line's base) and the
+/// bridge's end points (the base is the ground height interpolated between them, as for the mesh).
+pub fn lamps(sc: &Scene) -> Vec<([f64; 3], [f64; 2], [f64; 2])> {
+    let mut out = Vec::new();
+    for r in sc.roads.iter().filter(|r| r.bridge && r.pts.len() >= 2) {
+        let rs = rise(sc, r);
+        let nm = normals(&r.pts);
+        let e = r.width / 2.0 + WALK;
+        for (i, side) in lamp_spots(&r.pts) {
+            let d = side * (e - 1.2) * nm[i].1;
+            out.push(([r.pts[i][0] + nm[i].0[0] * d, r.pts[i][1] + nm[i].0[1] * d, rs[i] + 7.7], r.pts[0], *r.pts.last().unwrap()));
+        }
+    }
+    out
+}
+
 /// Left-hand normals (mitred) of a polyline: (unit normal, mitre scale) per point.
 fn normals(pts: &[[f64; 2]]) -> Vec<([f64; 2], f64)> {
     let n = pts.len();
@@ -211,8 +242,7 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
         let ch = chainage(pts);
         let len = *ch.last().unwrap();
         let mut next_pier = 12.0;
-        let mut next_lamp = 10.0;
-        let mut lamp_side = 1.0;
+        let spots = lamp_spots(pts);
         for i in 0..n {
             let (dx, dy) = if i + 1 < n { (pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) } else { (pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) };
             let yaw = dy.atan2(dx);
@@ -227,8 +257,7 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
                     fill(&m, &mut col, [0.66, 0.66, 0.64]);
                 }
             }
-            if ch[i] >= next_lamp && ch[i] < len - 5.0 {
-                next_lamp = ch[i] + 30.0;
+            if let Some(&(_, lamp_side)) = spots.iter().find(|s| s.0 == i) {
                 let b = p(i, lamp_side * (e + 0.12), 1.1);
                 let a = p(i, lamp_side * (e - 1.2), 0.0);
                 m.box_(b[0] - 0.08, b[1] - 0.08, b[2], b[0] + 0.08, b[1] + 0.08, rs[i] + 8.0, &[mat::RIM]);
@@ -236,7 +265,6 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
                 m.box_(a[0] - 0.25, a[1] - 0.25, rs[i] + 7.75, a[0] + 0.25, a[1] + 0.25, rs[i] + 7.9, &[mat::HEADLIGHT]);
                 m.box_(a[0].min(b[0]) - 0.04, a[1].min(b[1]) - 0.04, rs[i] + 7.92, a[0].max(b[0]) + 0.04, a[1].max(b[1]) + 0.04, rs[i] + 8.0, &[mat::RIM]);
                 fill(&m, &mut col, [0.5, 0.52, 0.55]);
-                lamp_side = -lamp_side;
             }
         }
         let (a, b) = (pts[0], pts[n - 1]);
@@ -252,7 +280,7 @@ mod tests {
 
     fn road(pts: Vec<[f64; 2]>, bridge: bool) -> Road {
         let n = pts.len();
-        Road { cls: "primary".into(), width: 7.0, pts, junction: vec![false; n], bridge }
+        Road { cls: "primary".into(), width: 7.0, pts, junction: vec![false; n], bridge, oneway: 0 }
     }
 
     #[test]

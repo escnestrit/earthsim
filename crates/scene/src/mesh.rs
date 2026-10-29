@@ -338,7 +338,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     };
     let mut mk = Mb::default();
     for (r, pts, _) in &roads {
-        if r.width < 5.5 || r.cls.ends_with("link") || r.cls == "service" {
+        if r.width < 5.5 || r.cls.ends_with("link") || r.cls == "service" || r.oneway != 0 {
             continue;
         }
         let mut cum = 0.0_f64;

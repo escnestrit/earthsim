@@ -250,6 +250,8 @@ pub struct Game {
     pub jcar_has_visual: bool,
     /// street lamp heads per tile (u64::MAX: the static scene)
     lamps: HashMap<u64, Vec<[f64; 3]>>,
+    /// bridge lamps: head (height above the bridge's base line) and the bridge end points
+    bridge_lamps: HashMap<u64, Vec<([f64; 3], [f64; 2], [f64; 2])>>,
     /// cars driving around the player
     pub traffic: crate::traffic::Traffic,
     traffic_last: Option<(f64, f64)>,
@@ -307,6 +309,7 @@ impl Game {
             jcar_visual: None,
             jcar_has_visual: false,
             lamps: HashMap::new(),
+            bridge_lamps: HashMap::new(),
             traffic: crate::traffic::Traffic::default(),
             traffic_last: None,
             deformed: Vec::new(),
@@ -645,11 +648,20 @@ impl Game {
     pub fn nearest_lamps(&mut self, x: f64, y: f64, n: usize) -> Vec<[f64; 3]> {
         if self.lamps.is_empty() && !self.scene.roads.is_empty() && self.stream.is_none() {
             self.lamps.insert(u64::MAX, scene::mesh::street_lamps(&self.scene));
+            self.bridge_lamps.insert(u64::MAX, scene::bridge::lamps(&self.scene));
         }
-        let mut all: Vec<(f64, [f64; 3])> = self.lamps.values().flatten().map(|p| ((p[0] - x).hypot(p[1] - y), *p)).filter(|(d, _)| *d < 250.0).collect();
-        all.sort_by(|a, b| a.0.total_cmp(&b.0));
         let f = &self.ground.field;
-        all.into_iter().take(n).map(|(_, p)| [p[0], p[1], p[2] + f.height(p[0], p[1])]).collect()
+        let mut all: Vec<(f64, [f64; 3])> = self.lamps.values().flatten().map(|p| [p[0], p[1], p[2] + f.height(p[0], p[1])]).collect::<Vec<_>>().into_iter().map(|p| ((p[0] - x).hypot(p[1] - y), p)).filter(|(d, _)| *d < 250.0).collect();
+        for (p, a, b) in self.bridge_lamps.values().flatten() {
+            let d = (p[0] - x).hypot(p[1] - y);
+            if d < 250.0 {
+                let t = scene::bridge::chord_t(*a, *b, p[0], p[1]);
+                let (ha, hb) = (f.height(a[0], a[1]), f.height(b[0], b[1]));
+                all.push((d, [p[0], p[1], p[2] + ha + (hb - ha) * t]));
+            }
+        }
+        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+        all.into_iter().take(n).map(|(_, p)| p).collect()
     }
 
     /// Radius of the loaded world around the car (m).
@@ -712,6 +724,7 @@ impl Game {
                         self.world.add_poly_tagged(key, c.outline());
                     }
                     self.lamps.insert(key, scene::mesh::street_lamps(&scene));
+                    self.bridge_lamps.insert(key, scene::bridge::lamps(&scene));
                     st.scenes.insert(key, scene);
                     let draped = if self.ground.field.is_empty() { meshes.clone() } else { Arc::new(drape(&meshes, &self.ground.field)) };
                     self.terrain.flat.insert(key, meshes);
@@ -723,6 +736,7 @@ impl Game {
                     self.world.remove_tag(key);
                     st.scenes.remove(&key);
                     self.lamps.remove(&key);
+                    self.bridge_lamps.remove(&key);
                     self.terrain.flat.remove(&key);
                     self.render_ops.push(RenderOp::RemoveTile(key));
                     changed = true;
@@ -1393,7 +1407,7 @@ mod tests {
     fn the_car_drives_up_onto_a_bridge_deck_and_the_deck_mesh_matches_it() {
         use phys::Ground;
         use scene::model::{Area, AreaKind, Road};
-        let road = |pts: Vec<[f64; 2]>, bridge: bool| Road { cls: "primary".into(), width: 8.0, junction: vec![false; pts.len()], pts, bridge };
+        let road = |pts: Vec<[f64; 2]>, bridge: bool| Road { cls: "primary".into(), width: 8.0, junction: vec![false; pts.len()], pts, bridge, oneway: 0 };
         let mut sc = Scene::default();
         sc.roads.push(road((0..=20).map(|i| [-200.0 + i as f64 * 10.0, 0.0]).collect(), false));
         sc.roads.push(road((0..=20).map(|i| [i as f64 * 10.0, 0.0]).collect(), true));

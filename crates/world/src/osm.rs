@@ -29,6 +29,8 @@ pub struct RawRoad {
     pub pts: Vec<(f64, f64)>,
     pub junction: Vec<bool>,
     pub bridge: bool,
+    /// `oneway`: 1 along the points, -1 against, 0 both ways
+    pub oneway: i8,
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +133,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
         pts: Vec<(f64, f64)>,
         nodes: Vec<i64>,
         bridge: bool,
+        oneway: i8,
     }
     let mut pend: Vec<Pending> = Vec::new();
     let mut node_use: HashMap<i64, u32> = HashMap::new();
@@ -176,7 +179,15 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                         *node_use.entry(*n).or_default() += 1;
                     }
                     let bridge = tg("bridge").is_some_and(|v| v != "no") && pts.len() >= 2;
-                    pend.push(Pending { cls: hw.to_string(), width, from_tag, name: tg("name").unwrap_or("").to_string(), pts, nodes, bridge });
+                    // roundabouts and motorways are one-way unless tagged otherwise
+                    let oneway = match tg("oneway") {
+                        Some("yes") | Some("true") | Some("1") => 1,
+                        Some("-1") | Some("reverse") => -1,
+                        Some(_) => 0,
+                        None if tg("junction") == Some("roundabout") || hw == "motorway" || hw == "motorway_link" => 1,
+                        None => 0,
+                    };
+                    pend.push(Pending { cls: hw.to_string(), width, from_tag, name: tg("name").unwrap_or("").to_string(), pts, nodes, bridge, oneway });
                 } else if let Some(kind) = crate::areas::area_kind(&tags) {
                     // closed ways only (multipolygon relations come through Overture, not Overpass)
                     if pts.len() >= 4 && pts.first() == pts.last() {
@@ -247,7 +258,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
             let mid = p.pts[p.pts.len() / 2];
             let mid = if p.pts.len() % 2 == 0 { ((mid.0 + p.pts[p.pts.len() / 2 - 1].0) / 2.0, (mid.1 + p.pts[p.pts.len() / 2 - 1].1) / 2.0) } else { mid };
             if TileId::from_lat_lon(mid.0, mid.1, tile.z) == tile {
-                out.roads.push(RawRoad { cls: p.cls.clone(), width: p.width, width_from_tag: p.from_tag, name: p.name.clone(), pts: p.pts.clone(), junction: junction_full.clone(), bridge: true });
+                out.roads.push(RawRoad { cls: p.cls.clone(), width: p.width, width_from_tag: p.from_tag, name: p.name.clone(), pts: p.pts.clone(), junction: junction_full.clone(), bridge: true, oneway: p.oneway });
             }
             continue;
         }
@@ -260,6 +271,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                 pts: p.pts[s..=e].to_vec(),
                 junction: junction_full[s..=e].to_vec(),
                 bridge: false,
+                oneway: p.oneway,
             });
         }
     }
@@ -506,7 +518,7 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
             pts.push(*p);
             jn.push(r.junction.get(i).copied().unwrap_or(false));
         }
-        sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts, junction: jn, bridge: r.bridge });
+        sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts, junction: jn, bridge: r.bridge, oneway: r.oneway });
     }
     let mut status: HashMap<String, usize> = HashMap::new();
     let mut origins: HashMap<String, usize> = HashMap::new();
