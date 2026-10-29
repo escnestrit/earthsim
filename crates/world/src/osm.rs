@@ -405,6 +405,7 @@ pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar>
     };
     let junctions: Vec<[f64; 2]> = sc.roads.iter().flat_map(|r| r.pts.iter().zip(&r.junction).filter(|(_, j)| **j).map(|(p, _)| *p)).collect();
     let near_junction = |x: f64, y: f64| junctions.iter().any(|j| (j[0] - x).hypot(j[1] - y) < 12.0);
+    let ramps = scene::bridge::spans(sc);
     for r in &sc.roads {
         if !matches!(r.cls.as_str(), "residential" | "living_street" | "unclassified" | "tertiary" | "service") || r.width < 4.0 || r.bridge {
             continue;
@@ -426,7 +427,7 @@ pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar>
                     let off = r.width / 2.0 + 1.0;
                     let (x, y) = (a[0] + ux * s - uy * off * side, a[1] + uy * s + ux * off * side);
                     let h = hash(x, y, 1);
-                    if h % 100 >= 50 || near_junction(x, y) || in_building(x, y) || out.len() >= MAX {
+                    if h % 100 >= 50 || near_junction(x, y) || in_building(x, y) || out.len() >= MAX || scene::bridge::on_ramp(&ramps, x, y, 1.0) {
                         continue;
                     }
                     // a little untidy: small offsets and angles

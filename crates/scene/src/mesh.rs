@@ -1001,6 +1001,11 @@ pub fn lamp_posts(sc: &Scene) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
             cum += len;
         }
     }
+    // none standing in the embankment of a bridge ramp
+    let spans = crate::bridge::spans(sc);
+    if !spans.is_empty() {
+        out.retain(|(p, _, _)| !crate::bridge::on_ramp(&spans, p[0], p[1], 0.5));
+    }
     out
 }
 

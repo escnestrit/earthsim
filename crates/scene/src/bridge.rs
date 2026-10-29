@@ -2,9 +2,10 @@
 //! edge, piers and lamp posts, and the physics drives on the same deck.
 //!
 //! Height: the deck runs straight between the ground heights at its two ends (so it spans a valley instead
-//! of following it down) plus a rise in the middle: up to 5 m over a road it crosses, 2.5 m over water,
-//! 2 m otherwise, limited so the ramps stay under about 10 %. A short bridge over a road on flat ground is
-//! therefore lower than a real overpass, whose ramps lie on the neighbouring (untagged) road ways.
+//! of following it down) plus a rise: 6 m over a road it crosses, 2.5 m over water, 2 m otherwise. The
+//! climb happens on the approach roads (the road continuing straight from each end): they become ramps
+//! between retaining walls, at most ~9 % steep and 130 m long, so a short approach gives a lower bridge.
+//! Where no approach continues (a junction right at the end), the deck itself humps up and down.
 use crate::mesh::{mat, MeshData, Mb, FLOATS_PER_VERTEX};
 use crate::model::{AreaKind, Road, Scene};
 
@@ -59,24 +60,166 @@ fn chainage(pts: &[[f64; 2]]) -> Vec<f64> {
     s
 }
 
-/// Rise of the deck above the straight line between its ends, per road point (0 at both ends).
-pub fn rise(sc: &Scene, r: &Road) -> Vec<f64> {
-    if !r.bridge || r.pts.len() < 2 {
-        return vec![0.0; r.pts.len()];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpanKind {
+    Deck,
+    Ramp,
+}
+
+/// A raised piece of road: the bridge deck itself or an approach ramp. `rise` is per point, above the
+/// straight line between the ground at `a` and at `b` (the anchors the mesh is draped by).
+#[derive(Clone, Debug)]
+pub struct Span {
+    pub kind: SpanKind,
+    pub pts: Vec<[f64; 2]>,
+    pub rise: Vec<f64>,
+    pub width: f64,
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+}
+
+const RAMP_MAX: f64 = 130.0;
+/// ramp length per metre of height (smoothstep: steepest slope 1.5 / 16.7 = 9 %)
+const RAMP_PER_M: f64 = 16.7;
+/// height where two bridge ways meet
+const JOINT_H: f64 = 4.0;
+
+fn smooth(x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+fn near(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).hypot(a[1] - b[1]) < 0.5
+}
+
+/// The road continuing straight on from a bridge end (`end` = 0 first point, 1 last): its points from the
+/// bridge end outwards, cut at RAMP_MAX metres, and its width.
+fn approach(sc: &Scene, r: &Road, end: usize) -> Option<(Vec<[f64; 2]>, f64)> {
+    let n = r.pts.len();
+    let (e, inner) = if end == 0 { (r.pts[0], r.pts[1]) } else { (r.pts[n - 1], r.pts[n - 2]) };
+    let out = [e[0] - inner[0], e[1] - inner[1]];
+    let lo = out[0].hypot(out[1]).max(1e-9);
+    let mut best: Option<(f64, Vec<[f64; 2]>, f64)> = None;
+    for o in sc.roads.iter().filter(|o| !o.bridge && o.pts.len() >= 2) {
+        let pts: Vec<[f64; 2]> = if near(o.pts[0], e) {
+            o.pts.clone()
+        } else if near(*o.pts.last().unwrap(), e) {
+            o.pts.iter().rev().copied().collect()
+        } else {
+            continue;
+        };
+        let d = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]];
+        let c = (d[0] * out[0] + d[1] * out[1]) / (lo * d[0].hypot(d[1]).max(1e-9));
+        if c > 0.8 && best.as_ref().map_or(true, |b| c > b.0) {
+            best = Some((c, pts, o.width));
+        }
     }
+    let (_, pts, w) = best?;
+    // cut at RAMP_MAX
+    let mut cut = vec![pts[0]];
+    let mut len = 0.0;
+    for wnd in pts.windows(2) {
+        let l = (wnd[1][0] - wnd[0][0]).hypot(wnd[1][1] - wnd[0][1]);
+        if len + l >= RAMP_MAX {
+            let t = (RAMP_MAX - len) / l.max(1e-9);
+            cut.push([wnd[0][0] + (wnd[1][0] - wnd[0][0]) * t, wnd[0][1] + (wnd[1][1] - wnd[0][1]) * t]);
+            break;
+        }
+        len += l;
+        cut.push(wnd[1]);
+    }
+    Some((cut, w))
+}
+
+/// Bridge `r` and its approach ramps.
+pub fn spans_of(sc: &Scene, r: &Road) -> Vec<Span> {
+    if !r.bridge || r.pts.len() < 2 {
+        return Vec::new();
+    }
+    let n = r.pts.len();
     let s = chainage(&r.pts);
-    let len = *s.last().unwrap();
+    let len = s[n - 1];
     let (over_road, over_water) = crossings(sc, r);
-    let target: f64 = if over_road { 5.0 } else if over_water { 2.5 } else { 2.0 };
-    // smoothstep ramps: steepest slope is 1.5 * rise / ramp; keep it near 10 %
-    let ramp = (len / 2.0).min(target * 1.5 / 0.10).max(1e-3);
-    let h = target.min(ramp * 0.10 / 1.5);
-    s.iter()
+    let target: f64 = if over_road { 6.0 } else if over_water { 2.5 } else { 2.0 };
+    // what continues from each end: an approach road (a ramp), another bridge, or nothing
+    let mut appr: [Option<(Vec<[f64; 2]>, f64)>; 2] = [None, None];
+    let mut end_h = [0.0f64; 2];
+    for end in 0..2 {
+        let e = if end == 0 { r.pts[0] } else { r.pts[n - 1] };
+        if let Some((pts, w)) = approach(sc, r, end) {
+            let al = *chainage(&pts).last().unwrap();
+            end_h[end] = target.min(al / RAMP_PER_M);
+            appr[end] = Some((pts, w));
+        } else if sc.roads.iter().any(|o| o.bridge && !std::ptr::eq(o, r) && (near(o.pts[0], e) || near(*o.pts.last().unwrap(), e))) {
+            end_h[end] = JOINT_H;
+        }
+        if end_h[end] < 0.3 {
+            end_h[end] = 0.0;
+        }
+    }
+    // the deck: a hump where both ends stay low; otherwise straight between the end heights, a low end
+    // limiting the other so the deck itself can come down at about 10 %
+    let hump_ramp = (len / 2.0).min(target * 1.5 / 0.10).max(1e-3);
+    let hump_h = target.min(hump_ramp * 0.10 / 1.5);
+    if (end_h[0] == 0.0) != (end_h[1] == 0.0) {
+        let k = if end_h[0] == 0.0 { 1 } else { 0 };
+        end_h[k] = end_h[k].min(len * 0.10 / 1.5);
+    }
+    let mut out = Vec::new();
+    for end in 0..2 {
+        let h = end_h[end];
+        if let (Some((pts, w)), true) = (appr[end].take(), h > 0.0) {
+            let ramp = h * RAMP_PER_M;
+            let rise: Vec<f64> = chainage(&pts).iter().map(|d| h * smooth(1.0 - d / ramp)).collect();
+            let e = pts[0];
+            let far = *pts.last().unwrap();
+            out.push(Span { kind: SpanKind::Ramp, a: e, b: far, pts, rise, width: w });
+        }
+    }
+    let rise: Vec<f64> = s
+        .iter()
         .map(|&d| {
-            let x = (d.min(len - d) / ramp).clamp(0.0, 1.0);
-            h * x * x * (3.0 - 2.0 * x)
+            let t = d / len.max(1e-9);
+            match (end_h[0] > 0.0, end_h[1] > 0.0) {
+                (false, false) => hump_h * smooth(d.min(len - d) / hump_ramp),
+                (true, true) => end_h[0] + (end_h[1] - end_h[0]) * t,
+                (false, true) => end_h[1] * smooth(t),
+                (true, false) => end_h[0] * smooth(1.0 - t),
+            }
         })
-        .collect()
+        .collect();
+    out.insert(0, Span { kind: SpanKind::Deck, a: r.pts[0], b: r.pts[n - 1], pts: r.pts.clone(), rise, width: r.width });
+    out
+}
+
+/// All raised pieces of a scene: bridge decks first, then the ramps.
+pub fn spans(sc: &Scene) -> Vec<Span> {
+    let mut all: Vec<Span> = sc.roads.iter().flat_map(|r| spans_of(sc, r)).collect();
+    all.sort_by_key(|s| s.kind == SpanKind::Ramp);
+    all
+}
+
+/// Rise of a bridge's deck above the straight line between its ends, per road point.
+pub fn rise(sc: &Scene, r: &Road) -> Vec<f64> {
+    spans_of(sc, r).into_iter().find(|s| s.kind == SpanKind::Deck).map_or_else(|| vec![0.0; r.pts.len()], |s| s.rise)
+}
+
+/// Is (x, y) on a ramp raised more than 0.3 m (within `margin` of its edge)? Lamp posts and parked cars
+/// of the road below stay out of these.
+pub fn on_ramp(spans: &[Span], x: f64, y: f64, margin: f64) -> bool {
+    spans.iter().filter(|s| s.kind == SpanKind::Ramp).any(|s| {
+        let hw = s.width / 2.0 + WALK + PARAPET + margin;
+        s.pts.windows(2).zip(s.rise.windows(2)).any(|(w, r)| {
+            if r[0].max(r[1]) < 0.3 {
+                return false;
+            }
+            let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            let l2 = (dx * dx + dy * dy).max(1e-9);
+            let t = (((x - w[0][0]) * dx + (y - w[0][1]) * dy) / l2).clamp(0.0, 1.0);
+            (w[0][0] + dx * t - x).hypot(w[0][1] + dy * t - y) < hw
+        })
+    })
 }
 
 /// End points of a bridge mesh from its name (`bridge|ax|ay|bx|by`): the mesh is draped by the ground
@@ -96,20 +239,22 @@ pub fn chord_t(a: [f64; 2], b: [f64; 2], x: f64, y: f64) -> f64 {
     (((x - a[0]) * dx + (y - a[1]) * dy) / l2).clamp(0.0, 1.0)
 }
 
-/// Physics decks of a scene's bridges; `ground(x, y)` is the terrain height.
+/// Physics decks of a scene's bridges and ramps; `ground(x, y)` is the terrain height.
 pub fn deck_segs(sc: &Scene, ground: &dyn Fn(f64, f64) -> f64) -> Vec<phys::DeckSeg> {
     let mut out = Vec::new();
-    for r in sc.roads.iter().filter(|r| r.bridge && r.pts.len() >= 2) {
-        let rs = rise(sc, r);
-        let (a, b) = (r.pts[0], *r.pts.last().unwrap());
-        let (ga, gb) = (ground(a[0], a[1]), ground(b[0], b[1]));
+    for sp in spans(sc) {
+        let (ga, gb) = (ground(sp.a[0], sp.a[1]), ground(sp.b[0], sp.b[1]));
         let z = |i: usize| {
-            let p = r.pts[i];
-            let t = chord_t(a, b, p[0], p[1]);
-            ga + (gb - ga) * t + rs[i] + 0.02
+            let p = sp.pts[i];
+            let t = chord_t(sp.a, sp.b, p[0], p[1]);
+            ga + (gb - ga) * t + sp.rise[i] + 0.02
         };
-        for i in 0..r.pts.len() - 1 {
-            out.push(phys::DeckSeg { a: r.pts[i], b: r.pts[i + 1], za: z(i), zb: z(i + 1), hw: r.width / 2.0 + WALK });
+        for i in 0..sp.pts.len() - 1 {
+            // ramps only where they stand clear of the road below
+            if sp.kind == SpanKind::Ramp && sp.rise[i].max(sp.rise[i + 1]) < 0.05 {
+                continue;
+            }
+            out.push(phys::DeckSeg { a: sp.pts[i], b: sp.pts[i + 1], za: z(i), zb: z(i + 1), hw: sp.width / 2.0 + WALK });
         }
     }
     out
@@ -134,13 +279,12 @@ fn lamp_spots(pts: &[[f64; 2]]) -> Vec<(usize, f64)> {
 /// bridge's end points (the base is the ground height interpolated between them, as for the mesh).
 pub fn lamps(sc: &Scene) -> Vec<([f64; 3], [f64; 2], [f64; 2])> {
     let mut out = Vec::new();
-    for r in sc.roads.iter().filter(|r| r.bridge && r.pts.len() >= 2) {
-        let rs = rise(sc, r);
-        let nm = normals(&r.pts);
-        let e = r.width / 2.0 + WALK;
-        for (i, side) in lamp_spots(&r.pts) {
+    for sp in spans(sc) {
+        let nm = normals(&sp.pts);
+        let e = sp.width / 2.0 + WALK;
+        for (i, side) in lamp_spots(&sp.pts) {
             let d = side * (e - 1.2) * nm[i].1;
-            out.push(([r.pts[i][0] + nm[i].0[0] * d, r.pts[i][1] + nm[i].0[1] * d, rs[i] + 7.7], r.pts[0], *r.pts.last().unwrap()));
+            out.push(([sp.pts[i][0] + nm[i].0[0] * d, sp.pts[i][1] + nm[i].0[1] * d, sp.rise[i] + 7.7], sp.a, sp.b));
         }
     }
     out
@@ -194,12 +338,13 @@ fn strip<F: Fn(usize) -> V>(m: &mut Mb, a: &[V], b: &[V], away: F, mt: f32) {
 /// One mesh per bridge (named with its anchors, see `anchors`), vertex-coloured.
 pub fn meshes(sc: &Scene) -> Vec<MeshData> {
     let mut out = Vec::new();
-    for r in sc.roads.iter().filter(|r| r.bridge && r.pts.len() >= 2) {
-        let pts = &r.pts;
+    for sp in spans(sc) {
+        let ramp = sp.kind == SpanKind::Ramp;
+        let pts = &sp.pts;
         let n = pts.len();
-        let rs = rise(sc, r);
+        let rs = &sp.rise;
         let nm = normals(pts);
-        let hw = r.width / 2.0;
+        let hw = sp.width / 2.0;
         let mut m = Mb::default();
         let mut col: Vec<f32> = Vec::new();
         let fill = |m: &Mb, col: &mut Vec<f32>, c: [f32; 3]| {
@@ -228,7 +373,13 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
             strip(&mut m, &line(s * e, 0.17), &line(s * e, 1.1), side(-s), mat::MARKING);
             strip(&mut m, &line(s * e, 1.1), &line(s * (e + PARAPET), 1.1), up, mat::MARKING);
             fill(&m, &mut col, [0.78, 0.78, 0.76]);
-            strip(&mut m, &line(s * (e + PARAPET), -DECK_T), &line(s * (e + PARAPET), 1.1), side(s), mat::MARKING);
+            // deck edge, or on a ramp a retaining wall down into the ground
+            if ramp {
+                let foot: Vec<V> = (0..n).map(|i| { let q = p(i, s * (e + PARAPET), 0.0); [q[0], q[1], -2.0] }).collect();
+                strip(&mut m, &foot, &line(s * (e + PARAPET), 1.1), side(s), mat::MARKING);
+            } else {
+                strip(&mut m, &line(s * (e + PARAPET), -DECK_T), &line(s * (e + PARAPET), 1.1), side(s), mat::MARKING);
+            }
             fill(&m, &mut col, [0.7, 0.7, 0.68]);
             // metal handrail on top
             strip(&mut m, &line(s * (e + 0.05), 1.1), &line(s * (e + 0.05), 1.3), side(-s), mat::RIM);
@@ -236,8 +387,10 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
             fill(&m, &mut col, [0.55, 0.6, 0.62]);
         }
         // underside
-        strip(&mut m, &line(-(e + PARAPET), -DECK_T), &line(e + PARAPET, -DECK_T), down, mat::MARKING);
-        fill(&m, &mut col, [0.45, 0.45, 0.44]);
+        if !ramp {
+            strip(&mut m, &line(-(e + PARAPET), -DECK_T), &line(e + PARAPET, -DECK_T), down, mat::MARKING);
+            fill(&m, &mut col, [0.45, 0.45, 0.44]);
+        }
         // piers where the deck stands clear of the ground line, about every 24 m; lamp posts every 30 m
         let ch = chainage(pts);
         let len = *ch.last().unwrap();
@@ -248,7 +401,7 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
             let yaw = dy.atan2(dx);
             if ch[i] >= next_pier && ch[i] < len - 8.0 {
                 next_pier = ch[i] + 24.0;
-                if rs[i] - DECK_T > 0.6 {
+                if !ramp && rs[i] - DECK_T > 0.6 {
                     let c = pts[i];
                     // a wall pier across the deck, under it
                     m.obox(c[0], c[1], yaw + std::f64::consts::FRAC_PI_2, 2.0 * hw + 1.0, 1.1, -10.0, rs[i] - DECK_T, mat::MARKING);
@@ -267,7 +420,7 @@ pub fn meshes(sc: &Scene) -> Vec<MeshData> {
                 fill(&m, &mut col, [0.5, 0.52, 0.55]);
             }
         }
-        let (a, b) = (pts[0], pts[n - 1]);
+        let (a, b) = (sp.a, sp.b);
         out.push(MeshData { name: format!("bridge|{}|{}|{}|{}", a[0], a[1], b[0], b[1]), verts: m.a, polygon_offset: -3.0, casts_shadow: true, colors: col });
     }
     out
@@ -293,9 +446,26 @@ mod tests {
         assert_eq!(r[0], 0.0);
         assert_eq!(*r.last().unwrap(), 0.0);
         assert!((r[10] - 2.0).abs() < 1e-9, "{}", r[10]);
-        // a road below: 5 m
+        // a road below: 6 m
         sc.roads.push(road(vec![[100.0, -50.0], [100.0, 50.0]], false));
-        assert!((rise(&sc, &sc.roads[0])[10] - 5.0).abs() < 1e-9);
+        assert!((rise(&sc, &sc.roads[0])[10] - 6.0).abs() < 1e-9);
+        // approach roads continuing from both ends: ramps carry it up, the deck stays at 6 m
+        sc.roads.push(road((0..=15).map(|i| [-(i as f64) * 10.0, 0.0]).collect(), false));
+        sc.roads.push(road((0..=15).map(|i| [200.0 + i as f64 * 10.0, 0.0]).collect(), false));
+        let sp = spans_of(&sc, &sc.roads[0]);
+        assert_eq!(sp.len(), 3);
+        assert!(sp[0].rise.iter().all(|r| (r - 6.0).abs() < 1e-9), "{:?}", sp[0].rise);
+        for ramp in &sp[1..] {
+            assert_eq!(ramp.kind, SpanKind::Ramp);
+            assert!((ramp.rise[0] - 6.0).abs() < 1e-9 && *ramp.rise.last().unwrap() < 0.05, "{:?}", ramp.rise);
+            // no steeper than ~9 %
+            for (w, r) in ramp.pts.windows(2).zip(ramp.rise.windows(2)) {
+                let l = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+                assert!((r[0] - r[1]).abs() / l < 0.095);
+            }
+        }
+        assert!(on_ramp(&spans(&sc), -20.0, 3.0, 0.0) && !on_ramp(&spans(&sc), -149.0, 0.0, 0.0));
+        sc.roads.truncate(2);
         // short bridge: limited by the ramps
         let mut sc2 = Scene::default();
         sc2.roads.push(road(vec![[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0], [40.0, 0.0]], true));
@@ -312,6 +482,6 @@ mod tests {
         let segs = deck_segs(&sc, &|x, _| x * 0.01);
         assert_eq!(segs.len(), 20);
         assert!((segs[0].za - 0.02).abs() < 1e-9 && (segs[19].zb - 2.02).abs() < 1e-9);
-        assert!((segs[9].zb - (1.0 + 5.0 + 0.02)).abs() < 1e-9, "{}", segs[9].zb);
+        assert!((segs[9].zb - (1.0 + 6.0 + 0.02)).abs() < 1e-9, "{}", segs[9].zb);
     }
 }
