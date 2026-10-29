@@ -754,7 +754,7 @@ impl JbeamVehicle {
                 tb *= (1.0 - (-st.kappa - 0.12) / 0.10).clamp(0.05, 1.0);
             }
             tb += inp.handbrake * self.wheels[i].parking_torque * (1.0 - 0.75 * throttle);
-            let s = ground.sample(c.x, c.y);
+            let s = ground.sample_at(c.x, c.y, c.z - r_w);
             let nrm = s.normal;
             let pen = r_w - (c - v3(c.x, c.y, s.height)).dot(nrm);
             let w0 = st.w;

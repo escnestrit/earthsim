@@ -12,6 +12,11 @@ pub struct GroundSample {
 
 pub trait Ground {
     fn sample(&self, x: f64, y: f64) -> GroundSample;
+    /// The surface under a point at height `z`: on a bridge, the deck when the point is on or above it
+    /// (within a step of 0.7 m), else the ground below. Plain grounds have one level.
+    fn sample_at(&self, x: f64, y: f64, _z: f64) -> GroundSample {
+        self.sample(x, y)
+    }
 }
 
 /// A regular grid of heights in local metres (x east, y north), sampled bilinearly. Outside the grid the
@@ -63,15 +68,94 @@ impl HeightField {
     }
 }
 
-/// Ground following a height field (flat where there is none).
+/// One straight piece of a bridge deck: centre line a -> b at absolute heights za -> zb, half width hw.
+#[derive(Clone, Copy, Debug)]
+pub struct DeckSeg {
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub za: f64,
+    pub zb: f64,
+    pub hw: f64,
+}
+
+/// Bridge decks with a coarse grid index.
+#[derive(Clone, Debug, Default)]
+pub struct Decks {
+    segs: Vec<DeckSeg>,
+    grid: HashMap<(i64, i64), Vec<u32>>,
+}
+
+const DECK_CELL: f64 = 16.0;
+/// How far below a deck a point may be and still stand on it (wheels rolling up a ramp's edge).
+const DECK_STEP: f64 = 0.7;
+
+impl Decks {
+    pub fn new(segs: Vec<DeckSeg>) -> Decks {
+        let mut grid: HashMap<(i64, i64), Vec<u32>> = HashMap::new();
+        for (k, s) in segs.iter().enumerate() {
+            let r = s.hw + 0.5;
+            let (x0, x1) = (s.a[0].min(s.b[0]) - r, s.a[0].max(s.b[0]) + r);
+            let (y0, y1) = (s.a[1].min(s.b[1]) - r, s.a[1].max(s.b[1]) + r);
+            for i in (x0 / DECK_CELL).floor() as i64..=(x1 / DECK_CELL).floor() as i64 {
+                for j in (y0 / DECK_CELL).floor() as i64..=(y1 / DECK_CELL).floor() as i64 {
+                    grid.entry((i, j)).or_default().push(k as u32);
+                }
+            }
+        }
+        Decks { segs, grid }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.segs.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.segs.len()
+    }
+    /// Highest deck under (x, y) that a point at `z` stands on: (height, slope along x, slope along y).
+    pub fn at(&self, x: f64, y: f64, z: f64) -> Option<(f64, f64, f64)> {
+        let cell = ((x / DECK_CELL).floor() as i64, (y / DECK_CELL).floor() as i64);
+        let mut best: Option<(f64, f64, f64)> = None;
+        for &k in self.grid.get(&cell)? {
+            let s = &self.segs[k as usize];
+            let (dx, dy) = (s.b[0] - s.a[0], s.b[1] - s.a[1]);
+            let l2 = dx * dx + dy * dy;
+            if l2 < 1e-9 {
+                continue;
+            }
+            let t = ((x - s.a[0]) * dx + (y - s.a[1]) * dy) / l2;
+            if !(0.0..=1.0).contains(&t) {
+                continue;
+            }
+            let (px, py) = (s.a[0] + dx * t - x, s.a[1] + dy * t - y);
+            if px * px + py * py > s.hw * s.hw {
+                continue;
+            }
+            let h = s.za + (s.zb - s.za) * t;
+            if z < h - DECK_STEP || best.is_some_and(|b| b.0 >= h) {
+                continue;
+            }
+            let g = (s.zb - s.za) / l2;
+            best = Some((h, g * dx, g * dy));
+        }
+        best
+    }
+}
+
+/// Ground following a height field (flat where there is none), with bridge decks above it.
 #[derive(Clone, Default)]
 pub struct TerrainGround {
     pub field: std::sync::Arc<HeightField>,
+    pub decks: std::sync::Arc<Decks>,
 }
 
 impl Ground for TerrainGround {
     fn sample(&self, x: f64, y: f64) -> GroundSample {
         GroundSample { height: self.field.height(x, y), normal: self.field.normal(x, y), grip: 1.0 }
+    }
+    fn sample_at(&self, x: f64, y: f64, z: f64) -> GroundSample {
+        match self.decks.at(x, y, z) {
+            Some((h, gx, gy)) if h > self.field.height(x, y) => GroundSample { height: h, normal: v3(-gx, -gy, 1.0).norm(), grip: 1.0 },
+            _ => self.sample(x, y),
+        }
     }
 }
 
@@ -379,6 +463,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bridge_deck_carries_what_is_on_it_and_not_what_is_under_it() {
+        let decks = Decks::new(vec![DeckSeg { a: [0.0, 0.0], b: [100.0, 0.0], za: 0.0, zb: 10.0, hw: 4.0 }]);
+        let g = TerrainGround { field: Default::default(), decks: std::sync::Arc::new(decks) };
+        // on the deck half way: 5 m
+        assert!((g.sample_at(50.0, 1.0, 5.3).height - 5.0).abs() < 1e-9);
+        // a car under the bridge stays on the ground
+        assert!(g.sample_at(50.0, 1.0, 0.5).height.abs() < 1e-9);
+        // beside the deck: ground
+        assert!(g.sample_at(50.0, 6.0, 5.3).height.abs() < 1e-9);
+        // the deck normal leans back against the climb
+        assert!(g.sample_at(50.0, 0.0, 5.0).normal.x < -0.05);
+        // the plain sample ignores decks
+        assert!(g.sample(50.0, 0.0).height.abs() < 1e-9);
+    }
+
+    #[test]
     fn height_field_bilinear_edges_and_normal() {
         let f = HeightField { x0: 0.0, y0: 0.0, cell: 10.0, nx: 3, ny: 2, h: vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0] };
         assert!((f.height(5.0, 5.0) - 0.5).abs() < 1e-9);
@@ -386,7 +486,7 @@ mod tests {
         assert!((f.height(100.0, -50.0) - 2.0).abs() < 1e-9, "edge value outside");
         let n = f.normal(10.0, 5.0);
         assert!(n.x < -0.09 && n.x > -0.11 && n.z > 0.99, "{n:?}");
-        let g = TerrainGround { field: std::sync::Arc::new(f.shifted(100.0, 0.0)) };
+        let g = TerrainGround { field: std::sync::Arc::new(f.shifted(100.0, 0.0)), decks: Default::default() };
         assert!((g.sample(105.0, 5.0).height - 0.5).abs() < 1e-9);
         assert_eq!(HeightField::default().height(3.0, 4.0), 0.0);
     }

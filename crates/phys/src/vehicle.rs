@@ -241,7 +241,7 @@ impl Vehicle {
             let mut ok = true;
             for _ in 0..3 {
                 let pt = mount + down * t;
-                let s = ground.sample(pt.x, pt.y);
+                let s = ground.sample_at(pt.x, pt.y, pt.z);
                 let denom = down.dot(s.normal);
                 if denom > -0.2 {
                     ok = false;

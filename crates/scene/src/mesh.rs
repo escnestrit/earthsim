@@ -33,13 +33,15 @@ pub mod mat {
     pub const WALL_GLASS: f32 = 23.0;
     pub const WALL_WOOD: f32 = 24.0;
     pub const WALL_METAL: f32 = 25.0;
+    /// Number of facade styles: plaster, brick, panel, glass, wood, metal, tiled panel, silicate brick,
+    /// arched (churches, civic), school (wide glazing), shopfront/garage, office ribbon.
+    pub const FACADE_STYLES: usize = 12;
     pub fn is_facade(m: f32) -> bool {
-        (19.5..26.5).contains(&m) || (29.5..53.5).contains(&m)
+        (19.5..25.5).contains(&m) || (29.5..30.5 + (FACADE_STYLES * 3) as f32).contains(&m)
     }
-    /// Facade style index 0..8 (plaster, brick, panel, glass, wood, metal, tiled panel, silicate brick) and
-    /// variant 0..3 -> material id.
+    /// Facade style index 0..FACADE_STYLES and variant 0..3 -> material id.
     pub fn facade(style: usize, variant: usize) -> f32 {
-        if variant == 0 {
+        if variant == 0 && style < 6 {
             20.0 + style as f32
         } else {
             30.0 + (style * 3 + variant) as f32
@@ -51,7 +53,7 @@ pub mod mat {
             (((m - 20.0).round() as usize).min(5), 0)
         } else {
             let k = (m - 30.0).round() as usize;
-            ((k / 3).min(7), k % 3)
+            ((k / 3).min(FACADE_STYLES - 1), k % 3)
         }
     }
 }
@@ -256,6 +258,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     let roads: Vec<_> = sc
         .roads
         .iter()
+        .filter(|r| !r.bridge)
         .filter_map(|r| {
             let (pts, jn) = dedup(&r.pts, &r.junction);
             (pts.len() > 1).then(|| (r, pts, jn))
@@ -444,6 +447,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "buildings".into(), verts: bm.a, polygon_offset: 0.0, casts_shadow: true, colors: bcol });
     out.push(building_details(sc));
+    out.extend(crate::bridge::meshes(sc));
 
     // parked cars: body, glazed cabin with a painted roof, wheels; colours in typical proportions
     let mut pm = Mb::default();
@@ -693,8 +697,9 @@ pub fn building_details(sc: &Scene) -> MeshData {
             }
             push_col(&m, &mut col, wallc(0.8));
         }
+        crate::landmark::add(&mut m, &mut col, b);
         // machine rooms / stair heads on tall flat roofs (one per section of a designed block)
-        if flat && h >= 12.0 {
+        if flat && h >= 12.0 && b.landmark == crate::model::Landmark::None {
             let area: f64 = (0..n).map(|i| f[i][0] * f[(i + 1) % n][1] - f[(i + 1) % n][0] * f[i][1]).sum::<f64>().abs() / 2.0;
             if area > 150.0 {
                 let inside = |x: f64, y: f64| {
@@ -885,7 +890,7 @@ pub fn building_details(sc: &Scene) -> MeshData {
 /// Street lamp posts of a scene: (pole foot, lamp head, unit normal from the road to the pole). Town roads,
 /// every ~32 m on alternating sides, none within 8 m of a junction or road end.
 pub fn lamp_posts(sc: &Scene) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
-    let roads: Vec<_> = sc.roads.iter().filter_map(|r| {
+    let roads: Vec<_> = sc.roads.iter().filter(|r| !r.bridge).filter_map(|r| {
         let (pts, jn) = dedup(&r.pts, &r.junction);
         (pts.len() > 1).then(|| (r, pts, jn))
     }).collect();

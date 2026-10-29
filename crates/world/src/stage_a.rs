@@ -30,10 +30,54 @@ pub fn estimate_height(tags: &Tags) -> (f64, &'static str) {
         }
     }
     let n = match tag(tags, "building") {
-        Some("house") | Some("garage") | Some("shed") | Some("detached") | Some("hut") => 2.0,
+        Some("garage") | Some("garages") | Some("shed") | Some("kiosk") | Some("carport") => 1.0,
+        Some("house") | Some("detached") | Some("hut") | Some("chapel") => 2.0,
+        Some("retail") | Some("supermarket") => 1.5,
+        Some("church") | Some("mosque") | Some("synagogue") | Some("temple") => 4.0,
+        Some("school") | Some("kindergarten") => if tag(tags, "building") == Some("kindergarten") { 2.0 } else { 4.0 },
         _ => 5.0,
     };
     (n * LEVEL_H, "default")
+}
+
+/// What a building is used for, from its class, `amenity` and `building:use`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Use {
+    Religious,
+    Education,
+    Medical,
+    Office,
+    Retail,
+    Garage,
+    Industrial,
+    Civic,
+    Other,
+}
+
+pub fn use_of(tags: &Tags) -> Use {
+    let class = tag(tags, "building").unwrap_or("yes");
+    let amenity = tag(tags, "amenity").unwrap_or("");
+    let bu = tag(tags, "building:use").unwrap_or("");
+    let any = |v: &[&str]| v.contains(&class) || v.contains(&amenity) || v.contains(&bu);
+    if any(&["church", "cathedral", "chapel", "mosque", "synagogue", "temple", "shrine", "religious", "place_of_worship", "monastery"]) {
+        Use::Religious
+    } else if any(&["school", "university", "college", "kindergarten", "education", "library"]) {
+        Use::Education
+    } else if any(&["hospital", "clinic", "doctors", "medical"]) {
+        Use::Medical
+    } else if any(&["garage", "garages", "carport"]) {
+        Use::Garage
+    } else if any(&["office", "bank"]) || tag(tags, "office").is_some() {
+        Use::Office
+    } else if any(&["retail", "supermarket", "commercial", "kiosk", "marketplace", "mall"]) || tag(tags, "shop").is_some() {
+        Use::Retail
+    } else if any(&["industrial", "warehouse", "manufacture", "factory", "hangar", "service"]) {
+        Use::Industrial
+    } else if any(&["civic", "public", "government", "townhall", "train_station", "transportation", "courthouse", "theatre", "museum", "fire_station", "police"]) {
+        Use::Civic
+    } else {
+        Use::Other
+    }
 }
 
 /// Parse an OSM/Overture colour: `#rgb`, `#rrggbb` or a common name. Returns sRGB 0..1.
@@ -97,6 +141,7 @@ pub fn facade_for(tags: &Tags, height: f64, seed: u64) -> scene::Facade {
     let material = tag(tags, "building:material").map(|m| m.to_ascii_lowercase());
     let class = tag(tags, "building").unwrap_or("yes");
     let levels = tag(tags, "building:levels").and_then(|l| l.trim().parse::<f64>().ok()).filter(|l| *l >= 1.0 && *l < 300.0);
+    let usage = use_of(tags);
     f.style = match material.as_deref() {
         Some("brick") => mat::WALL_BRICK,
         Some("glass") | Some("mirror") => mat::WALL_GLASS,
@@ -105,6 +150,7 @@ pub fn facade_for(tags: &Tags, height: f64, seed: u64) -> scene::Facade {
         Some("metal") | Some("steel") | Some("metal_plates") | Some("aluminium") => mat::WALL_METAL,
         Some(_) => mat::WALL_PLASTER,
         None => match class {
+            _ if usage == Use::Garage => mat::WALL_BRICK,
             "office" | "commercial" | "retail" if height > 24.0 => mat::WALL_GLASS,
             "industrial" | "warehouse" | "hangar" | "service" | "manufacture" => mat::WALL_METAL,
             "apartments" | "residential" | "dormitory" if height >= 15.0 => mat::WALL_PANEL,
@@ -139,11 +185,47 @@ pub fn facade_for(tags: &Tags, height: f64, seed: u64) -> scene::Facade {
     // window layout variant (0..3) of the style
     let style_index = [mat::WALL_PLASTER, mat::WALL_BRICK, mat::WALL_PANEL, mat::WALL_GLASS, mat::WALL_WOOD, mat::WALL_METAL].iter().position(|s| *s == f.style).unwrap_or(0);
     f.style = mat::facade(style_index, if seed == 0 { 0 } else { (seed % 3) as usize });
+    // buildings by their use: arched windows for churches and civic buildings, wide glazing for schools
+    // and hospitals, shop windows, garage doors, office cladding (unless the data names the material)
+    let var = |n: u64| if seed == 0 { 0 } else { ((seed >> 3) % n) as usize };
+    let brick = material.as_deref() == Some("brick");
+    let special = match usage {
+        Use::Religious => Some(mat::facade(8, if brick { 1 } else { [0, 0, 1][var(3)] })),
+        Use::Civic if material.is_none() || brick => Some(mat::facade(8, if brick { 1 } else { [0, 2][var(2)] })),
+        Use::Education | Use::Medical if material.is_none() || brick || material.as_deref() == Some("plaster") => Some(mat::facade(9, if brick { 1 } else if usage == Use::Medical { 0 } else { [0, 0, 2][var(3)] })),
+        Use::Retail if material.is_none() && height <= 9.0 => Some(mat::facade(10, 0)),
+        Use::Garage if material.is_none() || brick => Some(mat::facade(10, 2)),
+        Use::Office if material.is_none() && height <= 24.0 => Some(mat::facade(11, var(3))),
+        _ => None,
+    };
+    if let Some(sp) = special {
+        f.style = sp;
+        if colour.is_none() && seed != 0 {
+            f.colour = match usage {
+                Use::Religious | Use::Civic => pick(&[[0.95, 0.94, 0.90], [0.94, 0.88, 0.70], [0.93, 0.86, 0.76], [0.80, 0.86, 0.90], [0.92, 0.80, 0.78], [0.96, 0.95, 0.93]]),
+                Use::Education | Use::Medical => pick(&[[0.94, 0.92, 0.86], [0.92, 0.84, 0.66], [0.84, 0.88, 0.84], [0.96, 0.95, 0.93], [0.88, 0.80, 0.70]]),
+                Use::Office => pick(&[[0.85, 0.86, 0.88], [0.72, 0.74, 0.78], [0.88, 0.84, 0.76], [0.62, 0.64, 0.66]]),
+                Use::Retail => pick(&[[0.85, 0.83, 0.80], [0.70, 0.70, 0.72], [0.90, 0.86, 0.78]]),
+                _ => f.colour,
+            };
+        }
+        if usage == Use::Religious && tag(tags, "roof:colour").is_none() {
+            f.roof_colour = pick(&[[0.30, 0.48, 0.38], [0.35, 0.38, 0.42], [0.55, 0.30, 0.22]]);
+        }
+    }
     if let Some(rc) = tag(tags, "roof:colour").and_then(parse_colour) {
         f.roof_colour = rc;
     }
     if let Some(l) = levels {
         f.floor_height = ((height / l) as f32).clamp(2.4, 6.0);
+    } else if usage == Use::Religious {
+        f.floor_height = 5.5;
+    } else if matches!(usage, Use::Education | Use::Medical | Use::Civic) {
+        f.floor_height = 3.4 + if usage == Use::Civic { 0.6 } else { 0.0 };
+    } else if usage == Use::Garage {
+        f.floor_height = 3.0;
+    } else if usage == Use::Retail && height <= 9.0 {
+        f.floor_height = (height as f32).clamp(3.0, 4.5);
     } else if mat::facade_parts(f.style).0 == 5 {
         f.floor_height = 6.0;
     } else if seed != 0 {
@@ -204,7 +286,8 @@ pub fn roof_plan(tags: &Tags, ring: &[(f64, f64)], h: f64) -> Option<RoofPlan> {
         Some(_) => return None,
         None => {
             let small_house = matches!(class, "house" | "detached" | "semidetached_house" | "bungalow" | "cabin" | "farm" | "hut" | "dacha");
-            if small_house && h <= 12.0 { "gabled" } else { return None }
+            let church = use_of(tags) == Use::Religious && !matches!(class, "mosque") && tag(tags, "religion") != Some("muslim");
+            if small_house && h <= 12.0 || church && h <= 30.0 { "gabled" } else { return None }
         }
     };
     let c = simplify(ring);
@@ -387,6 +470,43 @@ pub fn triangulate(ring: &[(f64, f64)]) -> Option<Vec<[usize; 3]>> {
     Some(out)
 }
 
+/// Tower, dome or spire for a place of worship: from `religion` / `denomination` when mapped, otherwise the
+/// tradition most common in the region. Detailed OSM churches (domes as building parts, a dome or onion
+/// `roof:shape`) already carry their own shape and get nothing added.
+pub fn landmark_for(tags: &Tags, at: (f64, f64), area: f64, base: f64) -> scene::model::Landmark {
+    use scene::model::Landmark;
+    if use_of(tags) != Use::Religious || base > 0.1 || area < 40.0 || tag(tags, "building:part").is_some() && tag(tags, "building").is_none() {
+        return Landmark::None;
+    }
+    if matches!(tag(tags, "roof:shape"), Some("dome") | Some("onion") | Some("pyramidal") | Some("cone") | Some("conical")) {
+        return Landmark::None;
+    }
+    let class = tag(tags, "building").unwrap_or("yes");
+    let religion = tag(tags, "religion").unwrap_or("");
+    let denom = tag(tags, "denomination").unwrap_or("").to_ascii_lowercase();
+    if class == "mosque" || religion == "muslim" {
+        return Landmark::Mosque;
+    }
+    if matches!(class, "synagogue" | "temple" | "shrine") || !religion.is_empty() && religion != "christian" {
+        return Landmark::None;
+    }
+    let orthodox = if denom.contains("orthodox") {
+        true
+    } else if denom.contains("catholic") || denom.contains("lutheran") || denom.contains("protestant") || denom.contains("anglican") || denom.contains("baptist") || denom.contains("evangelical") {
+        false
+    } else {
+        let r = crate::series::regions_at(at.0, at.1);
+        r.contains(&crate::series::Region::ExUssr) || r.contains(&crate::series::Region::Belarus)
+    };
+    if class == "chapel" || area < 120.0 {
+        if orthodox { Landmark::Chapel } else { Landmark::Spire }
+    } else if orthodox {
+        Landmark::Orthodox
+    } else {
+        Landmark::Spire
+    }
+}
+
 pub struct BuiltBuilding {
     pub building: Building,
     pub ok_roof: bool,
@@ -543,8 +663,13 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
                         f.floor_height = d.floor_h;
                     }
                 }
+                // big-box stores: sandwich panels rather than shop windows all round
+                if use_of(tags) == Use::Retail && f.style == scene::mesh::mat::facade(10, 0) && area.abs() > 1500.0 {
+                    f.style = scene::mesh::mat::facade(10, 1);
+                }
                 f
             },
+            landmark: landmark_for(tags, latlon_ring[0], area.abs(), base),
             design: design.map(|d| d.design()),
             kind: if tag(tags, "building:part").is_some() && tag(tags, "building").is_none() { "part".into() } else { tag(tags, "building").unwrap_or("yes").to_string() },
             seed,
@@ -560,6 +685,47 @@ mod tests {
 
     fn t(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn buildings_by_use_get_their_facade_roof_and_landmark() {
+        use scene::mesh::mat;
+        use scene::model::Landmark;
+        let minsk = (53.9, 27.56);
+        let rome = (41.9, 12.5);
+        let church = t(&[("building", "church"), ("amenity", "place_of_worship"), ("religion", "christian")]);
+        assert_eq!(use_of(&church), Use::Religious);
+        assert_eq!(landmark_for(&church, minsk, 400.0, 0.0), Landmark::Orthodox);
+        assert_eq!(landmark_for(&church, rome, 400.0, 0.0), Landmark::Spire);
+        let cath = t(&[("building", "church"), ("denomination", "roman_catholic")]);
+        assert_eq!(landmark_for(&cath, minsk, 400.0, 0.0), Landmark::Spire);
+        assert_eq!(landmark_for(&t(&[("building", "chapel")]), minsk, 50.0, 0.0), Landmark::Chapel);
+        assert_eq!(landmark_for(&t(&[("building", "mosque")]), minsk, 400.0, 0.0), Landmark::Mosque);
+        assert_eq!(landmark_for(&t(&[("building", "church"), ("roof:shape", "onion")]), minsk, 400.0, 0.0), Landmark::None);
+        assert_eq!(landmark_for(&t(&[("building", "school")]), minsk, 400.0, 0.0), Landmark::None);
+        assert_eq!(mat::facade_parts(facade_for(&church, 12.0, 99).style).0, 8);
+        assert_eq!(mat::facade_parts(facade_for(&t(&[("building", "school")]), 12.0, 99).style).0, 9);
+        assert_eq!(mat::facade_parts(facade_for(&t(&[("building", "yes"), ("amenity", "school")]), 12.0, 99).style).0, 9);
+        assert_eq!(facade_for(&t(&[("building", "garages")]), 3.0, 99).style, mat::facade(10, 2));
+        assert_eq!(mat::facade_parts(facade_for(&t(&[("building", "office")]), 15.0, 99).style).0, 11);
+        assert_eq!(facade_for(&t(&[("building", "office")]), 60.0, 99).style, mat::facade(3, (99 % 3) as usize));
+        // a church gets a gabled roof; a garage row is one storey
+        let fr = crate::geo::LocalFrame::new(53.9, 27.56, 0.0);
+        let ring: Vec<(f64, f64)> = [(0.0, 0.0), (30.0, 0.0), (30.0, 14.0), (0.0, 14.0)].iter().map(|&(x, y)| {
+            let (la, lo, _) = fr.from_local(x, y, 0.0);
+            (la, lo)
+        }).collect();
+        let b = build("c", &ring, &church, &fr).unwrap().building;
+        assert!(b.verts.len() / 3 > 8, "ridge vertices");
+        assert_eq!(b.landmark, Landmark::Orthodox);
+        assert_eq!(estimate_height(&t(&[("building", "garages")])).0, 3.0);
+        // every facade id maps back to its style and variant
+        for st in 0..mat::FACADE_STYLES {
+            for v in 0..3 {
+                assert_eq!(mat::facade_parts(mat::facade(st, v)), (st, v));
+                assert!(mat::is_facade(mat::facade(st, v)));
+            }
+        }
     }
 
     #[test]

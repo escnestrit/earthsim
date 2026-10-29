@@ -1,6 +1,6 @@
 //! OpenStreetMap (Overpass `out geom` JSON) -> per-tile raw data -> `scene::Scene` in a local frame.
 //! Data © OpenStreetMap contributors, ODbL. Not handled yet: multipolygon relations, building:part,
-//! bridge/tunnel layers (tunnels are skipped, bridges are drawn at ground level), elevation.
+//! tunnels (skipped). Bridges are raised decks (see scene::mesh::bridge_profile).
 use crate::geo::LocalFrame;
 use crate::stage_a;
 use crate::tiles::{Bounds, TileId};
@@ -28,6 +28,7 @@ pub struct RawRoad {
     /// (lat, lon)
     pub pts: Vec<(f64, f64)>,
     pub junction: Vec<bool>,
+    pub bridge: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +130,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
         name: String,
         pts: Vec<(f64, f64)>,
         nodes: Vec<i64>,
+        bridge: bool,
     }
     let mut pend: Vec<Pending> = Vec::new();
     let mut node_use: HashMap<i64, u32> = HashMap::new();
@@ -173,7 +175,8 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                     for n in &nodes {
                         *node_use.entry(*n).or_default() += 1;
                     }
-                    pend.push(Pending { cls: hw.to_string(), width, from_tag, name: tg("name").unwrap_or("").to_string(), pts, nodes });
+                    let bridge = tg("bridge").is_some_and(|v| v != "no") && pts.len() >= 2;
+                    pend.push(Pending { cls: hw.to_string(), width, from_tag, name: tg("name").unwrap_or("").to_string(), pts, nodes, bridge });
                 } else if let Some(kind) = crate::areas::area_kind(&tags) {
                     // closed ways only (multipolygon relations come through Overture, not Overpass)
                     if pts.len() >= 4 && pts.first() == pts.last() {
@@ -238,6 +241,16 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
         } else {
             vec![false; p.pts.len()]
         };
+        // a bridge is drawn whole by the one tile holding its middle, so its deck profile is the same
+        // whichever tiles are loaded
+        if p.bridge {
+            let mid = p.pts[p.pts.len() / 2];
+            let mid = if p.pts.len() % 2 == 0 { ((mid.0 + p.pts[p.pts.len() / 2 - 1].0) / 2.0, (mid.1 + p.pts[p.pts.len() / 2 - 1].1) / 2.0) } else { mid };
+            if TileId::from_lat_lon(mid.0, mid.1, tile.z) == tile {
+                out.roads.push(RawRoad { cls: p.cls.clone(), width: p.width, width_from_tag: p.from_tag, name: p.name.clone(), pts: p.pts.clone(), junction: junction_full.clone(), bridge: true });
+            }
+            continue;
+        }
         for (s, e) in clip_runs(&p.pts, &eb) {
             out.roads.push(RawRoad {
                 cls: p.cls.clone(),
@@ -246,6 +259,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                 name: p.name.clone(),
                 pts: p.pts[s..=e].to_vec(),
                 junction: junction_full[s..=e].to_vec(),
+                bridge: false,
             });
         }
     }
@@ -380,7 +394,7 @@ pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar>
     let junctions: Vec<[f64; 2]> = sc.roads.iter().flat_map(|r| r.pts.iter().zip(&r.junction).filter(|(_, j)| **j).map(|(p, _)| *p)).collect();
     let near_junction = |x: f64, y: f64| junctions.iter().any(|j| (j[0] - x).hypot(j[1] - y) < 12.0);
     for r in &sc.roads {
-        if !matches!(r.cls.as_str(), "residential" | "living_street" | "unclassified" | "tertiary" | "service") || r.width < 4.0 {
+        if !matches!(r.cls.as_str(), "residential" | "living_street" | "unclassified" | "tertiary" | "service") || r.width < 4.0 || r.bridge {
             continue;
         }
         let mut cum = 0.0;
@@ -492,7 +506,7 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
             pts.push(*p);
             jn.push(r.junction.get(i).copied().unwrap_or(false));
         }
-        sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts, junction: jn });
+        sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts, junction: jn, bridge: r.bridge });
     }
     let mut status: HashMap<String, usize> = HashMap::new();
     let mut origins: HashMap<String, usize> = HashMap::new();

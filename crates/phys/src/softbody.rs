@@ -352,7 +352,7 @@ impl SoftBody {
         let mut scratch = std::mem::take(&mut self.scratch);
         for n in self.nodes.iter_mut() {
             if n.hit_ground {
-                let s = ground.sample(n.p.x, n.p.y);
+                let s = ground.sample_at(n.p.x, n.p.y, n.p.z - n.radius);
                 let depth = n.radius - (n.p - v3(n.p.x, n.p.y, s.height)).dot(s.normal);
                 if depth > 0.0 {
                     let vn = n.v.dot(s.normal);

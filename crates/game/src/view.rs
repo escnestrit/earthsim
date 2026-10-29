@@ -70,7 +70,7 @@ pub fn material_for(id: u32) -> StandardMaterial {
         x if mat::is_facade(x) => ([0.85, 0.80, 0.70], 0.85, 0.0, 0.0, false),
         x if x == mat::ROOF => ([0.36, 0.30, 0.28], 0.8, 0.0, 0.0, false),
         x if x == mat::PAINT => ([0.42, 0.04, 0.05], 0.35, 0.3, 0.0, false),
-        x if x == mat::GLASS => ([0.08, 0.10, 0.12], 0.05, 0.0, 0.0, false),
+        x if x == mat::GLASS => ([0.15, 0.19, 0.24], 0.08, 0.0, 0.0, false),
         x if x == mat::TIRE => ([0.04, 0.04, 0.04], 0.9, 0.0, 0.0, false),
         x if x == mat::HEADLIGHT => ([0.95, 0.95, 0.9], 0.2, 0.0, 0.0, true),
         x if x == mat::FOLIAGE => ([0.18, 0.32, 0.12], 0.9, 0.0, 0.0, false),

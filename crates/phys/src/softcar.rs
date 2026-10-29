@@ -433,7 +433,7 @@ impl SoftVehicle {
             self.wheels[i].steer = delta;
             let hub = self.hubs[i];
             let (hp, hv) = (self.body.nodes[hub].p, self.body.nodes[hub].v);
-            let s = ground.sample(hp.x, hp.y);
+            let s = ground.sample_at(hp.x, hp.y, hp.z - r_w);
             let n = s.normal;
             let pen = r_w - (hp - v3(hp.x, hp.y, s.height)).dot(n);
             let contact = pen > 0.0;

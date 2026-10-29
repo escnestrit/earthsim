@@ -139,21 +139,24 @@ fn apply(
         c.remove::<(bevy::anti_alias::taa::TemporalAntiAliasing, bevy::pbr::ScreenSpaceAmbientOcclusion, bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening)>();
         match q {
             _ if !post => {
-                c.remove::<(bevy::post_process::bloom::Bloom, bevy::pbr::AtmosphereSettings, bevy::camera::Hdr)>();
+                c.remove::<(bevy::post_process::bloom::Bloom, bevy::pbr::AtmosphereSettings, bevy::camera::Hdr, bevy::light::AtmosphereEnvironmentMapLight)>();
                 c.insert(if q == Quality::Low { Msaa::Off } else { ms });
             }
             Quality::Low => {
-                c.remove::<(bevy::post_process::bloom::Bloom, bevy::pbr::AtmosphereSettings)>();
+                c.remove::<(bevy::post_process::bloom::Bloom, bevy::pbr::AtmosphereSettings, bevy::light::AtmosphereEnvironmentMapLight)>();
                 c.insert(Msaa::Off);
             }
             Quality::Medium => {
                 c.insert((bevy::camera::Hdr, bevy::post_process::bloom::Bloom { intensity: 0.06, ..bevy::post_process::bloom::Bloom::NATURAL }, bevy::pbr::AtmosphereSettings::default(), ms));
+                // sky reflections in glass and paint, sky-coloured ambient light
+                c.insert(bevy::light::AtmosphereEnvironmentMapLight::default());
             }
             Quality::High => {
                 c.insert((
                     bevy::camera::Hdr,
                     bevy::post_process::bloom::Bloom { intensity: 0.07, ..bevy::post_process::bloom::Bloom::NATURAL },
                     bevy::pbr::AtmosphereSettings::default(),
+                    bevy::light::AtmosphereEnvironmentMapLight { size: UVec2::new(256, 256), ..default() },
                     Msaa::Off,
                     bevy::anti_alias::taa::TemporalAntiAliasing::default(),
                     bevy::pbr::ScreenSpaceAmbientOcclusion::default(),

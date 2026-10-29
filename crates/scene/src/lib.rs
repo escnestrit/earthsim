@@ -1,6 +1,8 @@
 //! `scene` — scene description loading (JSON exported by tools/osm_to_scene.py) and mesh generation.
 pub mod inflate;
 pub mod json;
+pub mod bridge;
+pub mod landmark;
 pub mod mesh;
 pub mod model;
 

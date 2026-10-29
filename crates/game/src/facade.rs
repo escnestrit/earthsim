@@ -45,6 +45,14 @@ struct Style {
     loggia: Option<(f32, f32)>,
     /// vertical pilaster at the bay edge (width m)
     pilaster: f32,
+    /// round-headed windows (churches, civic buildings)
+    arch: bool,
+    /// glazing divided into this many panes across (2 = one central mullion)
+    panes: usize,
+    /// openings are roller/garage doors, not glass
+    doors: bool,
+    /// no sill under the openings (shop windows, doors)
+    no_sill: bool,
 }
 
 fn plaster(x: f32, y: f32, _: usize, _: usize) -> Px {
@@ -85,7 +93,7 @@ fn glass(x: f32, y: f32, _: usize, _: usize) -> Px {
     } else if spandrel {
         Px { c: [0.35, 0.38, 0.42], rough: 0.3, metal: 0.2, lit: 0.0, depth: WALL_D }
     } else {
-        Px { c: [0.20, 0.27, 0.33], rough: 0.06, metal: 0.0, lit: 1.0, depth: WALL_D }
+        Px { c: [0.27, 0.35, 0.43], rough: 0.08, metal: 0.0, lit: 1.0, depth: WALL_D }
     }
 }
 
@@ -136,13 +144,72 @@ fn glass_ribbon(x: f32, y: f32, bx: usize, by: usize) -> Px {
     }
 }
 
+fn rustic(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // rusticated stone / render: deep horizontal joints every 0.375 m, staggered vertical joints
+    let course = (y / 0.375) as u32;
+    let off = if course % 2 == 0 { 0.0 } else { 0.6 };
+    let fx = ((x + off) / 1.2).fract();
+    let fy = (y / 0.375).fract();
+    let joint = fy < 0.07 || fx < 0.025;
+    let v = 0.95 - hash(((x + off) / 1.2) as u32 + bx as u32 * 13, course + by as u32 * 7) * 0.05;
+    if joint {
+        Px { c: [0.7, 0.7, 0.7], rough: 0.95, metal: 0.0, lit: 0.0, depth: 0.3 }
+    } else {
+        Px { c: [v, v, v], rough: 0.85, metal: 0.0, lit: 0.0, depth: WALL_D }
+    }
+}
+
+fn sandwich(x: f32, y: f32, _: usize, _: usize) -> Px {
+    // horizontal sandwich panels of big-box stores and warehouses: 1 m high, shallow ribs
+    let fy = y.fract();
+    let rib = (fy * 4.0).fract() < 0.08;
+    let seam = fy < 0.02 || (x / 6.0).fract() < 0.004;
+    let v = if seam { 0.7 } else if rib { 0.88 } else { 0.97 };
+    Px { c: [v, v, v], rough: 0.5, metal: 0.3, lit: 0.0, depth: if seam { 0.3 } else if rib { 0.15 } else { WALL_D } }
+}
+
+fn alu_panel(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // composite aluminium cladding: 1.5 m x 1 m cassettes, thin dark joints
+    let joint = (x / 1.5).fract() < 0.012 || (y / 1.0).fract() < 0.018;
+    let v = 0.93 - hash(bx as u32 * 3 + (x / 1.5) as u32, by as u32 * 5 + y as u32) * 0.025;
+    if joint {
+        Px { c: [0.35, 0.36, 0.38], rough: 0.6, metal: 0.2, lit: 0.0, depth: 0.25 }
+    } else {
+        Px { c: [v, v, v * 1.01], rough: 0.35, metal: 0.55, lit: 0.0, depth: WALL_D }
+    }
+}
+
+fn stone_slab(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // large stone/porcelain slabs 1.5 m x 0.75 m
+    let joint = (x / 1.5).fract() < 0.01 || (y / 0.75).fract() < 0.02;
+    let v = 0.92 - hash(bx as u32 * 7 + (x / 1.5) as u32, by as u32 * 11 + (y / 0.75) as u32) * 0.08 + hash((x * 30.0) as u32, (y * 30.0) as u32) * 0.02;
+    Px { c: if joint { [0.6, 0.6, 0.6] } else { [v, v * 0.98, v * 0.95] }, rough: 0.5, metal: 0.0, lit: 0.0, depth: if joint { 0.2 } else { WALL_D } }
+}
+
 /// Style index (plaster, brick, panel, glass, wood, metal) and variant (window layout) of a facade material.
 fn style(id: f32) -> Style {
     let dark = [0.25, 0.25, 0.25];
     let white = [0.95, 0.95, 0.95];
     let (si, v) = mat::facade_parts(id);
-    let st = |wall, windows: Vec<(f32, f32, f32, f32)>, frame| Style { wall, windows, frame, loggia: None, pilaster: 0.0 };
+    let st = |wall, windows: Vec<(f32, f32, f32, f32)>, frame| Style { wall, windows, frame, loggia: None, pilaster: 0.0, arch: false, panes: 2, doors: false, no_sill: false };
+    let grey = [0.32, 0.33, 0.35];
     match (si, v) {
+        // arched: churches, theatres, old civic buildings
+        (8, 0) => Style { pilaster: 0.35, arch: true, ..st(plaster, vec![(1.0, 2.0, 0.6, 2.65)], white) },
+        (8, 1) => Style { arch: true, ..st(plaster, vec![(0.55, 1.25, 0.8, 2.55), (1.75, 2.45, 0.8, 2.55)], white) },
+        (8, _) => Style { arch: true, ..st(rustic, vec![(0.95, 2.05, 0.7, 2.6)], [0.9, 0.9, 0.88]) },
+        // schools, universities, hospitals: wide three-pane windows
+        (9, 0) => Style { panes: 3, ..st(plaster, vec![(0.2, 2.8, 0.85, 2.6)], white) },
+        (9, 1) => Style { panes: 3, ..st(brick, vec![(0.25, 2.75, 0.85, 2.6)], white) },
+        (9, _) => Style { panes: 3, ..st(silicate, vec![(0.2, 2.8, 0.85, 2.6)], white) },
+        // shop windows; big-box sandwich panels; garage doors
+        (10, 0) => Style { panes: 1, no_sill: true, ..st(stone_slab, vec![(0.12, 2.88, 0.12, 2.45)], grey) },
+        (10, 1) => st(sandwich, vec![], dark),
+        (10, _) => Style { doors: true, no_sill: true, ..st(brick, vec![(0.3, 2.7, 0.0, 2.25)], [0.6, 0.6, 0.6]) },
+        // offices: aluminium cladding with strip windows, glazing between fins, stone slabs
+        (11, 0) => Style { panes: 3, ..st(alu_panel, vec![(0.15, 2.85, 0.95, 2.7)], grey) },
+        (11, 1) => Style { pilaster: 0.4, panes: 2, no_sill: true, ..st(alu_panel, vec![(0.3, 2.7, 0.25, 2.8)], grey) },
+        (11, _) => Style { panes: 2, ..st(stone_slab, vec![(0.45, 2.55, 0.85, 2.6)], grey) },
         (1, 0) => st(brick, vec![(0.85, 2.15, 0.85, 2.45)], [0.92, 0.92, 0.9]),
         (1, 1) => Style { pilaster: 0.25, ..st(brick, vec![(0.95, 2.05, 0.7, 2.55)], white) },
         (1, _) => st(brick, vec![(0.55, 1.3, 0.9, 2.3), (1.7, 2.45, 0.9, 2.3)], [0.85, 0.85, 0.82]),
@@ -190,20 +257,39 @@ fn pixel(st: &Style, px: usize, py_from_bottom: usize) -> Px {
     }
     for &(x0, x1, y0, y1) in &st.windows {
         let f = 0.07;
-        if x >= x0 - f && x <= x1 + f && y >= y0 - f && y <= y1 + f {
-            let inside = x >= x0 && x <= x1 && y >= y0 && y <= y1;
-            if !inside || (x - (x0 + x1) / 2.0).abs() < 0.03 {
+        // round head: above the spring line the opening is a half circle (an ellipse when stretched)
+        let r = (x1 - x0) / 2.0;
+        let cx = (x0 + x1) / 2.0;
+        let in_arch = |pad: f32| {
+            let yc = y1 - r;
+            y <= yc || ((x - cx) / (r + pad)).powi(2) + ((y - yc) / (r + pad)).powi(2) <= 1.0
+        };
+        if x >= x0 - f && x <= x1 + f && y >= y0 - f && y <= y1 + f && (!st.arch || in_arch(f)) {
+            let inside = x >= x0 && x <= x1 && y >= y0 && y <= y1 && (!st.arch || in_arch(0.0));
+            if st.doors && inside {
+                // roller door: horizontal slats, painted metal
+                let slat = (y / 0.1).fract() < 0.15;
+                let v = if slat { 0.62 } else { 0.78 } - hash(bx as u32 * 5, by as u32 * 3 + 1) * 0.1;
+                return Px { c: [v, v, v * 1.02], rough: 0.5, metal: 0.4, lit: 0.0, depth: if slat { 0.45 } else { 0.38 } };
+            }
+            let pane_w = (x1 - x0) / st.panes as f32;
+            let mull = st.panes > 1 && (1..st.panes).any(|k| (x - (x0 + pane_w * k as f32)).abs() < 0.03);
+            let transom = st.arch && (y - (y1 - r)).abs() < 0.03;
+            if !inside || mull || transom {
                 // frame set back into the opening; the mullion a little deeper
                 return Px { c: st.frame, rough: 0.5, metal: 0.0, lit: 0.0, depth: if inside { 0.55 } else { 0.4 } };
             }
             // glass deep in the reveal: ambient occlusion near the edges, occasional curtains, reflections
             let curtain = hash(bx as u32 * 31 + 1, by as u32 * 17 + 3) > 0.7 && y > y1 - (y1 - y0) * 0.35;
-            let g = if curtain { [0.55, 0.52, 0.48] } else { [0.10, 0.13, 0.17] };
+            let g = if curtain { [0.55, 0.52, 0.48] } else { [0.13, 0.17, 0.22] };
             let edge = (x - x0).min(x1 - x).min(y - y0).min(y1 - y);
             let ao = 0.55 + 0.45 * (edge / 0.25).clamp(0.0, 1.0);
             let sky = if curtain { 1.0 } else { 1.0 + 0.6 * ((y - y0) / (y1 - y0)) };
             let k = ao * sky;
             return Px { c: [g[0] * k, g[1] * k, g[2] * k], rough: 0.04, metal: 0.0, lit: 1.0, depth: 1.0 };
+        }
+        if st.no_sill {
+            continue;
         }
         // sill: a proud ledge under the window, its shadow below
         if x >= x0 - 0.1 && x <= x1 + 0.1 && y < y0 - f && y > y0 - f - 0.06 {
@@ -310,7 +396,7 @@ pub fn image_fmt(data: Vec<u8>, fmt: TextureFormat) -> Image {
 
 /// All facade materials: 8 styles x 3 window layouts.
 pub fn styles() -> Vec<f32> {
-    (0..8).flat_map(|s| (0..3).map(move |v| mat::facade(s, v))).collect()
+    (0..mat::FACADE_STYLES).flat_map(|s| (0..3).map(move |v| mat::facade(s, v))).collect()
 }
 
 #[cfg(test)]

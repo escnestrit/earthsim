@@ -80,6 +80,28 @@ pub fn building_tags(f: &Feature) -> Vec<(String, String)> {
     t
 }
 
+/// Does a flag (`is_bridge`) apply to (nearly) the whole segment? Overture flags may cover only a part
+/// (`"between":[0.4,0.6]` of the length); a partly flagged segment is drawn as a plain road rather than
+/// raising the whole of it.
+fn is_whole(flags: &str, flag: &str) -> bool {
+    let mut from = 0;
+    while let Some(i) = flags[from..].find(flag).map(|i| i + from) {
+        from = i + flag.len();
+        // the {...} object holding this flag
+        let start = flags[..i].rfind('{').unwrap_or(0);
+        let end = flags[i..].find('}').map_or(flags.len(), |e| i + e);
+        let obj = &flags[start..end];
+        let Some(b) = obj.find("between") else { return true };
+        let nums: Vec<f64> = obj[b..].split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == 'e')).filter_map(|x| x.parse().ok()).take(2).collect();
+        match nums.as_slice() {
+            [a, b] if (b - a).abs() >= 0.8 => return true,
+            [_, _] => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
 /// Overture segment -> (highway class, extra tags), or None if not a drivable road.
 pub fn road_tags(f: &Feature) -> Option<Vec<(String, String)>> {
     if s(f.prop("subtype")).as_deref() != Some("road") {
@@ -93,13 +115,25 @@ pub fn road_tags(f: &Feature) -> Option<Vec<(String, String)>> {
     if flags.contains("is_tunnel") {
         t.push(("tunnel".into(), "yes".into()));
     }
-    if flags.contains("is_bridge") {
+    if is_whole(&flags, "is_bridge") {
         t.push(("bridge".into(), "yes".into()));
     }
     if let Some(n) = s(f.prop("@name")) {
         t.push(("name".into(), n));
     }
     Some(t)
+}
+
+#[cfg(test)]
+mod flag_tests {
+    #[test]
+    fn partial_bridge_flags_do_not_raise_the_whole_segment() {
+        assert!(super::is_whole(r#"[{"values":["is_bridge"]}]"#, "is_bridge"));
+        assert!(super::is_whole("is_bridge", "is_bridge"));
+        assert!(super::is_whole(r#"[{"values":["is_bridge"],"between":[0.05,0.97]}]"#, "is_bridge"));
+        assert!(!super::is_whole(r#"[{"values":["is_bridge"],"between":[0.4,0.6]}]"#, "is_bridge"));
+        assert!(!super::is_whole(r#"[{"values":["is_tunnel"]}]"#, "is_bridge"));
+    }
 }
 
 fn tags_json(t: &[(String, String)]) -> Json {

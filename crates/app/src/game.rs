@@ -65,6 +65,15 @@ pub fn drape(ms: &[MeshData], f: &phys::HeightField) -> Vec<MeshData> {
         .map(|m| {
             let sink = matches!(m.name.as_str(), "buildings" | "building_details" | "entrances");
             let mut m = m.clone();
+            // a bridge spans straight between the ground at its ends
+            if let Some((a, b)) = scene::bridge::anchors(&m.name) {
+                let (ha, hb) = (f.height(a[0], a[1]), f.height(b[0], b[1]));
+                for v in m.verts.chunks_exact_mut(scene::mesh::FLOATS_PER_VERTEX) {
+                    let t = scene::bridge::chord_t(a, b, v[0] as f64, v[1] as f64);
+                    v[2] += (ha + (hb - ha) * t) as f32;
+                }
+                return m;
+            }
             for v in m.verts.chunks_exact_mut(scene::mesh::FLOATS_PER_VERTEX) {
                 let h = f.height(v[0] as f64, v[1] as f64) as f32;
                 v[2] += h - if sink && v[2] < 0.05 { 1.0 } else { 0.0 };
@@ -258,7 +267,7 @@ impl Game {
         let soft = SoftVehicle::new(VehicleParams::sedan(), spawn.x, spawn.y, spawn.yaw, &ground);
         let car_meshes = car_meshes();
         let skin = crate::softmesh::SkinnedBody::new(&car_meshes.0, &soft);
-        Game {
+        let mut g = Game {
             scene,
             meshes,
             scene_dirty: true,
@@ -298,7 +307,9 @@ impl Game {
             deformed: Vec::new(),
             cam_override: None,
             stream: None,
-        }
+        };
+        g.rebuild_decks();
+        g
     }
 
     /// Streaming game: the world is loaded around the car while it drives. `home` is where it starts and where
@@ -398,6 +409,22 @@ impl Game {
         }
     }
 
+    /// Bridge decks of the loaded tiles on the current ground, for the physics.
+    fn rebuild_decks(&mut self) {
+        let f = self.ground.field.clone();
+        let h = move |x: f64, y: f64| f.height(x, y);
+        let mut segs = Vec::new();
+        match self.stream.as_ref() {
+            Some(st) => {
+                for sc in st.scenes.values() {
+                    segs.extend(scene::bridge::deck_segs(sc, &h));
+                }
+            }
+            None => segs = scene::bridge::deck_segs(&self.scene, &h),
+        }
+        self.ground.decks = Arc::new(phys::Decks::new(segs));
+    }
+
     /// Give the physics thread the current static world (after tiles were added or removed).
     fn publish_world(&mut self) {
         if let Some(j) = self.jcar.as_ref() {
@@ -455,7 +482,8 @@ impl Game {
                 let (x, y) = (self.car.pos.x, self.car.pos.y);
                 let before = self.ground.field.height(x, y);
                 self.terrain.datum = Some(datum);
-                self.ground = phys::TerrainGround { field: Arc::new(f) };
+                self.ground = phys::TerrainGround { field: Arc::new(f), decks: Default::default() };
+                self.rebuild_decks();
                 self.terrain.generation += 1;
                 let dz = self.ground.field.height(x, y) - before;
                 if dz.abs() > 1e-3 {
@@ -654,7 +682,7 @@ impl Game {
                         let (la, lo, _) = old.from_local(0.0, 0.0, 0.0);
                         let p = new.to_local(la, lo, 0.0);
                         if !self.ground.field.is_empty() {
-                            self.ground = phys::TerrainGround { field: Arc::new(self.ground.field.shifted(p[0], p[1])) };
+                            self.ground = phys::TerrainGround { field: Arc::new(self.ground.field.shifted(p[0], p[1])), decks: Default::default() };
                             self.terrain.generation += 1;
                         }
                         rebased = true;
@@ -681,6 +709,9 @@ impl Game {
         if rebased && self.terrain.src.is_some() {
             let (x, y) = (self.car.pos.x, self.car.pos.y);
             self.request_terrain(x, y);
+        }
+        if changed || rebased {
+            self.rebuild_decks();
         }
         let Some(st) = self.stream.as_mut() else { return };
         if changed || rebased {
@@ -1299,6 +1330,45 @@ mod tests {
             g.update(1.0 / 60.0); // keep throttle and handbrake held
         }
         assert!(g.car.telemetry().speed > 3.0, "stalled at {} m/s", g.car.telemetry().speed);
+    }
+
+    #[test]
+    fn the_car_drives_up_onto_a_bridge_deck_and_the_deck_mesh_matches_it() {
+        use phys::Ground;
+        use scene::model::{Area, AreaKind, Road};
+        let road = |pts: Vec<[f64; 2]>, bridge: bool| Road { cls: "primary".into(), width: 8.0, junction: vec![false; pts.len()], pts, bridge };
+        let mut sc = Scene::default();
+        sc.roads.push(road((0..=20).map(|i| [-200.0 + i as f64 * 10.0, 0.0]).collect(), false));
+        sc.roads.push(road((0..=20).map(|i| [i as f64 * 10.0, 0.0]).collect(), true));
+        sc.roads.push(road((0..=20).map(|i| [200.0 + i as f64 * 10.0, 0.0]).collect(), false));
+        sc.areas.push(Area { kind: AreaKind::Water, ring: vec![[40.0, -50.0], [160.0, -50.0], [160.0, 50.0], [40.0, 50.0]], tris: vec![[0, 1, 2], [0, 2, 3]] });
+        let mut g = Game::new(sc);
+        let top = scene::bridge::rise(&g.scene, &g.scene.roads[1])[10] + 0.02;
+        assert!((top - 2.52).abs() < 1e-6, "{top}");
+        // physics deck
+        assert!((g.ground.sample_at(100.0, 1.0, 5.0).height - top).abs() < 1e-6);
+        assert!(g.ground.sample_at(100.0, 1.0, 0.3).height.abs() < 1e-9, "under the deck: the ground");
+        // the drawn deck: carriageway vertices near the middle at the same height
+        let m = g.meshes.iter().find(|m| m.name.starts_with("bridge|")).expect("bridge mesh");
+        let z_mid = m.verts.chunks(scene::mesh::FLOATS_PER_VERTEX).filter(|v| v[8] == scene::mesh::mat::ASPHALT && (v[0] - 100.0).abs() < 0.5).map(|v| v[2]).fold(f32::MIN, f32::max);
+        assert!((z_mid as f64 - top).abs() < 1e-3, "mesh {z_mid} vs deck {top}");
+        // drive over it
+        g.place_car(-60.0, 0.0, 0.0, 12.0);
+        g.key_state(Key::Up, true);
+        let mut peak: f64 = 0.0;
+        for _ in 0..(60 * 20) {
+            g.update(1.0 / 60.0);
+            let p = if g.soft_on { g.soft.pos } else { g.car.pos };
+            if (80.0..120.0).contains(&p.x) {
+                peak = peak.max(p.z);
+            }
+            if p.x > 260.0 {
+                break;
+            }
+        }
+        let p = if g.soft_on { g.soft.pos } else { g.car.pos };
+        assert!(p.x > 200.0, "crossed the bridge: x {}", p.x);
+        assert!(peak > top + 0.2, "rode on the deck: peak z {peak}, deck {top}");
     }
 
     // ---------- streaming ----------

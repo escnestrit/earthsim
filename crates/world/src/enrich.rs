@@ -15,13 +15,14 @@ pub const HEIGHTS_FAILED: &str = "\"earthsim_osm_heights\":\"failed\"";
 /// Tags taken from OSM even when Overture has its own value.
 const OVERRIDE: &[&str] = &["height", "building:levels", "min_height", "building:min_level", "roof:levels"];
 /// Tags taken from OSM only when Overture has none.
-const FILL: &[&str] = &["roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material", "building:series", "start_date", "building:architecture"];
+const FILL: &[&str] = &["roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material", "building:series", "start_date", "building:architecture", "amenity", "religion", "denomination", "shop", "office", "tower:type"];
 
 pub fn heights_query(b: &Bounds) -> String {
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);
     format!(
         "[out:json][timeout:25];(way[\"building\"][\"building:levels\"]({bb});way[\"building\"][\"height\"]({bb});\
-         relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb}););out tags center;\
+         relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb});\
+         way[\"building\"][\"amenity\"]({bb});way[\"building\"~\"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$\"]({bb}););out tags center;\
          node[\"entrance\"]({bb});out body;"
     )
 }
@@ -94,6 +95,17 @@ pub fn merge_osm_heights(overture_json: &str, osm_json: &str) -> Result<(String,
             continue;
         };
         let mut did = false;
+        // the OSM building class when Overture only knows "a building"
+        if let Some((_, b)) = tags.iter().find(|(k, _)| k == "building") {
+            if b != "yes" {
+                if let Some((_, old)) = t.iter_mut().find(|(k, _)| k == "building") {
+                    if old.as_str() == Some("yes") {
+                        *old = Json::Str(b.clone());
+                        did = true;
+                    }
+                }
+            }
+        }
         for (k, v) in tags {
             let over = OVERRIDE.contains(&k.as_str());
             if !over && !FILL.contains(&k.as_str()) {

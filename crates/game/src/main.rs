@@ -134,6 +134,11 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
         if let Some(h) = std::env::var("EARTHSIM_SHOT_HOUR").ok().and_then(|v| v.parse::<f32>().ok()) {
             g.hour = h;
         }
+        // EARTHSIM_SHOT_HUD=0: picture without the HUD
+        if std::env::var("EARTHSIM_SHOT_HUD").is_ok_and(|v| v == "0") {
+            g.show_hud = false;
+            g.show_help = false;
+        }
         g.update(1.0 / 60.0);
         // EARTHSIM_SHOT_CAM=side|front: fixed camera beside / in front of the car (for checking car models)
         // EARTHSIM_SHOT_CAM=interior: the driver's view

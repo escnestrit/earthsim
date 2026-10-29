@@ -8,6 +8,8 @@ pub struct Road {
     pub width: f64,
     pub pts: Vec<[f64; 2]>,
     pub junction: Vec<bool>,
+    /// a bridge (`bridge=*` / Overture is_bridge): drawn as a raised deck, see `mesh::bridge_profile`
+    pub bridge: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -31,6 +33,22 @@ pub struct Building {
     pub seed: u64,
     /// typical design (series/project) the building was matched to, driving its exterior elements
     pub design: Option<Design>,
+    /// a tower, dome or spire added to the body (places of worship); chosen from tags and region
+    pub landmark: Landmark,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Landmark {
+    #[default]
+    None,
+    /// Orthodox church: bell tower at the west end with an onion dome, a drum with an onion over the body
+    Orthodox,
+    /// Western church: tower at the west end with a tall pointed spire
+    Spire,
+    /// small chapel: one onion dome on the roof
+    Chapel,
+    /// mosque: a dome over the prayer hall and a minaret at a corner
+    Mosque,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,6 +287,7 @@ impl Scene {
                 width: r.get("w").and_then(|v| v.as_f64()).unwrap_or(6.5).max(2.0),
                 pts,
                 junction,
+                bridge: r.get("bridge").and_then(|v| v.as_bool()).unwrap_or(false),
             });
         }
         for b in j.get("buildings").and_then(|v| v.as_arr()).unwrap_or(&[]) {
@@ -297,6 +316,7 @@ impl Scene {
                 kind: String::new(),
                 seed: 0,
                 design: None,
+                landmark: Landmark::None,
                 id: b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 status: b.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 footprint,
