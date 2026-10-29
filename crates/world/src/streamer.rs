@@ -142,19 +142,32 @@ impl Streamer {
         let (build_res_tx, build_rx) = channel::<Built>();
         let wanted = Arc::new(Mutex::new(HashSet::new()));
         let shutdown = Arc::new(AtomicU64::new(0));
+        // two downloaders (Overture's archive takes parallel range requests; the OSM part is shared per
+        // z14 tile) and two builders
         {
-            let (wanted, fetcher, cache, cfg, shutdown) = (wanted.clone(), fetcher, cache.map(Arc::new), cfg.clone(), shutdown.clone());
-            thread::Builder::new().name("earthsim-net".into()).spawn(move || net_worker(net_job_rx, net_res_tx, fetcher, cache, wanted, cfg, shutdown)).expect("spawn net thread");
+            let jobs = Arc::new(Mutex::new(net_job_rx));
+            let last = Arc::new(Mutex::new(None::<Instant>));
+            let cache = cache.map(Arc::new);
+            for k in 0..NET_WORKERS {
+                let (wanted, fetcher, cache, cfg, shutdown, jobs, tx, last) = (wanted.clone(), fetcher.clone(), cache.clone(), cfg.clone(), shutdown.clone(), jobs.clone(), net_res_tx.clone(), last.clone());
+                thread::Builder::new().name(format!("earthsim-net{k}")).spawn(move || net_worker(jobs, tx, fetcher, cache, wanted, cfg, shutdown, last)).expect("spawn net thread");
+            }
         }
-        thread::Builder::new().name("earthsim-build".into()).spawn(move || {
-            while let Ok(job) = build_job_rx.recv() {
+        let build_jobs = Arc::new(Mutex::new(build_job_rx));
+        for k in 0..2 {
+            let (jobs, tx) = (build_jobs.clone(), build_res_tx.clone());
+            thread::Builder::new().name(format!("earthsim-build{k}")).spawn(move || loop {
+                let job = match jobs.lock().unwrap().recv() {
+                    Ok(j) => j,
+                    Err(_) => break,
+                };
                 let scene = build_scene(&job.raw, &job.frame);
                 let meshes = scene_meshes_opts(&scene, false);
-                if build_res_tx.send(Built { tile: job.tile, generation: job.generation, scene: Arc::new(scene), meshes: Arc::new(meshes) }).is_err() {
+                if tx.send(Built { tile: job.tile, generation: job.generation, scene: Arc::new(scene), meshes: Arc::new(meshes) }).is_err() {
                     break;
                 }
-            }
-        }).expect("spawn build thread");
+            }).expect("spawn build thread");
+        }
         Streamer {
             cfg,
             frame: LocalFrame::new(lat, lon, 0.0),
@@ -366,9 +379,15 @@ impl Drop for Streamer {
     }
 }
 
-fn net_worker(rx: Receiver<NetJob>, tx: Sender<NetResult>, fetcher: Arc<dyn Fetcher>, cache: Option<Arc<DiskCache>>, wanted: Arc<Mutex<HashSet<TileId>>>, cfg: StreamConfig, shutdown: Arc<AtomicU64>) {
-    let mut last_request: Option<Instant> = None;
-    while let Ok(job) = rx.recv() {
+const NET_WORKERS: usize = 2;
+
+#[allow(clippy::too_many_arguments)]
+fn net_worker(rx: Arc<Mutex<Receiver<NetJob>>>, tx: Sender<NetResult>, fetcher: Arc<dyn Fetcher>, cache: Option<Arc<DiskCache>>, wanted: Arc<Mutex<HashSet<TileId>>>, cfg: StreamConfig, shutdown: Arc<AtomicU64>, last_request: Arc<Mutex<Option<Instant>>>) {
+    loop {
+        let job = match rx.lock().unwrap().recv() {
+            Ok(j) => j,
+            Err(_) => break,
+        };
         if shutdown.load(Ordering::SeqCst) != 0 {
             break;
         }
@@ -392,17 +411,20 @@ fn net_worker(rx: Receiver<NetJob>, tx: Sender<NetResult>, fetcher: Arc<dyn Fetc
                 }
             }
         }
-        // 2. network, politely
-        if let Some(l) = last_request {
-            let el = l.elapsed();
-            if el < cfg.min_request_interval {
-                thread::sleep(cfg.min_request_interval - el);
+        // 2. network, politely: requests start at least `min_request_interval` apart, whichever worker
+        {
+            let mut l = last_request.lock().unwrap();
+            if let Some(t) = *l {
+                let el = t.elapsed();
+                if el < cfg.min_request_interval {
+                    thread::sleep(cfg.min_request_interval - el);
+                }
             }
+            *l = Some(Instant::now());
         }
         if shutdown.load(Ordering::SeqCst) != 0 {
             break;
         }
-        last_request = Some(Instant::now());
         let q = overpass_query(&tile.bounds());
         crate::log::log(&format!("tile {}: request via {}", tile.path(), fetcher.describe()));
         let t_req = Instant::now();
@@ -670,8 +692,9 @@ mod tests {
         let removed = ev.iter().filter(|e| matches!(e, StreamEvent::Remove { .. })).count();
         assert_eq!(removed, n_before);
         assert!(matches!(ev.last(), Some(StreamEvent::Rebased { .. })));
-        let ev = pump(&mut s, 0.0, 0.0, 10.0, |s, e| s.stats().loaded >= 9 && adds(e) >= 9);
-        let b: usize = ev.iter().map(|e| if let StreamEvent::Add { scene, .. } = e { scene.buildings.len() } else { 0 }).sum();
+        let count = |ev: &[StreamEvent]| -> usize { ev.iter().map(|e| if let StreamEvent::Add { scene, .. } = e { scene.buildings.len() } else { 0 }).sum() };
+        let ev = pump(&mut s, 0.0, 0.0, 10.0, |s, e| s.stats().loaded >= 9 && count(e) >= 363);
+        let b = count(&ev);
         assert_eq!(b, 363);
     }
 

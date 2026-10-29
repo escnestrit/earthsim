@@ -489,7 +489,7 @@ mod winhttp {
             "overpass" => overpass,
             "overture" => Arc::new(LazyOverture::new()),
             // Overture shapes, OSM storey counts on top (see enrich.rs); Overpass alone if Overture is down
-            _ => Arc::new(crate::enrich::EnrichFetcher { base: Arc::new(ChainFetcher(vec![Arc::new(LazyOverture::new()), overpass.clone()])), osm: overpass }),
+            _ => Arc::new(crate::enrich::EnrichFetcher::new(Arc::new(ChainFetcher(vec![Arc::new(LazyOverture::new()), overpass.clone()])), overpass)),
         }
     }
 

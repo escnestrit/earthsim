@@ -145,6 +145,30 @@ pub fn merge_osm_heights(overture_json: &str, osm_json: &str) -> Result<(String,
 pub struct EnrichFetcher {
     pub base: Arc<dyn Fetcher>,
     pub osm: Arc<dyn Fetcher>,
+    /// OSM answers per z14 parent (one Overpass request serves its four z15 tiles)
+    pub memo: std::sync::Mutex<Vec<((u32, u32), Arc<String>)>>,
+}
+
+impl EnrichFetcher {
+    pub fn new(base: Arc<dyn Fetcher>, osm: Arc<dyn Fetcher>) -> Self {
+        EnrichFetcher { base, osm, memo: std::sync::Mutex::new(Vec::new()) }
+    }
+    /// The OSM tags for the z14 tile around `tile` (cached for the last 24 parents).
+    fn osm_for(&self, tile: TileId) -> Result<Arc<String>, FetchError> {
+        let (px, py) = if tile.z > 14 { (tile.x >> (tile.z - 14), tile.y >> (tile.z - 14)) } else { (tile.x, tile.y) };
+        let pz = tile.z.min(14);
+        if let Some((_, j)) = self.memo.lock().unwrap().iter().find(|(k, _)| *k == (px, py)) {
+            return Ok(j.clone());
+        }
+        let parent = TileId { z: pz, x: px, y: py };
+        let text = Arc::new(self.osm.fetch(parent, &heights_query(&parent.bounds()))?);
+        let mut m = self.memo.lock().unwrap();
+        m.push(((px, py), text.clone()));
+        if m.len() > 24 {
+            m.remove(0);
+        }
+        Ok(text)
+    }
 }
 
 impl Fetcher for EnrichFetcher {
@@ -161,7 +185,7 @@ impl Fetcher for EnrichFetcher {
                 None => text.clone(),
             }
         };
-        match self.osm.fetch(tile, &heights_query(&tile.bounds())) {
+        match self.osm_for(tile) {
             Ok(o) => match merge_osm_heights(&text, &o) {
                 Ok((j, n)) => {
                     if n > 0 {
@@ -227,13 +251,13 @@ mod tests {
         }
         let t = TileId::from_lat_lon(0.0005, 0.0005, 15);
         let down = Arc::new(Fixed(Err(FetchError::Transient("timeout".into()))));
-        let f = EnrichFetcher { base: Arc::new(Fixed(Ok(OVERTURE.into()))), osm: down.clone() };
+        let f = EnrichFetcher::new(Arc::new(Fixed(Ok(OVERTURE.into()))), down.clone());
         let out = f.fetch(t, "").unwrap();
         assert!(out.starts_with(&format!("{{{HEIGHTS_FAILED}")), "{}", &out[..80]);
         assert!(crate::osm::parse_overpass(&out, t).is_ok());
         // plain Overpass answers pass through untouched
         let plain = r#"{"elements":[]}"#;
-        let f = EnrichFetcher { base: Arc::new(Fixed(Ok(plain.into()))), osm: down };
+        let f = EnrichFetcher::new(Arc::new(Fixed(Ok(plain.into()))), down);
         assert_eq!(f.fetch(t, "").unwrap(), plain);
         let q = heights_query(&t.bounds());
         // ways: tags + a centre point; entrance nodes need their coordinates ("out tags" would drop them)

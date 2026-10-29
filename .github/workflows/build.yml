@@ -3,6 +3,7 @@ name: build-windows
 # Download the artifact "earthsim-windows" from the run page (a zip with earthsim.exe).
 on:
   push:
+    branches: [earthsim-0.4]
   workflow_dispatch:
 jobs:
   windows:

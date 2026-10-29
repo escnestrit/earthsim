@@ -1,0 +1,8 @@
+[configuration]
+entry_symbol = "earthcore_init"
+compatibility_minimum = "4.5"
+reloadable = false
+
+[libraries]
+linux.x86_64 = "res://bin/libearthcore.so"
+windows.x86_64 = "res://bin/libearthcore.dll"

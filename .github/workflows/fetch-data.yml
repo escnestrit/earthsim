@@ -1,0 +1,34 @@
+name: fetch-data
+# Downloads real map data for a region (Overture tiles, OSM tags, elevation) and pushes it to the
+# `data-<name>` branch, so development and tests can use real places without internet access.
+on:
+  workflow_dispatch:
+    inputs:
+      name: {description: "region name", default: "minsk"}
+      lat: {default: "53.9045"}
+      lon: {default: "27.5615"}
+      radius: {description: "metres", default: "3500"}
+  push:
+    paths:
+      - tools/fetch_region.py
+      - .github/workflows/fetch-data.yml
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pmtiles requests
+      - name: Fetch
+        run: python3 tools/fetch_region.py ${{ github.event.inputs.lat || '53.9045' }} ${{ github.event.inputs.lon || '27.5615' }} ${{ github.event.inputs.radius || '3500' }} /tmp/region
+      - name: Push to data branch
+        run: |
+          N=${{ github.event.inputs.name || 'minsk' }}
+          cd /tmp/region
+          git init -q -b data-$N
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Map data for $N [skip ci]"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data-$N
