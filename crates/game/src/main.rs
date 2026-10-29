@@ -9,6 +9,7 @@ mod facade;
 mod hud;
 mod input;
 mod map;
+mod settings;
 mod view;
 
 use bevy::prelude::*;
@@ -100,7 +101,7 @@ fn main() {
         }));
     }
     app.insert_resource(Sim(std::sync::Mutex::new(game)))
-        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin))
+        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin, settings::SettingsPlugin))
         .add_systems(Update, step_sim.after(input::read_input).before(view::sync_world));
     app.run();
 }

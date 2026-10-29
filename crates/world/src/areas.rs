@@ -247,8 +247,8 @@ fn tree_spacing(k: AreaKind) -> Option<f64> {
     }
 }
 
-/// Most trees scattered per tile (keeps forests affordable to draw).
-pub const MAX_TREES_PER_TILE: usize = 1500;
+/// Most trees scattered per tile (keeps forests affordable to draw); set from the graphics quality.
+pub static MAX_TREES_PER_TILE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(800);
 
 /// Areas in local metres plus scattered trees. `avoid(x, y)` = true where no tree may stand (roads).
 pub fn build_areas(raw: &[RawArea], frame: &LocalFrame, avoid: &dyn Fn(f64, f64) -> bool) -> (Vec<Area>, Vec<[f64; 2]>) {
@@ -304,7 +304,7 @@ pub fn build_areas(raw: &[RawArea], frame: &LocalFrame, avoid: &dyn Fn(f64, f64)
             let rings_ll = &ra.rings;
             'grid: for i in (s / dla).floor() as i64..=(n / dla).ceil() as i64 {
                 for j in (w / dlo).floor() as i64..=(e / dlo).ceil() as i64 {
-                    if trees.len() >= MAX_TREES_PER_TILE {
+                    if trees.len() >= MAX_TREES_PER_TILE.load(std::sync::atomic::Ordering::Relaxed) {
                         break 'grid;
                     }
                     let h = hash2(i, j);

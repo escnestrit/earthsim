@@ -392,7 +392,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         let s = (i as f64 * 0.7548776662).fract();
         let rr = 1.9 + s * 1.3;
         tm.box_(t[0] - 0.15, t[1] - 0.15, 0.0, t[0] + 0.15, t[1] + 0.15, 2.3, &[mat::TRUNK]);
-        tm.sphere(t[0], t[1], 2.3 + rr * 0.8, rr, rr * 1.1, mat::FOLIAGE, s, 7, 4);
+        tm.sphere(t[0], t[1], 2.3 + rr * 0.8, rr, rr * 1.1, mat::FOLIAGE, s, 6, 3);
     }
     out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
     out

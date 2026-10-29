@@ -45,7 +45,7 @@ pub struct SoftBody;
 #[derive(Component)]
 pub struct MainCamera;
 #[derive(Component)]
-struct Sun;
+pub struct Sun;
 
 #[derive(Resource, Default)]
 pub struct Tiles {

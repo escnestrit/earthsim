@@ -432,6 +432,13 @@ impl Game {
         Some((lat, lon, f.x.atan2(f.y).to_degrees().rem_euclid(360.0)))
     }
 
+    /// Radius of the loaded world around the car (m).
+    pub fn set_view_radius(&mut self, m: f64) {
+        if let Some(st) = self.stream.as_mut() {
+            st.streamer.set_radius(m);
+        }
+    }
+
     /// Name of the current place (preset or teleport target).
     pub fn place_name(&self) -> Option<&str> {
         self.stream.as_ref().map(|s| s.place.as_str())
@@ -804,7 +811,11 @@ impl Game {
         let t = self.car.telemetry();
         let m = &self.scene.meta;
         let mut lines = vec![
-            format!("FPS {:.0}   DRAWS {}   TRIS {}K   TIME {:02}:00", self.fps, self.draws, self.triangles / 1000, self.hour as i32),
+            if self.draws > 0 {
+                format!("FPS {:.0}   DRAWS {}   TRIS {}K   TIME {:02}:00", self.fps, self.draws, self.triangles / 1000, self.hour as i32)
+            } else {
+                format!("FPS {:.0}   {}   TIME {:02}:00", self.fps, self.renderer_info, self.hour as i32)
+            },
             format!("TCS {}   ABS {}   SIDESLIP {:.0} DEG   LAT {:.2} G", on_off(self.driver.tcs), on_off(self.driver.abs), t.side_slip.to_degrees().abs(), t.lat_g.abs()),
             format!("ROADS {}   BUILDINGS {}   TREES {}", m.n_roads, m.n_buildings, m.n_trees),
         ];
@@ -857,7 +868,7 @@ impl Game {
             lines.push("COLLISION".to_string());
         }
         let help = if self.show_help {
-            "W/S THROTTLE + BRAKE/REVERSE   A/D STEER   SPACE HANDBRAKE\nC CAMERA (CHASE / DRIVER / TOP)   M MAP + TELEPORT   [ ] TIME OF DAY   L LIGHTS   R RESPAWN+REPAIR   U RECOVER+REPAIR\nT TCS   B ABS   H HUD   F1 HELP   F2 TELEPORT   F3 SOFT/RIGID   F4 CONTROLLERS".to_string()
+            "W/S THROTTLE + BRAKE/REVERSE   A/D STEER   SPACE HANDBRAKE\nC CAMERA (CHASE / DRIVER / TOP)   M MAP + TELEPORT   [ ] TIME OF DAY   L LIGHTS   R RESPAWN+REPAIR   U RECOVER+REPAIR\nT TCS   B ABS   H HUD   F1 HELP   F2 TELEPORT   F3 SOFT/RIGID   F4 CONTROLLERS   F5 GRAPHICS".to_string()
         } else {
             String::new()
         };

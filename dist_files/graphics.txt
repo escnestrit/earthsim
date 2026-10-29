@@ -1,0 +1,3 @@
+# low / medium / high (F5 in game switches and saves it)
+# low: no shadows, 800 m of world; medium: short shadows, 1.2 km; high: long shadows, 1.6 km, 4x MSAA
+quality = medium

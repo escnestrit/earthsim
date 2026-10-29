@@ -176,6 +176,12 @@ impl Streamer {
         }
     }
 
+    /// How far around the car the world is kept loaded (graphics quality).
+    pub fn set_radius(&mut self, load_m: f64) {
+        self.cfg.load_radius_m = load_m.clamp(300.0, 3000.0);
+        self.cfg.unload_radius_m = self.cfg.load_radius_m * 1.6;
+    }
+
     pub fn frame(&self) -> LocalFrame {
         self.frame
     }
