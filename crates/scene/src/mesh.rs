@@ -336,6 +336,51 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "marks".into(), verts: mk.a, polygon_offset: -30.0, casts_shadow: false, colors: Vec::new() });
 
+    // street lights: both sides of town roads every ~32 m (staggered), arm over the carriageway, none at junctions
+    let mut lm = Mb::default();
+    for (ri, (r, pts, _)) in roads.iter().enumerate() {
+        if r.width < 5.5 || r.cls.starts_with("motorway") || r.cls == "service" || r.cls.ends_with("link") {
+            continue;
+        }
+        let spacing = 32.0;
+        let mut cum = 0.0_f64;
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dy);
+            if len < 1e-6 {
+                continue;
+            }
+            let (ux, uy) = (dx / len, dy / len);
+            let mut k = (cum / spacing).ceil() as i64;
+            while (k as f64) * spacing < cum + len {
+                let s = k as f64 * spacing - cum;
+                let side = if (k + ri as i64) % 2 == 0 { 1.0 } else { -1.0 };
+                k += 1;
+                let (cx, cy) = (a[0] + ux * s, a[1] + uy * s);
+                if near_j(cx, cy, r.width / 2.0 + 8.0) {
+                    continue;
+                }
+                // normal to the left of travel, pole on the sidewalk
+                let (nx, ny) = (-uy * side, ux * side);
+                let off = r.width / 2.0 + 1.3;
+                let (px, py) = (cx + nx * off, cy + ny * off);
+                lm.box_(px - 0.09, py - 0.09, 0.0, px + 0.09, py + 0.09, 7.0, &[mat::RIM]);
+                // arm towards the road and the lamp head
+                let (ax, ay) = (px - nx * 1.8, py - ny * 1.8);
+                // oriented arm: a thin bar from the pole to the lamp
+                let (tx, ty) = (uy * 0.05 * side, -ux * 0.05 * side);
+                let c = |x: f64, y: f64, z: f64| [x, y, z];
+                let (p0, p1, p2, p3) = (c(px + tx, py + ty, 6.97), c(ax + tx, ay + ty, 6.97), c(ax - tx, ay - ty, 6.97), c(px - tx, py - ty, 6.97));
+                lm.quad(p0, p1, p2, p3, [0.0, 0.0, 1.0], mat::RIM);
+                lm.quad(p3, p2, p1, p0, [0.0, 0.0, -1.0], mat::RIM);
+                lm.box_(ax - 0.28, ay - 0.16, 6.7, ax + 0.28, ay + 0.16, 6.88, &[mat::HEADLIGHT]);
+            }
+            cum += len;
+        }
+    }
+    out.push(MeshData { name: "streetlights".into(), verts: lm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
+
     // buildings: the Stage A mesh. Walls get u = distance along the footprint (m) and v = height scaled so
     // that one storey is 3 units, so a facade texture repeating every 3 x 3 units puts one window per bay and
     // floor; the facade style picks the material and the colour is per vertex.
