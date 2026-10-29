@@ -34,7 +34,24 @@ pub mod mat {
     pub const WALL_WOOD: f32 = 24.0;
     pub const WALL_METAL: f32 = 25.0;
     pub fn is_facade(m: f32) -> bool {
-        (19.5..26.5).contains(&m)
+        (19.5..26.5).contains(&m) || (29.5..47.5).contains(&m)
+    }
+    /// Facade style index 0..6 (plaster, brick, panel, glass, wood, metal) and variant 0..3 -> material id.
+    pub fn facade(style: usize, variant: usize) -> f32 {
+        if variant == 0 {
+            20.0 + style as f32
+        } else {
+            30.0 + (style * 3 + variant) as f32
+        }
+    }
+    /// Inverse of `facade`.
+    pub fn facade_parts(m: f32) -> (usize, usize) {
+        if m < 29.5 {
+            (((m - 20.0).round() as usize).min(5), 0)
+        } else {
+            let k = (m - 30.0).round() as usize;
+            ((k / 3).min(5), k % 3)
+        }
     }
 }
 
@@ -375,6 +392,8 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
             }
         }
         let vscale = 3.0 / b.facade.floor_height.max(2.0) as f64;
+        // shift the window grid per building so neighbours do not line up identically
+        let u_off = (b.seed % 997) as f64 * 0.37;
         for t in b.indices.chunks_exact(3) {
             let p: Vec<V> = t.iter().map(|&k| {
                 let k = k as usize * 3;
@@ -395,7 +414,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
                     (q[0], q[1])
                 } else {
                     let a = corner(edge);
-                    (cum[edge] + (q[0] - a[0]) * dir[edge][0] + (q[1] - a[1]) * dir[edge][1], q[2] * vscale)
+                    (u_off + cum[edge] + (q[0] - a[0]) * dir[edge][0] + (q[1] - a[1]) * dir[edge][1], q[2] * vscale)
                 };
                 bm.v(*q, nn, u, v, m);
                 bcol.extend_from_slice(&col);
@@ -403,6 +422,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         }
     }
     out.push(MeshData { name: "buildings".into(), verts: bm.a, polygon_offset: 0.0, casts_shadow: true, colors: bcol });
+    out.push(building_details(sc));
 
     // entrances: door in the wall, and for doors people use a porch slab and a canopy (the common Soviet
     // and modern block layout); sizes are typical, not measured
@@ -451,6 +471,167 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
     out
+}
+
+fn hash01(seed: u64, k: u64) -> f64 {
+    let mut h = seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 27;
+    (h % 10_000) as f64 / 10_000.0
+}
+
+/// Procedural details that make buildings differ: plinth, parapet and rooftop machine rooms on flat roofs,
+/// balconies on apartment blocks, shop fronts on retail/commercial ground floors. Typical shapes chosen from
+/// the building's class, size and seed — plausible, not surveyed.
+pub fn building_details(sc: &Scene) -> MeshData {
+    let mut m = Mb::default();
+    let mut col: Vec<f32> = Vec::new();
+    let mut balconies = 0usize;
+    const MAX_BALCONIES: usize = 3000;
+    let push_col = |m: &Mb, col: &mut Vec<f32>, c: [f32; 3]| {
+        let n = m.a.len() / FLOATS_PER_VERTEX;
+        while col.len() / 3 < n {
+            col.extend_from_slice(&c);
+        }
+    };
+    for b in &sc.buildings {
+        let f = &b.footprint;
+        let n = f.len();
+        if n < 3 || b.height < 2.5 {
+            continue;
+        }
+        let zs: Vec<f32> = b.verts.chunks(3).map(|v| v[2]).collect();
+        let base = zs.iter().cloned().fold(f32::MAX, f32::min) as f64;
+        let h = b.height as f64;
+        let flat = b.verts.len() / 3 == 2 * n;
+        let colour = b.facade.colour;
+        let dark = [colour[0] * 0.55, colour[1] * 0.55, colour[2] * 0.55];
+        let edge = |i: usize| {
+            let (a, c) = (f[i], f[(i + 1) % n]);
+            let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+            let l = (dx * dx + dy * dy).sqrt();
+            (a, c, l, if l > 1e-9 { [dy / l, -dx / l] } else { [0.0, 0.0] })
+        };
+        // plinth: a slightly proud darker band at the foot of ground-standing buildings
+        if base < 0.1 && h > 4.0 {
+            for i in 0..n {
+                let (a, c, l, o) = edge(i);
+                if l < 0.5 {
+                    continue;
+                }
+                let d = 0.05;
+                m.quad([a[0] + o[0] * d, a[1] + o[1] * d, 0.0], [c[0] + o[0] * d, c[1] + o[1] * d, 0.0], [c[0] + o[0] * d, c[1] + o[1] * d, 0.7], [a[0] + o[0] * d, a[1] + o[1] * d, 0.7], [o[0], o[1], 0.0], mat::SIDEWALK);
+            }
+            push_col(&m, &mut col, dark);
+        }
+        // parapet around flat roofs (0.5-1.1 m, by seed), with a cap
+        if flat && h > 5.0 && b.kind != "part" || flat && b.kind == "part" && h > 8.0 {
+            let ph = 0.5 + hash01(b.seed, 1) * 0.6;
+            for i in 0..n {
+                let (a, c, l, o) = edge(i);
+                if l < 0.3 {
+                    continue;
+                }
+                let t = 0.22;
+                let (ai, ci) = ([a[0] - o[0] * t, a[1] - o[1] * t], [c[0] - o[0] * t, c[1] - o[1] * t]);
+                m.quad([a[0], a[1], h], [c[0], c[1], h], [c[0], c[1], h + ph], [a[0], a[1], h + ph], [o[0], o[1], 0.0], mat::SIDEWALK);
+                m.quad([ci[0], ci[1], h], [ai[0], ai[1], h], [ai[0], ai[1], h + ph], [ci[0], ci[1], h + ph], [-o[0], -o[1], 0.0], mat::SIDEWALK);
+                m.quad([a[0], a[1], h + ph], [c[0], c[1], h + ph], [ci[0], ci[1], h + ph], [ai[0], ai[1], h + ph], [0.0, 0.0, 1.0], mat::SIDEWALK);
+            }
+            push_col(&m, &mut col, [colour[0] * 0.8, colour[1] * 0.8, colour[2] * 0.8]);
+            // machine rooms / stair heads on tall flat roofs
+            let area: f64 = (0..n).map(|i| f[i][0] * f[(i + 1) % n][1] - f[(i + 1) % n][0] * f[i][1]).sum::<f64>().abs() / 2.0;
+            if h >= 12.0 && area > 150.0 {
+                let cx = f.iter().map(|p| p[0]).sum::<f64>() / n as f64;
+                let cy = f.iter().map(|p| p[1]).sum::<f64>() / n as f64;
+                let inside = |x: f64, y: f64| {
+                    let mut ins = false;
+                    for i in 0..n {
+                        let (p, q) = (f[i], f[(i + 1) % n]);
+                        if (p[1] > y) != (q[1] > y) && x < p[0] + (y - p[1]) / (q[1] - p[1]) * (q[0] - p[0]) {
+                            ins = !ins;
+                        }
+                    }
+                    ins
+                };
+                let boxes = 1 + (hash01(b.seed, 2) * 2.5) as usize;
+                let (_, _, _, o) = edge(0);
+                let along = [-o[1], o[0]];
+                for k in 0..boxes {
+                    let off = (k as f64 - (boxes - 1) as f64 / 2.0) * (6.0 + hash01(b.seed, 3) * 10.0);
+                    let (x, y) = (cx + along[0] * off, cy + along[1] * off);
+                    let (w, d, bh) = (2.5 + hash01(b.seed, 4 + k as u64) * 2.0, 2.5 + hash01(b.seed, 9 + k as u64) * 2.5, 2.2 + hash01(b.seed, 14) * 1.2);
+                    if inside(x - w, y - d) && inside(x + w, y + d) && inside(x - w, y + d) && inside(x + w, y - d) {
+                        m.box_(x - w / 2.0, y - d / 2.0, h, x + w / 2.0, y + d / 2.0, h + bh, &[mat::SIDEWALK]);
+                    }
+                }
+                push_col(&m, &mut col, [colour[0] * 0.75, colour[1] * 0.75, colour[2] * 0.75]);
+            }
+        }
+        let floor = b.facade.floor_height.max(2.4) as f64;
+        let style = mat::facade_parts(b.facade.style).0;
+        // shop fronts: glazing and a sign band along the ground floor of retail / commercial buildings
+        if base < 0.1 && matches!(b.kind.as_str(), "retail" | "commercial" | "supermarket" | "kiosk" | "office") {
+            for i in 0..n {
+                let (a, c, l, o) = edge(i);
+                if l < 4.0 {
+                    continue;
+                }
+                let dir = [(c[0] - a[0]) / l, (c[1] - a[1]) / l];
+                let d = 0.06;
+                let p = |s: f64, z: f64| [a[0] + dir[0] * s + o[0] * d, a[1] + dir[1] * s + o[1] * d, z];
+                let (s0, s1) = (1.0, l - 1.0);
+                m.quad(p(s0, 0.7), p(s1, 0.7), p(s1, floor - 0.6), p(s0, floor - 0.6), [o[0], o[1], 0.0], mat::GLASS);
+                push_col(&m, &mut col, [1.0, 1.0, 1.0]);
+                let sign = [[0.75, 0.12, 0.10], [0.10, 0.30, 0.65], [0.15, 0.50, 0.25], [0.85, 0.65, 0.10], [0.20, 0.20, 0.22]][((b.seed >> 5) as usize + i) % 5];
+                m.quad(p(s0, floor - 0.55), p(s1, floor - 0.55), p(s1, floor - 0.1), p(s0, floor - 0.1), [o[0], o[1], 0.0], mat::MARKING);
+                push_col(&m, &mut col, [sign[0] / 0.85, sign[1] / 0.85, sign[2] / 0.82]);
+            }
+        }
+        // balconies: residential blocks of 3+ storeys, stacked columns on the long walls
+        let residential = matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory" | "yes") && style != 3 && style != 5;
+        let floors = ((h - base) / floor).floor() as i64;
+        if residential && floors >= 3 && base < 0.1 && hash01(b.seed, 20) < 0.75 && balconies < MAX_BALCONIES {
+            let every = 1 + (hash01(b.seed, 21) * 2.0) as i64; // a balcony column every 1 or 2 bays (3 m each)
+            let depth = 0.9 + hash01(b.seed, 22) * 0.4;
+            let glazed = hash01(b.seed, 23) < 0.4;
+            for i in 0..n {
+                let (a, c, l, o) = edge(i);
+                if l < 9.0 || hash01(b.seed, 30 + i as u64) < 0.35 {
+                    continue;
+                }
+                let dir = [(c[0] - a[0]) / l, (c[1] - a[1]) / l];
+                let bays = (l / 3.0).floor() as i64;
+                for bay in 0..bays {
+                    if bay % every != 0 || bay == 0 || bay == bays - 1 {
+                        continue;
+                    }
+                    let s0 = (l - bays as f64 * 3.0) / 2.0 + bay as f64 * 3.0 + 0.3;
+                    let s1 = s0 + 2.4;
+                    for fl in 1..floors {
+                        if balconies >= MAX_BALCONIES {
+                            break;
+                        }
+                        balconies += 1;
+                        let z = fl as f64 * floor;
+                        let p = |s: f64, d: f64, zz: f64| [a[0] + dir[0] * s + o[0] * d, a[1] + dir[1] * s + o[1] * d, zz];
+                        // slab (top and front edge) and the front parapet; glazed loggias get a glass upper part
+                        m.quad(p(s0, 0.0, z), p(s1, 0.0, z), p(s1, depth, z), p(s0, depth, z), [0.0, 0.0, 1.0], mat::SIDEWALK);
+                        m.quad(p(s0, depth, z - 0.15), p(s1, depth, z - 0.15), p(s1, depth, z + 1.0), p(s0, depth, z + 1.0), [o[0], o[1], 0.0], mat::SIDEWALK);
+                        m.quad(p(s0, 0.0, z - 0.15), p(s0, depth, z - 0.15), p(s0, depth, z + 1.0), p(s0, 0.0, z + 1.0), [-dir[0], -dir[1], 0.0], mat::SIDEWALK);
+                        m.quad(p(s1, depth, z - 0.15), p(s1, 0.0, z - 0.15), p(s1, 0.0, z + 1.0), p(s1, depth, z + 1.0), [dir[0], dir[1], 0.0], mat::SIDEWALK);
+                        push_col(&m, &mut col, [colour[0] * 0.92, colour[1] * 0.92, colour[2] * 0.92]);
+                        if glazed {
+                            m.quad(p(s0, depth, z + 1.0), p(s1, depth, z + 1.0), p(s1, depth, z + floor - 0.2), p(s0, depth, z + floor - 0.2), [o[0], o[1], 0.0], mat::GLASS);
+                            push_col(&m, &mut col, [1.0, 1.0, 1.0]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    MeshData { name: "building_details".into(), verts: m.a, polygon_offset: 0.0, casts_shadow: true, colors: col }
 }
 
 /// Street lamp posts of a scene: (pole foot, lamp head, unit normal from the road to the pole). Town roads,

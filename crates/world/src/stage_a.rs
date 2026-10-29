@@ -77,6 +77,21 @@ pub fn parse_colour(s: &str) -> Option<[f32; 3]> {
 /// Facade style/colour from tags. Explicit `building:material` / `building:colour` (Overture: facade_material,
 /// facade_color) win; otherwise the building class and height choose a plausible default. Not a reconstruction.
 pub fn facade_from_tags(tags: &Tags, height: f64) -> scene::Facade {
+    facade_for(tags, height, 0)
+}
+
+/// Stable seed for a building id (per-building variety that survives reloads).
+pub fn seed_of(id: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in id.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    h ^ (h >> 29)
+}
+
+/// Facade from map attributes; where the data says nothing, `seed` picks a variant (window layout) and a
+/// colour from a palette typical for the style, so neighbouring buildings differ.
+pub fn facade_for(tags: &Tags, height: f64, seed: u64) -> scene::Facade {
     use scene::mesh::mat;
     let mut f = scene::Facade::default();
     let material = tag(tags, "building:material").map(|m| m.to_ascii_lowercase());
@@ -106,14 +121,33 @@ pub fn facade_from_tags(tags: &Tags, height: f64) -> scene::Facade {
         _ => [0.86, 0.80, 0.68],
     };
     let colour = tag(tags, "building:colour").and_then(parse_colour);
-    f.colour = colour.unwrap_or(default_colour);
+    // palettes when the data has no colour (Minsk-like: pale plasters, grey/cream panels, red/yellow brick)
+    let pick = |p: &[[f32; 3]]| p[(seed >> 8) as usize % p.len()];
+    let palette_colour = if seed == 0 {
+        default_colour
+    } else {
+        match f.style {
+            s if s == mat::WALL_BRICK => pick(&[[0.58, 0.30, 0.22], [0.66, 0.38, 0.28], [0.80, 0.68, 0.48], [0.50, 0.26, 0.20], [0.72, 0.62, 0.52]]),
+            s if s == mat::WALL_PANEL => pick(&[[0.78, 0.77, 0.74], [0.86, 0.84, 0.78], [0.70, 0.72, 0.74], [0.82, 0.78, 0.68], [0.74, 0.70, 0.66], [0.80, 0.82, 0.84]]),
+            s if s == mat::WALL_GLASS => pick(&[[0.55, 0.62, 0.68], [0.45, 0.55, 0.60], [0.60, 0.60, 0.58], [0.40, 0.48, 0.55]]),
+            s if s == mat::WALL_METAL => pick(&[[0.62, 0.64, 0.66], [0.55, 0.60, 0.68], [0.70, 0.68, 0.62], [0.50, 0.56, 0.52]]),
+            s if s == mat::WALL_WOOD => pick(&[[0.55, 0.40, 0.26], [0.45, 0.32, 0.22], [0.62, 0.50, 0.36]]),
+            _ => pick(&[[0.86, 0.80, 0.68], [0.92, 0.88, 0.78], [0.86, 0.74, 0.62], [0.80, 0.84, 0.82], [0.90, 0.82, 0.62], [0.84, 0.70, 0.66], [0.94, 0.92, 0.88], [0.78, 0.80, 0.72]]),
+        }
+    };
+    f.colour = colour.unwrap_or(palette_colour);
+    // window layout variant (0..3) of the style
+    let style_index = [mat::WALL_PLASTER, mat::WALL_BRICK, mat::WALL_PANEL, mat::WALL_GLASS, mat::WALL_WOOD, mat::WALL_METAL].iter().position(|s| *s == f.style).unwrap_or(0);
+    f.style = mat::facade(style_index, if seed == 0 { 0 } else { (seed % 3) as usize });
     if let Some(rc) = tag(tags, "roof:colour").and_then(parse_colour) {
         f.roof_colour = rc;
     }
     if let Some(l) = levels {
         f.floor_height = ((height / l) as f32).clamp(2.4, 6.0);
-    } else if f.style == mat::WALL_METAL {
+    } else if mat::facade_parts(f.style).0 == 5 {
         f.floor_height = 6.0;
+    } else if seed != 0 {
+        f.floor_height = 2.8 + ((seed >> 20) % 5) as f32 * 0.1;
     }
     f.from_data = material.is_some() || colour.is_some();
     f
@@ -453,7 +487,9 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
             height_origin: origin.to_string(),
             verts,
             indices,
-            facade: facade_from_tags(tags, h),
+            facade: facade_for(tags, h, seed_of(id).max(1)),
+            kind: if tag(tags, "building:part").is_some() && tag(tags, "building").is_none() { "part".into() } else { tag(tags, "building").unwrap_or("yes").to_string() },
+            seed: seed_of(id).max(1),
             ring: n as u32,
         },
         ok_roof,

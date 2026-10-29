@@ -34,9 +34,13 @@ fn hash(a: u32, b: u32) -> f32 {
 
 struct Style {
     wall: fn(x: f32, y: f32, bx: usize, by: usize) -> Px,
-    /// window rectangle inside a bay, in metres from the bay's bottom-left: (x0, x1, y0, y1)
-    window: Option<(f32, f32, f32, f32)>,
+    /// window rectangles inside a bay, in metres from the bay's bottom-left: (x0, x1, y0, y1)
+    windows: Vec<(f32, f32, f32, f32)>,
     frame: [f32; 3],
+    /// darker recessed band (loggia) under the windows: (y0, y1)
+    loggia: Option<(f32, f32)>,
+    /// vertical pilaster at the bay edge (width m)
+    pilaster: f32,
 }
 
 fn plaster(x: f32, y: f32, _: usize, _: usize) -> Px {
@@ -93,15 +97,40 @@ fn metal(x: f32, y: f32, _: usize, _: usize) -> Px {
     Px { c: [v, v, v], rough: 0.45, metal: 0.6, lit: 0.0 }
 }
 
+fn glass_ribbon(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // ribbon windows: a solid band at each slab, continuous glazing above
+    if y < 1.0 {
+        let v = 0.9 - hash(bx as u32, by as u32) * 0.03;
+        Px { c: [v, v, v], rough: 0.6, metal: 0.1, lit: 0.0 }
+    } else {
+        glass(x, y, bx, by)
+    }
+}
+
+/// Style index (plaster, brick, panel, glass, wood, metal) and variant (window layout) of a facade material.
 fn style(id: f32) -> Style {
     let dark = [0.25, 0.25, 0.25];
-    match id {
-        s if s == mat::WALL_BRICK => Style { wall: brick, window: Some((0.85, 2.15, 0.85, 2.45)), frame: [0.92, 0.92, 0.9] },
-        s if s == mat::WALL_PANEL => Style { wall: panel, window: Some((0.75, 2.25, 0.9, 2.3)), frame: [0.9, 0.9, 0.88] },
-        s if s == mat::WALL_GLASS => Style { wall: glass, window: None, frame: dark },
-        s if s == mat::WALL_WOOD => Style { wall: wood, window: Some((1.0, 2.0, 1.0, 2.2)), frame: [0.95, 0.95, 0.95] },
-        s if s == mat::WALL_METAL => Style { wall: metal, window: None, frame: dark },
-        _ => Style { wall: plaster, window: Some((0.8, 2.2, 0.9, 2.4)), frame: [0.95, 0.95, 0.95] },
+    let white = [0.95, 0.95, 0.95];
+    let (si, v) = mat::facade_parts(id);
+    let st = |wall, windows: Vec<(f32, f32, f32, f32)>, frame| Style { wall, windows, frame, loggia: None, pilaster: 0.0 };
+    match (si, v) {
+        (1, 0) => st(brick, vec![(0.85, 2.15, 0.85, 2.45)], [0.92, 0.92, 0.9]),
+        (1, 1) => Style { pilaster: 0.25, ..st(brick, vec![(0.95, 2.05, 0.7, 2.55)], white) },
+        (1, _) => st(brick, vec![(0.55, 1.3, 0.9, 2.3), (1.7, 2.45, 0.9, 2.3)], [0.85, 0.85, 0.82]),
+        (2, 0) => st(panel, vec![(0.75, 2.25, 0.9, 2.3)], [0.9, 0.9, 0.88]),
+        (2, 1) => Style { loggia: Some((0.05, 0.95)), ..st(panel, vec![(0.6, 2.4, 1.0, 2.4)], [0.92, 0.92, 0.9]) },
+        (2, _) => st(panel, vec![(0.45, 1.35, 0.9, 2.35), (1.75, 2.55, 0.9, 2.35)], [0.88, 0.88, 0.86]),
+        (3, 0) => st(glass, vec![], dark),
+        (3, 1) => st(glass_ribbon, vec![], dark),
+        (3, _) => st(glass, vec![], [0.7, 0.7, 0.72]),
+        (4, 0) => st(wood, vec![(1.0, 2.0, 1.0, 2.2)], white),
+        (4, _) => st(wood, vec![(0.6, 1.4, 0.9, 2.2), (1.8, 2.4, 0.9, 2.2)], white),
+        (5, 0) => st(metal, vec![], dark),
+        (5, 1) => st(metal, vec![(0.3, 2.7, 2.0, 2.6)], dark),
+        (5, _) => st(metal, vec![(0.6, 2.4, 1.6, 2.5)], dark),
+        (_, 0) => st(plaster, vec![(0.8, 2.2, 0.9, 2.4)], white),
+        (_, 1) => Style { pilaster: 0.3, ..st(plaster, vec![(1.0, 2.0, 0.75, 2.55)], white) },
+        _ => st(plaster, vec![(0.5, 1.35, 0.95, 2.35), (1.65, 2.5, 0.95, 2.35)], [0.9, 0.88, 0.84]),
     }
 }
 
@@ -110,7 +139,20 @@ fn pixel(st: &Style, px: usize, py_from_bottom: usize) -> Px {
     let m = 3.0 / BAY as f32;
     let x = (px % BAY) as f32 * m + m * 0.5;
     let y = (py_from_bottom % BAY) as f32 * m + m * 0.5;
-    if let Some((x0, x1, y0, y1)) = st.window {
+    // pilasters at the bay edges and recessed loggia bands
+    if st.pilaster > 0.0 && (x < st.pilaster / 2.0 || x > 3.0 - st.pilaster / 2.0) {
+        let mut p = (st.wall)(x, y, bx, by);
+        p.c = p.c.map(|v| v * 0.86);
+        return p;
+    }
+    if let Some((l0, l1)) = st.loggia {
+        if y > l0 && y < l1 && x > 0.3 && x < 2.7 {
+            let mut p = (st.wall)(x, y, bx, by);
+            p.c = p.c.map(|v| v * 0.62);
+            return p;
+        }
+    }
+    for &(x0, x1, y0, y1) in &st.windows {
         let f = 0.07;
         if x >= x0 - f && x <= x1 + f && y >= y0 - f && y <= y1 + f {
             let inside = x >= x0 && x <= x1 && y >= y0 && y <= y1;
@@ -211,7 +253,10 @@ pub fn image(data: Vec<u8>, srgb: bool) -> Image {
     img
 }
 
-pub const STYLES: [f32; 6] = [mat::WALL_PLASTER, mat::WALL_BRICK, mat::WALL_PANEL, mat::WALL_GLASS, mat::WALL_WOOD, mat::WALL_METAL];
+/// All facade materials: 6 styles x 3 window layouts.
+pub fn styles() -> Vec<f32> {
+    (0..6).flat_map(|s| (0..3).map(move |v| mat::facade(s, v))).collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -219,7 +264,7 @@ mod tests {
 
     #[test]
     fn textures_have_full_mip_chains_and_windows() {
-        for s in STYLES {
+        for s in styles() {
             let [a, m, e] = generate(s);
             let expect: usize = (0..mip_count()).map(|l| (TEX >> l).max(1).pow(2) * 4).sum();
             assert_eq!((a.len(), m.len(), e.len()), (expect, expect, expect));

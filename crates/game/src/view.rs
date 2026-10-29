@@ -157,8 +157,12 @@ fn setup(
     shot: Option<Res<Shot>>,
 ) {
     // facade materials (textures generated once at startup)
-    for st in crate::facade::STYLES {
-        let [a, m, e] = crate::facade::generate(st);
+    let ids = crate::facade::styles();
+    let generated: Vec<[Vec<u8>; 3]> = std::thread::scope(|sc| {
+        let hs: Vec<_> = ids.iter().map(|&id| sc.spawn(move || crate::facade::generate(id))).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for (st, [a, m, e]) in ids.into_iter().zip(generated) {
         let (a, m, e) = (images.add(crate::facade::image(a, true)), images.add(crate::facade::image(m, false)), images.add(crate::facade::image(e, true)));
         let k = 1.0 / crate::facade::REPEAT_M;
         let h = materials.add(StandardMaterial {
