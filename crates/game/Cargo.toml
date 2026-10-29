@@ -17,7 +17,7 @@ earthsim = { path = "../app" }
 # 3D renderer + UI, without audio/gamepads (those need system libraries the Linux dev sandbox lacks)
 bevy = { version = "0.20.0", default-features = false, features = [
     "default_app", "std", "multi_threaded", "bevy_winit", "x11", "default_font",
-    "3d_bevy_render", "ui_api", "ui_bevy_render", "dds", "jpeg", "jpeg",
+    "3d_bevy_render", "ui_api", "ui_bevy_render", "dds", "jpeg",
 ] }
 
 # On Windows (the real target) add gamepads/steering wheels (gilrs, Windows.Gaming.Input) and audio.
