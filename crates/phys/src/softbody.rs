@@ -27,27 +27,29 @@ pub struct Stops {
     pub c: f64,
 }
 
+/// Field order matters: the per-step loop reads the first cache line (a..break_force) of every beam.
 #[derive(Clone, Debug)]
+#[repr(C)]
 pub struct Beam {
     pub a: usize,
     pub b: usize,
     pub rest: f64,
-    pub rest0: f64,
     pub k: f64,
     pub c: f64,
+    /// Damping while extending (BeamNG `beamDampRebound`); equals `c` unless set.
+    pub c_reb: f64,
     /// Largest tensile / compressive spring force before the beam yields (N). INFINITY = purely elastic.
     pub yield_t: f64,
     pub yield_c: f64,
+    /// Elastic force at which the beam snaps (BeamNG `beamStrength`), N.
+    pub break_force: f64,
     /// Tensile strain at which the beam snaps.
     pub break_strain: f64,
     pub broken: bool,
-    pub stops: Option<Stops>,
-    /// Damping while extending (BeamNG `beamDampRebound`); equals `c` unless set.
-    pub c_reb: f64,
     /// Compression-only beam (BeamNG SUPPORT): no force while longer than its rest length.
     pub support: bool,
-    /// Elastic force at which the beam snaps (BeamNG `beamStrength`), N.
-    pub break_force: f64,
+    pub rest0: f64,
+    pub stops: Option<Stops>,
 }
 
 /// A node held on a rail (polyline of nodes) by a spring perpendicular to it, free to slide along it
@@ -81,6 +83,13 @@ pub struct ContactParams {
     pub mu: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Hot {
+    p: V3,
+    v: V3,
+    m: f64,
+}
+
 #[derive(Clone, Debug)]
 pub struct SoftBody {
     pub nodes: Vec<Node>,
@@ -101,6 +110,8 @@ pub struct SoftBody {
     pub slides: Vec<Slide>,
     pub pins: Vec<Pin>,
     scratch: Vec<Contact>,
+    hot: Vec<Hot>,
+    hot_f: Vec<V3>,
 }
 
 impl SoftBody {
@@ -119,6 +130,8 @@ impl SoftBody {
             slides: Vec::new(),
             pins: Vec::new(),
             scratch: Vec::new(),
+            hot: Vec::new(),
+            hot_f: Vec::new(),
         }
     }
 
@@ -180,26 +193,36 @@ impl SoftBody {
 
     /// Spring, damper, yield, break and stop forces of every beam.
     pub fn beam_forces(&mut self, dt: f64) {
-        for bi in 0..self.beams.len() {
-            let (a, b) = (self.beams[bi].a, self.beams[bi].b);
-            if self.beams[bi].broken {
+        // Work on compact copies of the node state: the node structs are large, the beams touch them randomly.
+        let mut hot = std::mem::take(&mut self.hot);
+        hot.clear();
+        hot.extend(self.nodes.iter().map(|n| Hot { p: n.p, v: n.v, m: n.m }));
+        let mut f = std::mem::take(&mut self.hot_f);
+        f.clear();
+        f.resize(self.nodes.len(), V3::ZERO);
+        let mut plastic = 0.0;
+        for be in self.beams.iter_mut() {
+            if be.broken {
                 continue;
             }
-            let d = self.nodes[b].p - self.nodes[a].p;
-            let len = d.len();
-            if len < 1e-9 {
+            let (a, b) = (be.a, be.b);
+            // SAFETY-free fast path: indices were validated when the beam was added
+            let (na, nb) = (&hot[a], &hot[b]);
+            let d = nb.p - na.p;
+            let len2 = d.len2();
+            if len2 < 1e-18 {
                 continue;
             }
-            let dir = d / len;
-            let vrel = (self.nodes[b].v - self.nodes[a].v).dot(dir);
-            let (ma, mb) = (self.nodes[a].m, self.nodes[b].m);
-            let be = &mut self.beams[bi];
+            let len = len2.sqrt();
             if be.support && len >= be.rest {
                 if be.break_strain.is_finite() && (len - be.rest) / be.rest > be.break_strain {
                     be.broken = true;
                 }
                 continue;
             }
+            let inv = 1.0 / len;
+            let dir = d * inv;
+            let vrel = (nb.v - na.v).dot(dir);
             let mut f_el = be.k * (len - be.rest);
             if f_el.abs() > be.break_force {
                 be.broken = true;
@@ -209,43 +232,46 @@ impl SoftBody {
             // plastic flow: the rest length follows the node distance so that the force stays at the yield limit
             if f_el > be.yield_t {
                 let new_rest = len - be.yield_t / be.k;
-                self.plastic_work += be.yield_t * (new_rest - be.rest).abs();
+                plastic += be.yield_t * (new_rest - be.rest).abs();
                 be.rest = new_rest;
                 f_el = be.yield_t;
                 yielding = true;
             } else if f_el < -be.yield_c {
                 let new_rest = (len + be.yield_c / be.k).max(0.2 * be.rest0);
-                self.plastic_work += be.yield_c * (new_rest - be.rest).abs();
+                plastic += be.yield_c * (new_rest - be.rest).abs();
                 be.rest = new_rest;
                 f_el = -be.yield_c;
                 yielding = true;
             }
-            if be.break_strain.is_finite() && (len - be.rest) / be.rest > be.break_strain {
+            if be.break_strain.is_finite() && (len - be.rest) > be.break_strain * be.rest {
                 be.broken = true;
                 continue;
             }
-            // damping force limited so one step cannot overshoot the relative velocity (no energy gain)
-            let red = ma * mb / (ma + mb);
-            let lim = red * vrel.abs() / dt;
-            let mut f_d = if vrel > 0.0 { be.c_reb } else { be.c } * vrel;
-            f_d = f_d.clamp(-lim, lim);
-            if yielding {
-                f_d = 0.0; // a crushing member's force is set by the yield limit, not by how fast it is crushed
+            let mut fsum = f_el;
+            if !yielding {
+                // damping force limited so one step cannot overshoot the relative velocity (no energy gain)
+                let red = na.m * nb.m / (na.m + nb.m);
+                let lim = red * vrel.abs() / dt;
+                let c = if vrel > 0.0 { be.c_reb } else { be.c };
+                fsum += (c * vrel).clamp(-lim, lim);
             }
-            let mut f = f_el + f_d;
-            if let Some(s) = be.stops {
-                if len < s.min_len {
-                    f -= s.k * (s.min_len - len) + (s.c * vrel).min(0.0).abs() * 0.0;
-                    f -= s.c * (-vrel).max(0.0);
-                } else if len > s.max_len {
-                    f += s.k * (len - s.max_len);
-                    f += s.c * vrel.max(0.0);
+            if let Some(st) = be.stops {
+                if len < st.min_len {
+                    fsum -= st.k * (st.min_len - len) + st.c * (-vrel).max(0.0);
+                } else if len > st.max_len {
+                    fsum += st.k * (len - st.max_len) + st.c * vrel.max(0.0);
                 }
             }
-            let fv = dir * f;
-            self.nodes[a].f += fv;
-            self.nodes[b].f -= fv;
+            let fv = dir * fsum;
+            f[a] += fv;
+            f[b] -= fv;
         }
+        for (n, fv) in self.nodes.iter_mut().zip(&f) {
+            n.f += *fv;
+        }
+        self.plastic_work += plastic;
+        self.hot = hot;
+        self.hot_f = f;
     }
 
     /// Rail springs of the slide nodes and latch pins (call after `beam_forces`).
@@ -359,6 +385,17 @@ impl SoftBody {
             return;
         }
         let mu = self.world_contact.mu;
+        // nothing nearby: skip the per-node queries (the common case while driving)
+        let (mut lo, mut hi) = (V3::splat(f64::MAX), V3::splat(f64::MIN));
+        let mut rmax: f64 = 0.0;
+        for n in self.nodes.iter().filter(|n| n.hit_world) {
+            lo = lo.min(n.p);
+            hi = hi.max(n.p);
+            rmax = rmax.max(n.radius);
+        }
+        if lo.x > hi.x || !world.any_near((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, ((hi.x - lo.x).hypot(hi.y - lo.y)) * 0.5 + rmax + 0.05) {
+            return;
+        }
         let mut scratch = std::mem::take(&mut self.scratch);
         let mut peak: f64 = 0.0;
         for n in self.nodes.iter_mut() {

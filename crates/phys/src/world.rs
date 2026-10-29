@@ -59,6 +59,10 @@ pub struct Contact {
 /// Anything a car can run into: queried with a disc (centre, radius) in plan view.
 pub trait Obstacles {
     fn query(&self, x: f64, y: f64, r: f64, out: &mut Vec<Contact>);
+    /// Cheap test: could anything be within `r` of (x, y)? False only when certainly nothing is.
+    fn any_near(&self, _x: f64, _y: f64, _r: f64) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +79,7 @@ struct Item {
 
 /// Static obstacles in plan view (building footprints, tree trunks), with a uniform grid for lookup.
 /// Items carry a tag (for example the streaming tile they came from) so a whole group can be removed at once.
+#[derive(Clone)]
 pub struct StaticWorld {
     cell: f64,
     items: Vec<Item>,
@@ -170,6 +175,19 @@ impl StaticWorld {
 }
 
 impl Obstacles for StaticWorld {
+    fn any_near(&self, x: f64, y: f64, r: f64) -> bool {
+        if self.grid.is_empty() {
+            return false;
+        }
+        let c = self.cell;
+        let (i0, i1) = (((x - r) / c).floor() as i32, ((x + r) / c).floor() as i32);
+        let (j0, j1) = (((y - r) / c).floor() as i32, ((y + r) / c).floor() as i32);
+        if (i1 - i0 + 1) as i64 * (j1 - j0 + 1) as i64 > 400 {
+            return true;
+        }
+        (i0..=i1).any(|i| (j0..=j1).any(|j| self.grid.get(&(i, j)).is_some_and(|l| !l.is_empty())))
+    }
+
     /// Contacts of a disc (centre `(x,y)`, radius `r`) with all obstacles.
     fn query(&self, x: f64, y: f64, r: f64, out: &mut Vec<Contact>) {
         out.clear();

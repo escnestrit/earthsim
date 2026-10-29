@@ -89,7 +89,9 @@ fn setup(
 ) {
     let mut g = sim.g();
     let Some(vis) = g.jcar_visual.take() else { return };
-    let Some(j) = g.jcar.as_ref() else { return };
+    let Some(jc) = g.jcar.as_ref() else { return };
+    let guard = jc.lock();
+    let j = &guard.v;
     let Ok(world_root) = root.single() else { return };
     let formats = device.map_or(CompressedImageFormats::NONE, |d| CompressedImageFormats::from_features(d.features()));
     // textures
@@ -197,27 +199,35 @@ fn update(
     for mut v in &mut hide {
         *v = Visibility::Hidden;
     }
-    let j = g.jcar.as_ref().unwrap();
-    let r = j.body_rotation();
+    // copy what is needed and let the physics thread go on
     let rc = vis.rest_com;
+    let (r, pos, nodes, wheel_tf) = {
+        let guard = g.jcar.as_ref().unwrap().lock();
+        let j = &guard.v;
+        let (_, _, up) = j.axes();
+        let wheel_tf: Vec<(Vec3, Mat3, f32)> = wheel_ents
+            .iter()
+            .map(|&(_, wi)| {
+                let y = j.wheel_axis(wi);
+                let x = y.cross(up).norm();
+                let z = x.cross(y);
+                (vec3(j.wheel_center(wi)), Mat3::from_cols(vec3(x), vec3(y), vec3(z)), j.wheels[wi].state.spin as f32)
+            })
+            .collect();
+        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), wheel_tf)
+    };
+    drop(g);
     if let Ok((mut t, _)) = tf.get_mut(vis.root) {
-        *t = Transform { translation: vec3(j.pos - r.rotate(rc)), rotation: quat(r), scale: Vec3::ONE };
+        *t = Transform { translation: vec3(pos - r.rotate(rc)), rotation: quat(r), scale: Vec3::ONE };
     }
-    let (_, _, up) = j.axes();
-    for (e, wi) in wheel_ents {
-        let c = j.wheel_center(wi);
-        let y = j.wheel_axis(wi);
-        let x = y.cross(up).norm();
-        let z = x.cross(y);
-        let basis = Mat3::from_cols(vec3(x), vec3(y), vec3(z));
-        let spin = Quat::from_rotation_y(j.wheels[wi].state.spin as f32);
-        if let Ok((mut t, _)) = tf.get_mut(e) {
-            *t = Transform { translation: vec3(c), rotation: Quat::from_mat3(&basis) * spin, scale: Vec3::ONE };
+    for ((e, _), (c, basis, spin)) in wheel_ents.iter().zip(wheel_tf) {
+        if let Ok((mut t, _)) = tf.get_mut(*e) {
+            *t = Transform { translation: c, rotation: Quat::from_mat3(&basis) * Quat::from_rotation_y(spin), scale: Vec3::ONE };
         }
     }
     // node positions in the rest frame
     let inv = r.conj();
-    let local: Vec<V3> = j.body.nodes.iter().map(|n| inv.rotate(n.p - j.pos) + rc).collect();
+    let local: Vec<V3> = nodes.iter().map(|p| inv.rotate(*p - pos) + rc).collect();
     let n = vis.parts.len();
     let mut budget = RESKIN_BUDGET;
     let start = vis.cursor;

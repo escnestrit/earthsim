@@ -38,6 +38,104 @@ struct Stream {
 }
 
 pub const PHYS_DT: f64 = 0.001;
+
+/// State shared between the game and the physics thread of a JBeam car.
+pub struct JShared {
+    pub v: jbeam::vehicle::JbeamVehicle,
+    pub keys: Keys,
+    pub driver: Driver,
+    pub world: Arc<StaticWorld>,
+    /// held still (map not loaded yet)
+    pub frozen: bool,
+    pub steps: u64,
+}
+
+impl JShared {
+    fn step_n(&mut self, n: usize, ground: &FlatGround) {
+        if self.frozen {
+            return;
+        }
+        let JShared { v, keys, driver, world, steps, .. } = self;
+        for _ in 0..n {
+            let fwd_speed = v.vel.dot(v.forward());
+            let inp = driver.update(PHYS_DT, keys, fwd_speed);
+            v.step(PHYS_DT, &inp, ground, &**world);
+            *steps += 1;
+        }
+    }
+}
+
+/// A JBeam car simulated on its own thread in real time (or stepped by the game when `threaded` is false,
+/// for deterministic tests), so a heavy car never holds up rendering.
+pub struct JCar {
+    shared: Arc<std::sync::Mutex<JShared>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl JCar {
+    pub fn new(v: jbeam::vehicle::JbeamVehicle, driver: Driver, world: Arc<StaticWorld>, threaded: bool) -> JCar {
+        let shared = Arc::new(std::sync::Mutex::new(JShared { v, keys: Keys::default(), driver, world, frozen: false, steps: 0 }));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut c = JCar { shared, stop, thread: None };
+        if threaded {
+            c.spawn();
+        }
+        c
+    }
+
+    /// Start the physics thread (no-op when already running).
+    pub fn spawn(&mut self) {
+        if self.thread.is_some() {
+            return;
+        }
+        let shared = self.shared.clone();
+        let stop = self.stop.clone();
+        self.thread = Some({
+            let (sh, st) = (shared.clone(), stop.clone());
+            std::thread::Builder::new()
+                .name("physics".into())
+                .spawn(move || {
+                    let ground = FlatGround { grip: 1.0 };
+                    let mut last = std::time::Instant::now();
+                    let mut acc = 0.0;
+                    while !st.load(std::sync::atomic::Ordering::Relaxed) {
+                        let now = std::time::Instant::now();
+                        // a stall (debugger, slow PC) is not made up for: the car slows down instead of exploding
+                        acc = (acc + (now - last).as_secs_f64()).min(0.05);
+                        last = now;
+                        let n = ((acc / PHYS_DT) as usize).min(8);
+                        if n == 0 {
+                            std::thread::sleep(std::time::Duration::from_micros(300));
+                            continue;
+                        }
+                        acc -= n as f64 * PHYS_DT;
+                        // short critical sections so the renderer can read the state between them
+                        sh.lock().unwrap_or_else(|e| e.into_inner()).step_n(n, &ground);
+                    }
+                })
+                .expect("physics thread")
+        });
+
+    }
+
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, JShared> {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn is_threaded(&self) -> bool {
+        self.thread.is_some()
+    }
+}
+
+impl Drop for JCar {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
 /// Rest height of the centre of gravity above the ground; the car mesh origin sits on the ground.
 pub const CG_HEIGHT: f64 = 0.581;
 
@@ -92,7 +190,9 @@ pub struct Game {
     pub soft_on: bool,
     skin: crate::softmesh::SkinnedBody,
     /// A BeamNG vehicle mod driven with the soft-body solver (replaces the built-in soft car while F3 is on).
-    pub jcar: Option<Box<jbeam::vehicle::JbeamVehicle>>,
+    pub jcar: Option<JCar>,
+    /// run the JBeam car on its own thread (false: stepped inside `update`, for tests)
+    pub threaded_physics: bool,
     /// name + loading notes shown in the HUD
     pub jcar_info: Vec<String>,
     /// jcar wheel index for FL, FR, RL, RR
@@ -146,6 +246,7 @@ impl Game {
             soft_on: true,
             skin,
             jcar: None,
+            threaded_physics: false,
             jcar_info: Vec::new(),
             jcar_map: [None; 4],
             jcar_visual: None,
@@ -181,8 +282,10 @@ impl Game {
     fn place_car(&mut self, x: f64, y: f64, yaw: f64, speed: f64) {
         self.car.place(x, y, yaw, speed, &self.ground);
         self.soft.place(x, y, yaw, speed, &self.ground);
-        if let Some(j) = self.jcar.as_mut() {
-            j.place(x, y, yaw, speed, &self.ground);
+        if let Some(j) = self.jcar.as_ref() {
+            let mut s = j.lock();
+            s.v.place(x, y, yaw, speed, &self.ground);
+            s.driver = Driver::new(self.car.p.steer_max);
         }
         self.sync_from_soft_if_on();
     }
@@ -193,8 +296,9 @@ impl Game {
         let (x, y) = (self.car.pos.x, self.car.pos.y);
         let front = match self.jcar.as_ref() {
             Some(j) => {
-                let rc = j.rest_com();
-                j.body.nodes.iter().map(|n| n.rest.x - rc.x).fold(f64::MIN, f64::max)
+                let s = j.lock();
+                let rc = s.v.rest_com();
+                s.v.body.nodes.iter().map(|n| n.rest.x - rc.x).fold(f64::MIN, f64::max)
             }
             None => 2.3,
         };
@@ -204,6 +308,7 @@ impl Game {
         mb.box_(wx, y - 1.5, 0.0, wx + 1.0, y + 1.5, 3.0, &[scene::mesh::mat::SIDEWALK]);
         let mesh = MeshData { name: "crash_block".into(), verts: mb.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() };
         self.render_ops.push(RenderOp::AddTile(u64::MAX - 1, Arc::new(vec![mesh])));
+        self.publish_world();
         self.place_car(x, y, 0.0, speed);
         self.driver = Driver::new(self.car.p.steer_max);
     }
@@ -229,15 +334,36 @@ impl Game {
             }
         }
         self.jcar_map = map;
+        let threaded = self.threaded_physics;
         self.jcar_info = vec![format!("CAR: {} FROM MOD ({} NODES, {} BEAMS, MAIN PART {})", name.to_uppercase(), lv.nodes, lv.beams, lv.main_part.to_uppercase())];
         self.jcar_info.extend(lv.notes.iter().filter(|n| n.starts_with("meshes") || n.contains("driven") || n.contains("engine")).map(|n| format!("  {}", n.to_uppercase())));
-        self.jcar = Some(Box::new(v));
+        self.jcar = Some(JCar::new(v, Driver::new(self.car.p.steer_max), Arc::new(self.world.clone()), threaded));
         self.soft_on = true;
         self.sync_from_soft_if_on();
     }
 
+    /// Run the JBeam car on its own thread from now on (the real game; tests keep stepping it in `update`).
+    pub fn set_threaded_physics(&mut self, on: bool) {
+        self.threaded_physics = on;
+        if on {
+            if let Some(j) = self.jcar.as_mut() {
+                j.spawn();
+            }
+        }
+    }
+
+    /// Give the physics thread the current static world (after tiles were added or removed).
+    fn publish_world(&mut self) {
+        if let Some(j) = self.jcar.as_ref() {
+            j.lock().world = Arc::new(self.world.clone());
+        }
+    }
+
     fn sync_from_jcar(&mut self) {
-        let Some(j) = self.jcar.as_ref() else { return };
+        let Some(jc) = self.jcar.as_ref() else { return };
+        let guard = jc.lock();
+        let j = &guard.v;
+        self.driver = guard.driver.clone();
         self.car.pos = j.pos;
         self.car.q = j.q;
         self.car.vel = j.vel;
@@ -350,8 +476,8 @@ impl Game {
                         self.car.pos.y += dy;
                         self.soft.pos.x += dx;
                         self.soft.pos.y += dy;
-                        if let Some(j) = self.jcar.as_mut() {
-                            j.shift(phys::v3(dx, dy, 0.0));
+                        if let Some(j) = self.jcar.as_ref() {
+                            j.lock().v.shift(phys::v3(dx, dy, 0.0));
                         }
                         for n in self.soft.body.nodes.iter_mut() {
                             n.p.x += dx;
@@ -362,6 +488,9 @@ impl Game {
             }
         }
         if changed {
+            if let Some(j) = self.jcar.as_ref() {
+                j.lock().world = Arc::new(self.world.clone());
+            }
             let mut meta = std::mem::take(&mut self.scene.meta);
             meta.n_roads = st.scenes.values().map(|s| s.roads.len()).sum();
             meta.n_buildings = st.scenes.values().map(|s| s.buildings.len()).sum();
@@ -510,12 +639,23 @@ impl Game {
             self.acc += dt;
         }
         let mut n = 0;
+        if let (true, Some(j)) = (self.soft_on, self.jcar.as_ref()) {
+            // the JBeam car runs on its own thread: hand it the controls, or step it here when not threaded
+            let mut s = j.lock();
+            s.keys = self.keys;
+            s.frozen = frozen;
+            if !j.is_threaded() {
+                let steps = (self.acc / PHYS_DT) as usize;
+                s.step_n(steps, &self.ground);
+                self.acc -= steps as f64 * PHYS_DT;
+                n = steps as u32;
+            } else {
+                self.acc = 0.0;
+                n = 1;
+            }
+        }
         while self.acc >= PHYS_DT {
-            if let (true, Some(j)) = (self.soft_on, self.jcar.as_mut()) {
-                let fwd_speed = j.vel.dot(j.forward());
-                let inp = self.driver.update(PHYS_DT, &self.keys, fwd_speed);
-                j.step(PHYS_DT, &inp, &self.ground, &self.world);
-            } else if self.soft_on {
+            if self.soft_on {
                 let fwd_speed = self.soft.vel.dot(self.soft.forward());
                 let inp = self.driver.update(PHYS_DT, &self.keys, fwd_speed);
                 self.soft.step(PHYS_DT, &inp, &self.ground, &self.world);
@@ -581,7 +721,9 @@ impl Game {
         let (eye, target, fov) = self.cam_override.unwrap_or((eye, target, fov));
         let body = m4::mul(&m4::from_quat([car.q.w, car.q.x, car.q.y, car.q.z], [cp.x, cp.y, cp.z]), &m4::translate(0.0, 0.0, -CG_HEIGHT as f32));
         let mut wheels = [m4::id(); 4];
-        if let (true, Some(j)) = (self.soft_on, self.jcar.as_ref()) {
+        if let (true, Some(jc)) = (self.soft_on, self.jcar.as_ref()) {
+            let guard = jc.lock();
+            let j = &guard.v;
             let (_, _, up) = j.axes();
             for (slot, w) in wheels.iter_mut().enumerate() {
                 let Some(i) = self.jcar_map[slot] else { continue };
@@ -650,9 +792,9 @@ impl Game {
                 lines.push(format!("LAST ERROR: {}", e.to_uppercase()));
             }
         }
-        if let (true, Some(j)) = (self.soft_on, self.jcar.as_ref()) {
+        if let (true, Some(jc)) = (self.soft_on, self.jcar.as_ref()) {
             lines.extend(self.jcar_info.iter().cloned());
-            let (dmg, broken) = j.damage();
+            let (dmg, broken) = jc.lock().v.damage();
             lines.push(format!("PHYSICS: SOFT-BODY FROM JBEAM   BODY DAMAGE {:.0} CM   BROKEN BEAMS {}   (F3 = BUILT-IN RIGID CAR)", dmg * 100.0, broken));
         } else if self.soft_on {
             let (dmg, broken) = self.soft.damage();
@@ -798,12 +940,32 @@ mod tests {
         assert_eq!(body.len() % scene::mesh::FLOATS_PER_VERTEX, 0);
         // wheels are drawn where the mod's axles are
         let fp = g.frame_params();
-        let j = g.jcar.as_ref().unwrap();
-        let c = j.wheel_center(g.jcar_map[0].unwrap());
+        let c = g.jcar.as_ref().unwrap().lock().v.wheel_center(g.jcar_map[0].unwrap());
         assert!((fp.wheels[0][12] as f64 - c.x).abs() < 1e-3 && (fp.wheels[0][14] as f64 - c.z).abs() < 1e-3);
         // F3 switches to the built-in car and back
         g.key_state(Key::SoftBody, true);
         assert!(!g.soft_on && g.deformed_body().is_none());
+    }
+
+    #[test]
+    fn a_threaded_jbeam_car_moves_in_real_time() {
+        let mut g = game();
+        let mut lib = jbeam::assemble::Library::default();
+        lib.add_file("car.jbeam", &jbeam::vehicle::synthetic_jbeam());
+        g.set_jbeam_car(jbeam::load_from_library(&lib, None).unwrap(), "test");
+        g.set_threaded_physics(true);
+        assert!(g.jcar.as_ref().unwrap().is_threaded());
+        let s0 = g.jcar.as_ref().unwrap().lock().steps;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        g.update(0.3);
+        let s1 = g.jcar.as_ref().unwrap().lock().steps;
+        // about 300 physics steps of 1 ms in 0.3 s of wall time (allow a slow test machine)
+        assert!(s1 - s0 > 100 && s1 - s0 < 400, "{} steps", s1 - s0);
+        g.key_state(Key::Up, true);
+        g.update(0.0);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        g.update(0.016);
+        assert!(g.hud().speed_kmh > 5.0, "speed {}", g.hud().speed_kmh);
     }
 
     #[test]

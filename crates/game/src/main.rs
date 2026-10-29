@@ -56,7 +56,13 @@ fn build_sim() -> Result<Game, String> {
 
 fn main() {
     let game = match build_sim() {
-        Ok(g) => g,
+        Ok(mut g) => {
+            // physics of a mod car on its own thread, except in deterministic test captures
+            if std::env::var("EARTHSIM_SHOT").is_err() {
+                g.set_threaded_physics(true);
+            }
+            g
+        }
         Err(e) => {
             eprintln!("earthsim: {e}");
             world::log::log(&format!("startup failed: {e}"));

@@ -13,6 +13,15 @@ pub const fn v3(x: f64, y: f64, z: f64) -> V3 {
 }
 
 impl V3 {
+    pub fn splat(a: f64) -> V3 {
+        V3 { x: a, y: a, z: a }
+    }
+    pub fn min(self, o: V3) -> V3 {
+        V3 { x: self.x.min(o.x), y: self.y.min(o.y), z: self.z.min(o.z) }
+    }
+    pub fn max(self, o: V3) -> V3 {
+        V3 { x: self.x.max(o.x), y: self.y.max(o.y), z: self.z.max(o.z) }
+    }
     pub const ZERO: V3 = v3(0.0, 0.0, 0.0);
     pub const X: V3 = v3(1.0, 0.0, 0.0);
     pub const Y: V3 = v3(0.0, 1.0, 0.0);
