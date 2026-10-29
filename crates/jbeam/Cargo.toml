@@ -7,6 +7,8 @@ description = "BeamNG vehicle mods: zip reader, DEFLATE, lenient JBeam parser, s
 [dependencies]
 scene = { path = "../scene" }
 phys = { path = "../phys" }
+# BeamNG .cdae/.dts shapes are Zstandard-compressed MessagePack
+ruzstd = "*"
 
 [lints]
 workspace = true

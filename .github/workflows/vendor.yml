@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - crates/game/Cargo.toml
+      - crates/*/Cargo.toml
       - .github/workflows/vendor.yml
 permissions:
   contents: write
