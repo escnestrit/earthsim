@@ -174,6 +174,24 @@ pub fn split(file: &[u8]) -> Result<(Val, Vec<u8>), String> {
     Ok((header, body))
 }
 
+/// Header size of a shape file from its first 8 bytes (None if not a version-31 shape).
+pub fn header_len(first8: &[u8]) -> Option<usize> {
+    if first8.len() < 8 || u32::from_le_bytes(first8[0..4].try_into().ok()?) & 0xff != 31 {
+        return None;
+    }
+    Some(u32::from_le_bytes(first8[4..8].try_into().ok()?) as usize)
+}
+
+/// Object names listed in a shape header (`prefix` = at least the first 8 + header-size bytes).
+pub fn object_names(prefix: &[u8]) -> Option<Vec<String>> {
+    let hs = header_len(prefix)?;
+    let header = Mp::new(prefix.get(8..8 + hs)?).val().ok()?;
+    match header_get(&header, "objectNames") {
+        Some(Val::Arr(a)) => Some(a.iter().filter_map(|v| if let Val::Str(s) = v { Some(s.clone()) } else { None }).collect()),
+        _ => None,
+    }
+}
+
 pub fn header_get<'v>(h: &'v Val, key: &str) -> Option<&'v Val> {
     match h {
         Val::Map(m) => m.iter().find(|(k, _)| matches!(k, Val::Str(s) if s == key)).map(|(_, v)| v),

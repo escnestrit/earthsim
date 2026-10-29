@@ -341,48 +341,16 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "marks".into(), verts: mk.a, polygon_offset: -30.0, casts_shadow: false, colors: Vec::new() });
 
-    // street lights: both sides of town roads every ~32 m (staggered), arm over the carriageway, none at junctions
+    // street lights (see `lamp_posts`): pole, arm over the carriageway, lamp head
     let mut lm = Mb::default();
-    for (ri, (r, pts, _)) in roads.iter().enumerate() {
-        if r.width < 5.5 || r.cls.starts_with("motorway") || r.cls == "service" || r.cls.ends_with("link") {
-            continue;
-        }
-        let spacing = 32.0;
-        let mut cum = 0.0_f64;
-        for w in pts.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            let len = dx.hypot(dy);
-            if len < 1e-6 {
-                continue;
-            }
-            let (ux, uy) = (dx / len, dy / len);
-            let mut k = (cum / spacing).ceil() as i64;
-            while (k as f64) * spacing < cum + len {
-                let s = k as f64 * spacing - cum;
-                let side = if (k + ri as i64) % 2 == 0 { 1.0 } else { -1.0 };
-                k += 1;
-                let (cx, cy) = (a[0] + ux * s, a[1] + uy * s);
-                if near_j(cx, cy, r.width / 2.0 + 8.0) {
-                    continue;
-                }
-                // normal to the left of travel, pole on the sidewalk
-                let (nx, ny) = (-uy * side, ux * side);
-                let off = r.width / 2.0 + 1.3;
-                let (px, py) = (cx + nx * off, cy + ny * off);
-                lm.box_(px - 0.09, py - 0.09, 0.0, px + 0.09, py + 0.09, 7.0, &[mat::RIM]);
-                // arm towards the road and the lamp head
-                let (ax, ay) = (px - nx * 1.8, py - ny * 1.8);
-                // oriented arm: a thin bar from the pole to the lamp
-                let (tx, ty) = (uy * 0.05 * side, -ux * 0.05 * side);
-                let c = |x: f64, y: f64, z: f64| [x, y, z];
-                let (p0, p1, p2, p3) = (c(px + tx, py + ty, 6.97), c(ax + tx, ay + ty, 6.97), c(ax - tx, ay - ty, 6.97), c(px - tx, py - ty, 6.97));
-                lm.quad(p0, p1, p2, p3, [0.0, 0.0, 1.0], mat::RIM);
-                lm.quad(p3, p2, p1, p0, [0.0, 0.0, -1.0], mat::RIM);
-                lm.box_(ax - 0.28, ay - 0.16, 6.7, ax + 0.28, ay + 0.16, 6.88, &[mat::HEADLIGHT]);
-            }
-            cum += len;
-        }
+    for (p, h, nrm) in lamp_posts(sc) {
+        let (px, py, ax, ay) = (p[0], p[1], h[0], h[1]);
+        lm.box_(px - 0.09, py - 0.09, 0.0, px + 0.09, py + 0.09, 7.0, &[mat::RIM]);
+        let (tx, ty) = (-nrm[1] * 0.05, nrm[0] * 0.05);
+        let (p0, p1, p2, p3) = ([px + tx, py + ty, 6.97], [ax + tx, ay + ty, 6.97], [ax - tx, ay - ty, 6.97], [px - tx, py - ty, 6.97]);
+        lm.quad(p0, p1, p2, p3, [0.0, 0.0, 1.0], mat::RIM);
+        lm.quad(p3, p2, p1, p0, [0.0, 0.0, -1.0], mat::RIM);
+        lm.box_(ax - 0.28, ay - 0.16, 6.7, ax + 0.28, ay + 0.16, 6.88, &[mat::HEADLIGHT]);
     }
     out.push(MeshData { name: "streetlights".into(), verts: lm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
 
@@ -483,6 +451,65 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
     out
+}
+
+/// Street lamp posts of a scene: (pole foot, lamp head, unit normal from the road to the pole). Town roads,
+/// every ~32 m on alternating sides, none within 8 m of a junction or road end.
+pub fn lamp_posts(sc: &Scene) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
+    let roads: Vec<_> = sc.roads.iter().filter_map(|r| {
+        let (pts, jn) = dedup(&r.pts, &r.junction);
+        (pts.len() > 1).then(|| (r, pts, jn))
+    }).collect();
+    let mut jg: HashMap<(i64, i64), Vec<[f64; 2]>> = HashMap::new();
+    for (_, pts, jn) in &roads {
+        for (i, p) in pts.iter().enumerate() {
+            if jn[i] || i == 0 || i == pts.len() - 1 {
+                jg.entry(((p[0] / 30.0).floor() as i64, (p[1] / 30.0).floor() as i64)).or_default().push(*p);
+            }
+        }
+    }
+    let near_j = |x: f64, y: f64, r: f64| {
+        let (ci, cj) = ((x / 30.0).floor() as i64, (y / 30.0).floor() as i64);
+        (ci - 1..=ci + 1).any(|i| (cj - 1..=cj + 1).any(|j| jg.get(&(i, j)).is_some_and(|a| a.iter().any(|p| (p[0] - x).hypot(p[1] - y) < r))))
+    };
+    let mut out = Vec::new();
+    for (ri, (r, pts, _)) in roads.iter().enumerate() {
+        if r.width < 5.5 || r.cls.starts_with("motorway") || r.cls == "service" || r.cls.ends_with("link") {
+            continue;
+        }
+        let spacing = 32.0;
+        let mut cum = 0.0_f64;
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dy);
+            if len < 1e-6 {
+                continue;
+            }
+            let (ux, uy) = (dx / len, dy / len);
+            let mut k = (cum / spacing).ceil() as i64;
+            while (k as f64) * spacing < cum + len {
+                let s = k as f64 * spacing - cum;
+                let side = if (k + ri as i64) % 2 == 0 { 1.0 } else { -1.0 };
+                k += 1;
+                let (cx, cy) = (a[0] + ux * s, a[1] + uy * s);
+                if near_j(cx, cy, r.width / 2.0 + 8.0) {
+                    continue;
+                }
+                let (nx, ny) = (-uy * side, ux * side);
+                let off = r.width / 2.0 + 1.3;
+                let (px, py) = (cx + nx * off, cy + ny * off);
+                out.push(([px, py], [px - nx * 1.8, py - ny * 1.8], [nx, ny]));
+            }
+            cum += len;
+        }
+    }
+    out
+}
+
+/// Lamp head positions (x, y, z) for placing lights at night.
+pub fn street_lamps(sc: &Scene) -> Vec<[f64; 3]> {
+    lamp_posts(sc).into_iter().map(|(_, h, _)| [h[0], h[1], 6.6]).collect()
 }
 
 /// Car body and one wheel, in the car frame (+X forward, +Y left, +Z up) with the ground at z = 0

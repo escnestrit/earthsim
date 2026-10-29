@@ -8,6 +8,7 @@ pub use scene::inflate;
 pub mod lenient;
 pub mod materials;
 pub mod model;
+pub mod props;
 pub mod shape;
 pub mod table;
 pub mod vehicle;

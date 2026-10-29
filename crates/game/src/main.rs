@@ -8,6 +8,7 @@ mod car_visual;
 mod facade;
 mod hud;
 mod input;
+mod lights;
 mod map;
 mod settings;
 mod view;
@@ -101,7 +102,7 @@ fn main() {
         }));
     }
     app.insert_resource(Sim(std::sync::Mutex::new(game)))
-        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin, settings::SettingsPlugin))
+        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin, settings::SettingsPlugin, lights::LightsPlugin))
         .add_systems(Update, step_sim.after(input::read_input).before(view::sync_world));
     app.run();
 }
@@ -129,6 +130,9 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
             }
         }
         let mut g = sim.g();
+        if let Some(h) = std::env::var("EARTHSIM_SHOT_HOUR").ok().and_then(|v| v.parse::<f32>().ok()) {
+            g.hour = h;
+        }
         g.update(1.0 / 60.0);
         // EARTHSIM_SHOT_CAM=side|front: fixed camera beside / in front of the car (for checking car models)
         // EARTHSIM_SHOT_CAM=interior: the driver's view

@@ -16,6 +16,8 @@ pub struct CarVisual {
     /// texture bytes by (prefixed) entry name (only those the materials use)
     pub textures: HashMap<String, Vec<u8>>,
     pub notes: Vec<String>,
+    /// steering wheel and other node-carried rigid meshes
+    pub props: Vec<crate::props::Prop>,
 }
 
 impl CarVisual {
@@ -65,6 +67,21 @@ pub fn load<R: Read + Seek>(z: &mut Zip<R>, common: Option<&mut Zip<std::fs::Fil
     if let Some(cz) = common.as_deref_mut() {
         let needed: Vec<String> = m.table("flexbodies").iter().filter_map(|(_, r)| r.str("mesh").map(String::from)).filter(|n| !files.iter().any(|f| f.has(n))).collect();
         let centries: Vec<crate::zip::Entry> = cz.entries.iter().filter(|e| is_mesh(&e.name.to_lowercase())).cloned().collect();
+        // index of the objects in every binary shape (header only: BeamNG stores meshes uncompressed)
+        let t0 = std::time::Instant::now();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for (i, e) in centries.iter().enumerate() {
+            if !e.name.to_lowercase().ends_with(".cdae") {
+                continue;
+            }
+            let Ok(head) = cz.read_prefix(e, 8) else { continue };
+            let Some(hs) = crate::shape::header_len(&head) else { continue };
+            let Ok(pre) = cz.read_prefix(e, 8 + hs as u64) else { continue };
+            for n in crate::shape::object_names(&pre).unwrap_or_default() {
+                index.entry(n).or_insert(i);
+            }
+        }
+        notes.push(format!("common.zip mesh index: {} objects in {} shape files ({:.1} s)", index.len(), centries.len(), t0.elapsed().as_secs_f64()));
         let mut tried: HashSet<String> = HashSet::new();
         let mut found = 0;
         for name in &needed {
@@ -72,18 +89,22 @@ pub fn load<R: Read + Seek>(z: &mut Zip<R>, common: Option<&mut Zip<std::fs::Fil
                 found += 1;
                 continue;
             }
-            // candidate files: their stem shares the first word(s) of the mesh name (tire_01a_..., steelwheel_16a_...)
-            let n = name.to_lowercase();
-            let toks: Vec<&str> = n.split('_').collect();
-            let key2 = toks.iter().take(2).copied().collect::<Vec<_>>().join("_");
-            let key1 = toks.first().copied().unwrap_or("");
-            let mut cands: Vec<&crate::zip::Entry> = centries.iter().filter(|e| {
-                let stem = e.name.rsplit('/').next().unwrap_or("").to_lowercase();
-                let stem = stem.split('.').next().unwrap_or("");
-                !stem.is_empty() && (stem.starts_with(&key2) || key2.starts_with(stem) || (key1.len() >= 4 && stem.starts_with(key1)))
-            }).collect();
-            cands.sort_by_key(|e| e.size);
-            for e in cands.into_iter().take(6) {
+            // exact object name from the index, else candidate files whose stem shares the name's first words
+            let mut cands: Vec<&crate::zip::Entry> = index.get(name).map(|&i| &centries[i]).into_iter().collect();
+            if cands.is_empty() {
+                let n = name.to_lowercase();
+                let toks: Vec<&str> = n.split('_').collect();
+                let key2 = toks.iter().take(2).copied().collect::<Vec<_>>().join("_");
+                let key1 = toks.first().copied().unwrap_or("");
+                cands = centries.iter().filter(|e| {
+                    let stem = e.name.rsplit('/').next().unwrap_or("").to_lowercase();
+                    let stem = stem.split('.').next().unwrap_or("");
+                    !stem.is_empty() && (stem.starts_with(&key2) || key2.starts_with(stem) || (key1.len() >= 4 && stem.starts_with(key1)))
+                }).collect();
+                cands.sort_by_key(|e| e.size);
+                cands.truncate(6);
+            }
+            for e in cands {
                 if !tried.insert(e.name.clone()) {
                     continue;
                 }
@@ -92,9 +113,13 @@ pub fn load<R: Read + Seek>(z: &mut Zip<R>, common: Option<&mut Zip<std::fs::Fil
                     Err(err) => notes.push(format!("common {}: {err}", e.name)),
                 }
                 if files.iter().any(|f| f.has(name)) {
-                    found += 1;
                     break;
                 }
+            }
+            if files.iter().any(|f| f.has(name)) {
+                found += 1;
+            } else if notes.len() < 400 {
+                notes.push(format!("mesh {name} not found in common.zip"));
             }
         }
         if !needed.is_empty() {
@@ -105,6 +130,8 @@ pub fn load<R: Read + Seek>(z: &mut Zip<R>, common: Option<&mut Zip<std::fs::Fil
         return Err("no meshes (.dae/.cdae/.dts) in the mod".into());
     }
     let (parts, more) = flex::build(m, v, &files);
+    notes.extend(more);
+    let (props, more) = crate::props::build(m, &files);
     notes.extend(more);
     drop(files);
     // materials: the mod's, then common.zip's for names the mod does not define
@@ -120,6 +147,7 @@ pub fn load<R: Read + Seek>(z: &mut Zip<R>, common: Option<&mut Zip<std::fs::Fil
     let used: HashSet<String> = parts
         .iter()
         .flat_map(|p| p.submeshes.iter().map(|s| s.material.clone()).chain(p.swap.iter().map(|w| w.damaged.clone())))
+        .chain(props.iter().flat_map(|p| p.submeshes.iter().map(|s| s.material.clone())))
         .filter(|m| !flex::is_invisible_material(m))
         .collect();
     let swaps = parts.iter().filter(|p| p.swap.is_some()).count();
@@ -172,5 +200,5 @@ pub fn load<R: Read + Seek>(z: &mut Zip<R>, common: Option<&mut Zip<std::fs::Fil
     if missing_mats > 0 {
         notes.push(format!("{missing_mats} materials not defined (plain grey)"));
     }
-    Ok(CarVisual { parts, materials: mats, textures, notes })
+    Ok(CarVisual { parts, materials: mats, textures, notes, props })
 }

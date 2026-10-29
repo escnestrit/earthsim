@@ -165,6 +165,25 @@ impl<R: Read + Seek> Zip<R> {
         Ok(out)
     }
 
+    /// The first `n` bytes of an entry: read directly for stored entries (BeamNG keeps meshes uncompressed),
+    /// the whole entry decompressed otherwise. No CRC check (the entry is not read in full).
+    pub fn read_prefix(&mut self, e: &Entry, n: u64) -> Result<Vec<u8>, String> {
+        if e.method != 0 {
+            return self.read(e);
+        }
+        self.r.seek(SeekFrom::Start(e.offset)).map_err(|e| e.to_string())?;
+        let mut h = [0u8; 30];
+        self.r.read_exact(&mut h).map_err(|e| e.to_string())?;
+        if h[0..4] != [0x50, 0x4b, 0x03, 0x04] {
+            return Err(format!("zip: bad local header for {}", e.name));
+        }
+        let skip = u16le(&h, 26) as i64 + u16le(&h, 28) as i64;
+        self.r.seek(SeekFrom::Current(skip)).map_err(|e| e.to_string())?;
+        let mut out = vec![0u8; n.min(e.size) as usize];
+        self.r.read_exact(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
     pub fn read_name(&mut self, name: &str) -> Result<Vec<u8>, String> {
         let e = self.find(name).ok_or_else(|| format!("zip: no entry {name}"))?.clone();
         self.read(&e)

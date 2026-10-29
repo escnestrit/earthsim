@@ -16,6 +16,8 @@ pub struct ViewPlugin;
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Tiles>()
+            .init_resource::<PendingOps>()
+            .add_systems(Update, hitch_log)
             .add_systems(Startup, setup.in_set(SetupMarker))
             .add_systems(Update, (sync_world, sync_car, sync_camera_and_light, capture).chain());
     }
@@ -227,9 +229,25 @@ fn setup(
 #[derive(Resource)]
 struct ShotTarget(Handle<Image>, u32);
 
-pub fn sync_world(mut commands: Commands, sim: ResMut<Sim>, mut tiles: ResMut<Tiles>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+/// Render ops waiting for their frame: adding a tile (mesh conversion, GPU upload) is spread over frames.
+#[derive(Resource, Default)]
+pub struct PendingOps {
+    pub ops: std::collections::VecDeque<RenderOp>,
+    /// what the last frame did (for the hitch log)
+    pub last: String,
+}
+
+pub fn sync_world(mut commands: Commands, sim: ResMut<Sim>, mut tiles: ResMut<Tiles>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut pending: ResMut<PendingOps>) {
     let Some(root) = tiles.root else { return };
-    for op in sim.g().take_render_ops() {
+    pending.ops.extend(sim.g().take_render_ops());
+    let t0 = std::time::Instant::now();
+    let (mut added, mut removed) = (0, 0);
+    // at most ~4 ms of tile additions per frame (always at least one); removals are cheap
+    while let Some(op) = pending.ops.front() {
+        if matches!(op, RenderOp::AddTile(..)) && added > 0 && t0.elapsed().as_secs_f64() > 0.004 {
+            break;
+        }
+        let op = pending.ops.pop_front().unwrap();
         match op {
             RenderOp::AddTile(id, ms) => {
                 if let Some(old) = tiles.map.remove(&id) {
@@ -242,14 +260,26 @@ pub fn sync_world(mut commands: Commands, sim: ResMut<Sim>, mut tiles: ResMut<Ti
                     ents.extend(spawn_meshdata(&mut commands, &mut tiles, &mut meshes, &mut materials, root, m));
                 }
                 tiles.map.insert(id, ents);
+                added += 1;
             }
             RenderOp::RemoveTile(id) => {
                 for e in tiles.map.remove(&id).unwrap_or_default() {
                     commands.entity(e).despawn();
                 }
+                removed += 1;
             }
             RenderOp::FollowGround(_) => {}
         }
+    }
+    pending.last = format!("tiles +{added} -{removed} in {:.1} ms, {} waiting", t0.elapsed().as_secs_f64() * 1000.0, pending.ops.len());
+}
+
+/// Logs frames that took long (stutter), with what the world sync did, so a player's log shows the cause.
+pub fn hitch_log(time: Res<Time>, pending: Res<PendingOps>, mut n: Local<u32>) {
+    let dt = time.delta_secs_f64();
+    if dt > 0.12 && *n < 200 {
+        *n += 1;
+        world::log::log(&format!("slow frame {:.0} ms ({})", dt * 1000.0, pending.last));
     }
 }
 
@@ -323,7 +353,9 @@ fn sync_camera_and_light(
     for (mut t, mut l) in &mut sun {
         *t = Transform::from_translation(zup(fp.car_pos) + to_light * 100.0).looking_at(zup(fp.car_pos), Vec3::Y);
         l.color = Color::srgb(lg.sun_col[0], lg.sun_col[1], lg.sun_col[2]);
-        l.illuminance = 400.0 + 100_000.0 * lg.sun_i.clamp(0.0, 1.5) * lg.day.clamp(0.0, 1.0);
+        // moonlight-dark at night (exposure adapts in lights.rs), so lamps and headlights carry the scene
+        let night = ((0.35 - lg.day) / 0.3).clamp(0.0, 1.0);
+        l.illuminance = (400.0 * (1.0 - night) + 0.3 * night) + 100_000.0 * lg.sun_i.clamp(0.0, 1.5) * lg.day.clamp(0.0, 1.0);
     }
     // lit windows fade in at dusk (only touch the materials when the level changes)
     let night = ((0.35 - lg.day) / 0.3).clamp(0.0, 1.0);
@@ -331,12 +363,13 @@ fn sync_camera_and_light(
         *last_night = night;
         for h in &tiles.facades {
             if let Some(mut m) = materials.get_mut(h) {
-                m.emissive = LinearRgba::rgb(1.0, 1.0, 1.0) * (night * 4000.0);
+                m.emissive = LinearRgba::rgb(1.0, 1.0, 1.0) * (night * 2.5);
             }
         }
     }
     amb.color = Color::srgb(lg.sky_amb[0], lg.sky_amb[1], lg.sky_amb[2]);
-    amb.brightness = 150.0 + 6_000.0 * lg.day;
+    let night = ((0.35 - lg.day) / 0.3).clamp(0.0, 1.0);
+    amb.brightness = (150.0 + 6_000.0 * lg.day) * (1.0 - night) + 8.0 * night;
     // keep the ground plane under the car, snapped so its texture would not swim
     let c = zup(fp.car_pos);
     for mut g in &mut ground {

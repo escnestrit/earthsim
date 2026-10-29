@@ -24,9 +24,9 @@ impl Plugin for CarVisualPlugin {
 }
 
 /// re-skin a part when one of its nodes moved this far relative to the body since the last time (m)
-const RESKIN_EPS: f64 = 0.003;
+const RESKIN_EPS: f64 = 0.008;
 /// cap on vertices recomputed per frame (the rest waits a frame)
-const RESKIN_BUDGET: usize = 250_000;
+const RESKIN_BUDGET: usize = 120_000;
 
 struct PartVis {
     part: FlexPart,
@@ -53,7 +53,13 @@ struct CarVis {
     mats: HashMap<String, Handle<StandardMaterial>>,
     /// damage-group generation the materials reflect
     groups_gen: u32,
+    /// (entity, prop) for the steering wheel and other node-carried meshes
+    props: Vec<(Entity, jbeam::props::Prop)>,
 }
+
+/// A node-carried rigid car mesh (steering wheel).
+#[derive(Component)]
+struct CarProp;
 
 fn quat(q: phys::math::Quat) -> Quat {
     Quat::from_xyzw(q.x as f32, q.y as f32, q.z as f32, q.w as f32)
@@ -190,8 +196,21 @@ fn setup(
     }
     world::log::log(&format!("car meshes: {} parts, {} textures ({failed} failed), {} materials", parts.len(), tex.len(), mat_handles.len()));
     let rest_com = j.rest_com();
+    let mut props = Vec::new();
+    for pr in vis.props {
+        let e = commands.spawn((CarProp, Transform::default(), Visibility::default(), ChildOf(car_root))).id();
+        for sm in &pr.submeshes {
+            if flex::is_invisible_material(&sm.material) {
+                continue;
+            }
+            let mh = mat_handles.entry(sm.material.clone()).or_insert_with(|| materials.add(material(vis.materials.get(&sm.material), &tex))).clone();
+            let h = meshes.add(make_mesh(sm.positions.clone(), sm.normals.clone(), sm.uvs.clone(), sm.indices.clone()));
+            commands.spawn((Mesh3d(h), MeshMaterial3d(mh), Transform::default(), ChildOf(e)));
+        }
+        props.push((e, pr));
+    }
     let groups_gen = j.groups.generation;
-    commands.insert_resource(CarVis { root: car_root, parts, wheels, rest_com, cursor: 0, pos: Vec::new(), nrm: Vec::new(), mats: mat_handles, groups_gen });
+    commands.insert_resource(CarVis { root: car_root, parts, wheels, rest_com, cursor: 0, pos: Vec::new(), nrm: Vec::new(), mats: mat_handles, groups_gen, props });
 }
 
 #[allow(clippy::type_complexity)]
@@ -199,9 +218,10 @@ fn update(
     sim: Res<Sim>,
     vis: Option<ResMut<CarVis>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut tf: Query<(&mut Transform, &mut Visibility), (Without<CarBody>, Without<SoftBody>, Without<CarWheel>, Without<CarSubmesh>)>,
+    mut tf: Query<(&mut Transform, &mut Visibility), (Without<CarBody>, Without<SoftBody>, Without<CarWheel>, Without<CarSubmesh>, Without<CarProp>)>,
     mut hide: Query<&mut Visibility, (Or<(With<SoftBody>, With<CarWheel>, With<CarBody>)>, Without<CarSubmesh>)>,
     mut subs: Query<(&mut MeshMaterial3d<StandardMaterial>, &mut Visibility), (With<CarSubmesh>, Without<CarBody>, Without<SoftBody>, Without<CarWheel>)>,
+    mut prop_tf: Query<&mut Transform, (With<CarProp>, Without<CarBody>, Without<SoftBody>, Without<CarWheel>, Without<CarSubmesh>)>,
 ) {
     let Some(mut vis) = vis else { return };
     let g = sim.g();
@@ -225,9 +245,10 @@ fn update(
     }
     // copy what is needed and let the physics thread go on
     let rc = vis.rest_com;
-    let (r, pos, nodes, wheel_tf, groups) = {
+    let (r, pos, nodes, wheel_tf, groups, steer) = {
         let guard = g.jcar.as_ref().unwrap().lock();
         let j = &guard.v;
+        let steer = j.steer_cmd;
         let groups = (j.groups.generation != vis.groups_gen).then(|| (j.groups.generation, j.groups.triggered_names()));
         let (_, _, up) = j.axes();
         let wheel_tf: Vec<(Vec3, Mat3, f32)> = wheel_ents
@@ -239,7 +260,7 @@ fn update(
                 (vec3(j.wheel_center(wi)), Mat3::from_cols(vec3(x), vec3(y), vec3(z)), j.wheels[wi].state.spin as f32)
             })
             .collect();
-        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), wheel_tf, groups)
+        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), wheel_tf, groups, steer)
     };
     drop(g);
     // damage groups changed (glass cracked, lights broken, or everything repaired): swap materials
@@ -272,6 +293,25 @@ fn update(
     // node positions in the rest frame
     let inv = r.conj();
     let local: Vec<V3> = nodes.iter().map(|p| inv.rotate(*p - pos) + rc).collect();
+    // steering wheel and other props follow their three nodes (rest-frame coordinates, like the car root)
+    if !vis.props.is_empty() {
+        let lp: Vec<[f64; 3]> = local.iter().map(|p| [p.x, p.y, p.z]).collect();
+        for (e, pr) in &vis.props {
+            let (o, m) = pr.pose(&lp, steer);
+            if let Ok(mut t) = prop_tf.get_mut(*e) {
+                let cols = Mat3::from_cols(
+                    Vec3::new(m[0][0] as f32, m[1][0] as f32, m[2][0] as f32),
+                    Vec3::new(m[0][1] as f32, m[1][1] as f32, m[2][1] as f32),
+                    Vec3::new(m[0][2] as f32, m[1][2] as f32, m[2][2] as f32),
+                );
+                *t = Transform { translation: Vec3::new(o[0] as f32, o[1] as f32, o[2] as f32), rotation: Quat::from_mat3(&cols), scale: Vec3::ONE };
+                if std::env::var("EARTHSIM_DEBUG_PROPS").is_ok() {
+                    let wp = pos + r.rotate(phys::math::v3(o[0], o[1], o[2]) - rc);
+                    world::log::log(&format!("prop {} at {:?} rot {:?}; world (sim) {:.2} {:.2} {:.2}", pr.mesh, t.translation, t.rotation, wp.x, wp.y, wp.z));
+                }
+            }
+        }
+    }
     let n = vis.parts.len();
     let mut budget = RESKIN_BUDGET;
     let start = vis.cursor;

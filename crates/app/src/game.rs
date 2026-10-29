@@ -201,6 +201,10 @@ pub struct Game {
     pub jcar_visual: Option<jbeam::visual::CarVisual>,
     /// the mod car came with meshes (stays true after the front end takes `jcar_visual`)
     pub jcar_has_visual: bool,
+    world_dirty: bool,
+    world_published: std::time::Instant,
+    /// street lamp heads per tile (u64::MAX: the static scene)
+    lamps: HashMap<u64, Vec<[f64; 3]>>,
     pub deformed: Vec<f32>,
     /// Fixed camera (eye, target, fov) used for screenshots and tests instead of the follow cameras.
     pub cam_override: Option<(V3f, V3f, f32)>,
@@ -253,6 +257,9 @@ impl Game {
             jcar_map: [None; 4],
             jcar_visual: None,
             jcar_has_visual: false,
+            world_dirty: false,
+            world_published: std::time::Instant::now(),
+            lamps: HashMap::new(),
             deformed: Vec::new(),
             cam_override: None,
             stream: None,
@@ -432,6 +439,16 @@ impl Game {
         Some((lat, lon, f.x.atan2(f.y).to_degrees().rem_euclid(360.0)))
     }
 
+    /// The `n` street lamps nearest to (x, y) (lamp head positions).
+    pub fn nearest_lamps(&mut self, x: f64, y: f64, n: usize) -> Vec<[f64; 3]> {
+        if self.lamps.is_empty() && !self.scene.roads.is_empty() && self.stream.is_none() {
+            self.lamps.insert(u64::MAX, scene::mesh::street_lamps(&self.scene));
+        }
+        let mut all: Vec<(f64, [f64; 3])> = self.lamps.values().flatten().map(|p| ((p[0] - x).hypot(p[1] - y), *p)).filter(|(d, _)| *d < 250.0).collect();
+        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+        all.into_iter().take(n).map(|x| x.1).collect()
+    }
+
     /// Radius of the loaded world around the car (m).
     pub fn set_view_radius(&mut self, m: f64) {
         if let Some(st) = self.stream.as_mut() {
@@ -480,6 +497,7 @@ impl Game {
                     for t in &scene.trees {
                         self.world.add_circle_tagged(key, t[0], t[1], 0.35);
                     }
+                    self.lamps.insert(key, scene::mesh::street_lamps(&scene));
                     st.scenes.insert(key, scene);
                     self.render_ops.push(RenderOp::AddTile(key, meshes));
                     changed = true;
@@ -488,6 +506,7 @@ impl Game {
                     let key = tile.key();
                     self.world.remove_tag(key);
                     st.scenes.remove(&key);
+                    self.lamps.remove(&key);
                     self.render_ops.push(RenderOp::RemoveTile(key));
                     changed = true;
                 }
@@ -551,7 +570,17 @@ impl Game {
         let (cx, cy) = (self.car.pos.x, self.car.pos.y);
         let Some(st) = self.stream.as_mut() else { return };
         let ev = st.streamer.update(cx, cy);
+        let changed = !ev.is_empty();
         self.apply_stream_events(ev, true);
+        // the mod car's physics thread works on its own copy of the collision world
+        if changed {
+            self.world_dirty = true;
+        }
+        if self.world_dirty && self.world_published.elapsed().as_secs_f64() > 0.5 {
+            self.world_dirty = false;
+            self.world_published = std::time::Instant::now();
+            self.publish_world();
+        }
         let st = self.stream.as_mut().unwrap();
         if st.waiting {
             let center = TileId::from_lat_lon(st.origin_latlon.0, st.origin_latlon.1, ZOOM).key();
