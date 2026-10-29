@@ -450,9 +450,9 @@ impl Game {
         self.publish_world();
     }
 
-    /// Traffic cars to draw: (id, seed, position, heading).
-    pub fn traffic_cars(&self) -> Vec<(u64, u64, [f32; 3], f32)> {
-        self.traffic.agents.iter().map(|a| (a.id, a.seed, [a.x as f32, a.y as f32, a.z as f32], a.yaw as f32)).collect()
+    /// Traffic cars to draw: (id, seed, position, [heading, pitch, roll]).
+    pub fn traffic_cars(&self) -> Vec<(u64, u64, [f32; 3], [f32; 3])> {
+        self.traffic.agents.iter().filter(|a| a.z.is_finite()).map(|a| (a.id, a.seed, [a.x as f32, a.y as f32, a.z as f32], [a.yaw as f32, a.pitch as f32, a.roll as f32])).collect()
     }
 
     /// People to draw: (id, seed, position, heading, walking frame 0 = standing, 1 / 2 = strides).

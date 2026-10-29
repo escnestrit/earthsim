@@ -95,9 +95,11 @@ fn sync(mut commands: Commands, sim: Res<Sim>, mut tv: ResMut<TrafficView>, mut 
         }
     }
     let mut seen = Vec::with_capacity(cars.len());
-    for (id, seed, p, yaw) in cars {
+    for (id, seed, p, ang) in cars {
         seen.push(id);
-        let t = Transform::from_translation(Vec3::new(p[0], p[1], p[2])).with_rotation(Quat::from_rotation_z(yaw));
+        // heading, then nose up/down, then the roll (car frame: +X forward, +Y left, +Z up)
+        let rot = Quat::from_rotation_z(ang[0]) * Quat::from_rotation_y(-ang[1]) * Quat::from_rotation_x(ang[2]);
+        let t = Transform::from_translation(Vec3::new(p[0], p[1], p[2])).with_rotation(rot);
         if let Some(&e) = tv.cars.get(&id) {
             if let Ok(mut cur) = tf.get_mut(e) {
                 *cur = t;

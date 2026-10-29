@@ -80,6 +80,9 @@ pub struct Agent {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    /// nose up (+) along the heading and left side up (+), following the ground under the wheels
+    pub pitch: f64,
+    pub roll: f64,
     pub yaw: f64,
     pub crashed: bool,
     wait: f64,
@@ -263,7 +266,7 @@ impl Traffic {
             let id = self.next_id;
             self.next_id += 1;
             let seed = (id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x51_7CC1_B727_220A) >> 3;
-            let mut ag = Agent { id, seed, from: a, to: e.to, next: None, s: 0.0, speed: e.vmax as f64 * 0.8, x: 0.0, y: 0.0, z: 0.0, yaw: 0.0, crashed: false, wait: 0.0 };
+            let mut ag = Agent { id, seed, from: a, to: e.to, next: None, s: 0.0, speed: e.vmax as f64 * 0.8, x: 0.0, y: 0.0, z: f64::NAN, yaw: 0.0, pitch: 0.0, roll: 0.0, crashed: false, wait: 0.0 };
             let (x, y, yaw) = self.pose(&ag);
             ag.x = x;
             ag.y = y;
@@ -388,8 +391,11 @@ impl Traffic {
                 break;
             }
             // release a junction once well past it
-            if a.s > 10.0 && self.held.get(&a.from) == Some(&a.id) {
-                self.held.remove(&a.from);
+            // let go of junctions it is well clear of (short edges can carry it past one in a frame)
+            {
+                let (gx, gy, id, to) = (a.x, a.y, a.id, a.to);
+                let pos = &self.graph.pos;
+                self.held.retain(|n, h| *h != id || *n == to || (pos[*n as usize][0] - gx).hypot(pos[*n as usize][1] - gy) < 10.0);
             }
             let (tx, ty, tyaw) = self.pose(&a);
             // smooth the drawn pose so lane offsets do not jump at corners
@@ -399,7 +405,19 @@ impl Traffic {
             let mut dyaw = tyaw - a.yaw;
             dyaw = dyaw.sin().atan2(dyaw.cos());
             a.yaw += dyaw * (dt * 6.0).min(1.0);
-            a.z = height(a.x, a.y, a.z + 0.6);
+            // stand on the ground: height and tilt from the wheel positions
+            {
+                let len = a.length();
+                let (c, s) = (a.yaw.cos(), a.yaw.sin());
+                let probe = if a.z.is_nan() { 1e3 } else { a.z + 0.8 };
+                let hf = height(a.x + c * len * 0.35, a.y + s * len * 0.35, probe);
+                let hb = height(a.x - c * len * 0.35, a.y - s * len * 0.35, probe);
+                let hl = height(a.x - s * 0.8, a.y + c * 0.8, probe);
+                let hr = height(a.x + s * 0.8, a.y - c * 0.8, probe);
+                a.z = (hf + hb + hl + hr) / 4.0;
+                a.pitch = (hf - hb).atan2(len * 0.7);
+                a.roll = (hl - hr).atan2(1.6);
+            }
             // the player ran into it: it stops where it is and becomes an obstacle
             if (a.x - px).hypot(a.y - py) < a.length() / 2.0 + 3.0 && pspeed > 0.5 {
                 let o = a.outline();
@@ -490,6 +508,41 @@ mod tests {
             // against the points: westwards
             assert!(a.yaw.cos() < -0.9, "car {} heading {}", a.id, a.yaw);
         }
+    }
+
+    #[test]
+    fn cars_follow_slopes_and_never_stall_at_junctions_on_short_edges() {
+        // a grid of streets with points every 4 m (shorter than the junction release distance)
+        let mut sc = Scene::default();
+        let road = |pts: Vec<[f64; 2]>| Road { cls: "residential".into(), width: 7.0, junction: vec![false; pts.len()], pts, bridge: false, oneway: 0 };
+        for k in -3..=3 {
+            let c = k as f64 * 60.0;
+            sc.roads.push(road((-50..=50).map(|i| [i as f64 * 4.0, c]).collect()));
+            sc.roads.push(road((-50..=50).map(|i| [c, i as f64 * 4.0]).collect()));
+        }
+        let mut t = Traffic { target: 20, ..Default::default() };
+        t.rebuild(std::iter::once(&sc), &mut Events::default());
+        // ground rising 10 % to the east
+        let slope = |x: f64, _: f64, _: f64| x * 0.1;
+        let mut moved = 0.0;
+        let steps = 60 * 90;
+        for step in 0..steps {
+            let before: HashMap<u64, (f64, f64)> = t.agents.iter().map(|a| (a.id, (a.x, a.y))).collect();
+            t.step(1.0 / 60.0, (30.0, 30.0, 0.0, 0.0), &slope);
+            for a in &t.agents {
+                if let Some(b) = before.get(&a.id) {
+                    moved += (a.x - b.0).hypot(a.y - b.1);
+                }
+                if step > 60 {
+                    assert!((a.z - a.x * 0.1).abs() < 0.3, "car {} at height {:.2} over ground {:.2}", a.id, a.z, a.x * 0.1);
+                    let expect = (0.1 * a.yaw.cos()).atan();
+                    assert!((a.pitch - expect).abs() < 0.03, "car {} pitch {:.3}, slope gives {:.3}", a.id, a.pitch, expect);
+                }
+            }
+        }
+        assert!(t.agents.len() >= 10, "{} cars", t.agents.len());
+        let mean = moved / t.agents.len() as f64 / (steps as f64 / 60.0);
+        assert!(mean > 4.0, "cars keep moving: {mean:.1} m/s on average");
     }
 
     #[test]
