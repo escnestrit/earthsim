@@ -32,11 +32,20 @@ pub struct Shot {
 
 fn build_sim() -> Result<Game, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let opts = earthsim::cli::parse(args)?;
+    let mut opts = earthsim::cli::parse(args)?;
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| ".".into());
     let cache_dir = std::env::var("EARTHSIM_CACHE").ok().map(std::path::PathBuf::from).or_else(|| opts.cache.clone().map(Into::into)).unwrap_or_else(|| exe_dir.join("cache"));
     world::log::init(&exe_dir.join("earthsim.log"));
     world::log::log(&format!("earthsim (Bevy) mode {:?}, cache {}", opts.mode, cache_dir.display()));
+    // a BeamNG vehicle zip in the "mods" folder next to the exe is driven when no --car is given
+    if opts.car.is_none() {
+        let mut zips: Vec<_> = std::fs::read_dir(exe_dir.join("mods")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip"))).collect();
+        zips.sort();
+        if let Some(z) = zips.first() {
+            world::log::log(&format!("using car mod {}", z.display()));
+            opts.car = Some(z.to_string_lossy().into_owned());
+        }
+    }
     #[cfg(windows)]
     let live = Some(world::fetch::default_live_fetcher());
     #[cfg(not(windows))]

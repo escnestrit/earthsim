@@ -59,7 +59,7 @@ pub struct SoftVehicle {
     spring_rest: [f64; 2],
 }
 
-fn quat_from_axes(f: V3, l: V3, u: V3) -> Quat {
+pub fn quat_from_axes(f: V3, l: V3, u: V3) -> Quat {
     // rotation matrix with columns f, l, u -> quaternion (Shepperd)
     let (m00, m10, m20) = (f.x, f.y, f.z);
     let (m01, m11, m21) = (l.x, l.y, l.z);
@@ -397,6 +397,7 @@ impl SoftVehicle {
         let r_w = self.p.wheel_radius;
         self.body.clear_forces();
         self.body.beam_forces(dt);
+        self.body.slide_forces();
 
         // aerodynamic drag, spread over the chassis
         let sp = self.vel.len();

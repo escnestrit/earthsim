@@ -88,6 +88,51 @@ pub fn rows(section: &Json) -> Vec<Row> {
     out
 }
 
+/// Rows of one section across several parts, processed as one table in order: BeamNG merges a section from all
+/// parts of a vehicle before reading it, so a modifier set in one part (e.g. `nodeWeight`, or tyre settings in a
+/// wheel part's `pressureWheels`) still applies to rows of the parts that come after it.
+pub fn rows_merged<'a>(sections: impl Iterator<Item = (usize, &'a Json)>) -> Vec<(usize, Row)> {
+    let mut header: Option<Vec<String>> = None;
+    let mut state: Vec<(String, Json)> = Vec::new();
+    let mut out = Vec::new();
+    for (part, section) in sections {
+        let Some(items) = section.as_arr() else { continue };
+        let mut seen_header = false;
+        for it in items {
+            match it {
+                Json::Obj(kv) => {
+                    for (k, v) in kv {
+                        set(&mut state, k, v.clone());
+                    }
+                }
+                Json::Arr(cells) => {
+                    if !seen_header {
+                        seen_header = true;
+                        if header.is_none() {
+                            header = Some(cells.iter().map(|c| c.as_str().unwrap_or("").trim_end_matches(':').to_string()).collect());
+                        }
+                        continue;
+                    }
+                    let h = header.as_ref().unwrap();
+                    let mut vals = state.clone();
+                    for (i, c) in cells.iter().enumerate() {
+                        if let (Json::Obj(kv), true) = (c, i >= h.len()) {
+                            for (k, v) in kv {
+                                set(&mut vals, k, v.clone());
+                            }
+                        } else if let Some(name) = h.get(i) {
+                            set(&mut vals, name, c.clone());
+                        }
+                    }
+                    out.push((part, Row { vals }));
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// Replace `"$name"` / `"$=expr"` strings with values. The `variables` section itself is left alone.
 pub fn resolve(j: &Json, vars: &HashMap<String, Json>, warn: &mut Vec<String>) -> Json {
     match j {
@@ -131,6 +176,16 @@ mod tests {
         assert_eq!(r[3].num("w"), Some(7.0));
         assert_eq!(r[3].strings("g"), vec!["p", "q"]);
         assert_eq!(r[1].str("id"), Some("b"));
+    }
+
+    #[test]
+    fn modifiers_carry_across_parts() {
+        let a = parse(r#"[["id","x"],{"w":5},["a",1]]"#).unwrap();
+        let b = parse(r#"[["id","x"],["b",2],{"w":1},["c",3]]"#).unwrap();
+        let r = rows_merged([(0, &a), (1, &b)].into_iter());
+        let w: Vec<f64> = r.iter().map(|(_, r)| r.num("w").unwrap()).collect();
+        assert_eq!(w, vec![5.0, 5.0, 1.0]);
+        assert_eq!(r[1].0, 1);
     }
 
     #[test]

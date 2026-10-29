@@ -20,7 +20,7 @@ jobs:
           cp target/release/earthsim-bevy.exe dist/earthsim.exe
           cp target/release/earthsim.exe dist/earthsim-classic.exe
           cp README.md dist/
-          cp dist_files/* dist/
+          cp -r dist_files/* dist/
       - uses: actions/upload-artifact@v4
         with:
           name: earthsim-windows

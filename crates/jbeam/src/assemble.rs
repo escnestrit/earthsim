@@ -58,8 +58,11 @@ impl Library {
 pub struct PartInstance {
     pub name: String,
     pub slot: String,
-    /// accumulated nodeOffset / nodeMove of all parent slots (JBeam axes)
+    /// accumulated `nodeOffset` of all parent slots (JBeam axes). Its x is mirrored: applied away from the
+    /// centre line (left nodes move left, right nodes right), which is how wheel slots set the track width.
     pub offset: [f64; 3],
+    /// accumulated `nodeMove` (a plain translation)
+    pub node_move: [f64; 3],
     /// the part body with variables substituted
     pub body: Json,
 }
@@ -118,8 +121,9 @@ pub fn assemble(lib: &Library, root: &str, overrides: &HashMap<String, String>) 
         return asm;
     }
     // pass 1: choose parts (raw bodies), pass 2: variables, pass 3: resolve
-    let mut chosen: Vec<(String, String, [f64; 3])> = Vec::new();
-    fn walk(lib: &Library, name: &str, slot: &str, off: [f64; 3], depth: usize, ov: &HashMap<String, String>, asm: &mut Assembly, chosen: &mut Vec<(String, String, [f64; 3])>) {
+    type Off = ([f64; 3], [f64; 3]);
+    let mut chosen: Vec<(String, String, Off)> = Vec::new();
+    fn walk(lib: &Library, name: &str, slot: &str, off: ([f64; 3], [f64; 3]), depth: usize, ov: &HashMap<String, String>, asm: &mut Assembly, chosen: &mut Vec<(String, String, ([f64; 3], [f64; 3]))>) {
         if depth > 40 {
             asm.warnings.push(format!("slot tree too deep at '{name}'"));
             return;
@@ -148,12 +152,16 @@ pub fn assemble(lib: &Library, root: &str, overrides: &HashMap<String, String>) 
             }
             let mut o = off;
             if let Some(op) = &s.opts {
-                for k in ["nodeOffset", "nodeMove"] {
-                    if let Some(v) = op.get(k) {
-                        let d = vec3_of(v);
-                        for i in 0..3 {
-                            o[i] += d[i];
-                        }
+                if let Some(v) = op.get("nodeOffset") {
+                    let d = vec3_of(v);
+                    for i in 0..3 {
+                        o.0[i] += d[i];
+                    }
+                }
+                if let Some(v) = op.get("nodeMove") {
+                    let d = vec3_of(v);
+                    for i in 0..3 {
+                        o.1[i] += d[i];
                     }
                 }
             }
@@ -180,10 +188,10 @@ pub fn assemble(lib: &Library, root: &str, overrides: &HashMap<String, String>) 
     }
     asm.warnings.extend(warn);
     let lib2 = Library { parts: resolved.into_iter().map(|(n, b)| { let file = lib.parts[&n].file.clone(); (n, PartDef { file, body: b }) }).collect(), by_type: lib.by_type.clone(), warnings: Vec::new() };
-    walk(&lib2, root, "", [0.0; 3], 0, overrides, &mut asm, &mut chosen);
-    for (name, slot, offset) in chosen {
+    walk(&lib2, root, "", ([0.0; 3], [0.0; 3]), 0, overrides, &mut asm, &mut chosen);
+    for (name, slot, (offset, node_move)) in chosen {
         let body = lib2.parts[&name].body.clone();
-        asm.parts.push(PartInstance { name, slot, offset, body });
+        asm.parts.push(PartInstance { name, slot, offset, node_move, body });
     }
     asm
 }
@@ -214,7 +222,8 @@ mod tests {
         let names: Vec<_> = a.parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["car", "body_a", "door_a", "wheel_a"]);
         assert_eq!(a.parts[3].offset, [1.25, 0.5, 0.0]);
-        assert_eq!(a.parts[2].offset, [0.0, 0.0, 0.1]);
+        assert_eq!(a.parts[2].offset, [0.0, 0.0, 0.0]);
+        assert_eq!(a.parts[2].node_move, [0.0, 0.0, 0.1]);
         assert_eq!(a.missing, vec![("ghost".to_string(), "ghost_a".to_string())]);
     }
 

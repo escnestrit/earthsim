@@ -1,7 +1,7 @@
 //! Flat node/beam model of an assembled vehicle (still in JBeam units/axes; use `to_ours` for the engine frame).
 
 use crate::assemble::Assembly;
-use crate::table::{rows, Row};
+use crate::table::{rows_merged, Row};
 use scene::json::Json;
 use std::collections::HashMap;
 
@@ -83,12 +83,18 @@ pub fn build(asm: Assembly) -> Model {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut warnings = Vec::new();
     let mut dup_nodes = 0usize;
-    for (pi, part) in asm.parts.iter().enumerate() {
-        let Some(sec) = part.body.get("nodes") else { continue };
-        for r in rows(sec) {
+    let node_rows = rows_merged(asm.parts.iter().enumerate().filter_map(|(i, p)| p.body.get("nodes").map(|s| (i, s))));
+    for (pi, r) in node_rows {
+        let part = &asm.parts[pi];
+        {
             let Some(id) = r.str("id") else { continue };
             let (mv, off) = (offset_of(&r, "nodeMove"), offset_of(&r, "nodeOffset"));
-            let pos = [0, 1, 2].map(|i| r.num_or(["posX", "posY", "posZ"][i], 0.0) + part.offset[i] + mv[i] + off[i]);
+            let raw = [r.num_or("posX", 0.0), r.num_or("posY", 0.0), r.num_or("posZ", 0.0)];
+            let mirror = if raw[0] < 0.0 { -1.0 } else { 1.0 };
+            let pos = [0, 1, 2].map(|i| {
+                let o = if i == 0 { (part.offset[0] + off[0]) * mirror } else { part.offset[i] + off[i] };
+                raw[i] + o + part.node_move[i] + mv[i]
+            });
             if index.contains_key(id) {
                 dup_nodes += 1; // shared nodes (glass/panels re-declaring body nodes) are normal in BeamNG mods
                 continue;
@@ -111,9 +117,10 @@ pub fn build(asm: Assembly) -> Model {
     let mut beams = Vec::new();
     let mut skipped = 0;
     let mut first_skips: Vec<String> = Vec::new();
-    for (pi, part) in asm.parts.iter().enumerate() {
-        let Some(sec) = part.body.get("beams") else { continue };
-        for r in rows(sec) {
+    let beam_rows = rows_merged(asm.parts.iter().enumerate().filter_map(|(i, p)| p.body.get("beams").map(|s| (i, s))));
+    for (pi, r) in beam_rows {
+        let part = &asm.parts[pi];
+        {
             let (Some(a), Some(b)) = (r.str("id1"), r.str("id2")) else { continue };
             match (index.get(a), index.get(b)) {
                 (Some(&ia), Some(&ib)) if ia != ib => {
@@ -141,13 +148,7 @@ pub fn build(asm: Assembly) -> Model {
 impl Model {
     /// All rows of a table section across parts, with the index of the part they came from.
     pub fn table(&self, section: &str) -> Vec<(usize, Row)> {
-        let mut out = Vec::new();
-        for (pi, p) in self.asm.parts.iter().enumerate() {
-            if let Some(s) = p.body.get(section) {
-                out.extend(rows(s).into_iter().map(|r| (pi, r)));
-            }
-        }
-        out
+        rows_merged(self.asm.parts.iter().enumerate().filter_map(|(i, p)| p.body.get(section).map(|s| (i, s))))
     }
 
     pub fn total_mass(&self) -> f64 {
@@ -182,14 +183,16 @@ mod tests {
             r#"{"car":{"slotType":"main","slots":[["type","default"],["w","wheel","",{"nodeOffset":{"x":1,"y":0,"z":0}}]],
               "nodes":[["id","posX","posY","posZ"],{"nodeWeight":10},["a",0,-1,0.5],["b",0,1,0.5,{"nodeWeight":3}],{"fixed":true},["c",1,0,0]],
               "beams":[["id1:","id2:"],{"beamSpring":1000,"beamDeform":"FLT_MAX"},["a","b"],{"beamType":"|HYDRO"},["b","c",{"beamSpring":5}],["a","zzz"],["a","zzz",{"optional":true}]]},
-              "wheel":{"slotType":"w","nodes":[["id","posX","posY","posZ"],["w1",0,0,0.3]]}}"#,
+              "wheel":{"slotType":"w","nodes":[["id","posX","posY","posZ"],["w1",0,0,0.3],["w2",-0.5,0,0.3]]}}"#,
         );
         let m = build(assemble(&l, "car", &HashMap::new()));
-        assert_eq!(m.nodes.len(), 4);
+        assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.nodes[0].mass, 10.0);
         assert_eq!(m.nodes[1].mass, 3.0);
         assert!(m.nodes[2].fixed && !m.nodes[0].fixed);
         assert_eq!(m.nodes[3].pos, [1.0, 0.0, 0.3]);
+        // nodeOffset x is mirrored for nodes on the right (negative x)
+        assert_eq!(m.nodes[4].pos, [-1.5, 0.0, 0.3]);
         assert_eq!(m.beams.len(), 2);
         assert_eq!(m.beams[0].spring(), 1000.0);
         assert_eq!(m.beams[0].deform(), None);

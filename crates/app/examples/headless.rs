@@ -84,7 +84,7 @@ mod run {
             };
             let streaming = scene_path == "stream";
             let mut game = if streaming {
-                let o = earthsim::cli::Options { mode: earthsim::cli::Mode::Offline, lat: earthsim::cli::MINSK.0, lon: earthsim::cli::MINSK.1, cache: None };
+                let o = earthsim::cli::Options { mode: earthsim::cli::Mode::Offline, lat: earthsim::cli::MINSK.0, lon: earthsim::cli::MINSK.1, cache: None, car: None, car_part: None };
                 earthsim::game::build_game(&o, None, std::env::temp_dir()).expect("offline game")
             } else if scene_path == "crash" {
                 Game::new(Scene::default())

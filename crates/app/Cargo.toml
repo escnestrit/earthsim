@@ -16,6 +16,7 @@ path = "src/main.rs"
 phys = { path = "../phys" }
 scene = { path = "../scene" }
 world = { path = "../world" }
+jbeam = { path = "../jbeam" }
 
 [lints]
 workspace = true

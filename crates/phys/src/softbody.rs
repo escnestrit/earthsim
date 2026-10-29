@@ -42,6 +42,36 @@ pub struct Beam {
     pub break_strain: f64,
     pub broken: bool,
     pub stops: Option<Stops>,
+    /// Damping while extending (BeamNG `beamDampRebound`); equals `c` unless set.
+    pub c_reb: f64,
+    /// Compression-only beam (BeamNG SUPPORT): no force while longer than its rest length.
+    pub support: bool,
+    /// Elastic force at which the beam snaps (BeamNG `beamStrength`), N.
+    pub break_force: f64,
+}
+
+/// A node held on a rail (polyline of nodes) by a spring perpendicular to it, free to slide along it
+/// (BeamNG `slidenodes`: MacPherson struts, steering racks).
+#[derive(Clone, Debug)]
+pub struct Slide {
+    pub node: usize,
+    pub rail: Vec<usize>,
+    pub k: f64,
+    pub c: f64,
+    /// the node cannot slide past the rail ends
+    pub capped: bool,
+}
+
+/// Two nodes held together by a zero-length spring that lets go above `strength` (door/hood latches,
+/// BeamNG couplers). Unlike a beam it has no direction, so it works for coincident nodes.
+#[derive(Clone, Debug)]
+pub struct Pin {
+    pub a: usize,
+    pub b: usize,
+    pub k: f64,
+    pub c: f64,
+    pub strength: f64,
+    pub broken: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -68,6 +98,8 @@ pub struct SoftBody {
     /// Work done by yielding beams so far (J).
     pub plastic_work: f64,
     pub diverged: bool,
+    pub slides: Vec<Slide>,
+    pub pins: Vec<Pin>,
     scratch: Vec<Contact>,
 }
 
@@ -84,6 +116,8 @@ impl SoftBody {
             peak_world: 0.0,
             plastic_work: 0.0,
             diverged: false,
+            slides: Vec::new(),
+            pins: Vec::new(),
             scratch: Vec::new(),
         }
     }
@@ -95,7 +129,7 @@ impl SoftBody {
 
     pub fn add_beam(&mut self, a: usize, b: usize, k: f64, c: f64) -> usize {
         let len = (self.nodes[b].p - self.nodes[a].p).len();
-        self.beams.push(Beam { a, b, rest: len, rest0: len, k, c, yield_t: f64::INFINITY, yield_c: f64::INFINITY, break_strain: f64::INFINITY, broken: false, stops: None });
+        self.beams.push(Beam { a, b, rest: len, rest0: len, k, c, yield_t: f64::INFINITY, yield_c: f64::INFINITY, break_strain: f64::INFINITY, broken: false, stops: None, c_reb: c, support: false, break_force: f64::INFINITY });
         self.beams.len() - 1
     }
 
@@ -160,7 +194,17 @@ impl SoftBody {
             let vrel = (self.nodes[b].v - self.nodes[a].v).dot(dir);
             let (ma, mb) = (self.nodes[a].m, self.nodes[b].m);
             let be = &mut self.beams[bi];
+            if be.support && len >= be.rest {
+                if be.break_strain.is_finite() && (len - be.rest) / be.rest > be.break_strain {
+                    be.broken = true;
+                }
+                continue;
+            }
             let mut f_el = be.k * (len - be.rest);
+            if f_el.abs() > be.break_force {
+                be.broken = true;
+                continue;
+            }
             let mut yielding = false;
             // plastic flow: the rest length follows the node distance so that the force stays at the yield limit
             if f_el > be.yield_t {
@@ -183,7 +227,7 @@ impl SoftBody {
             // damping force limited so one step cannot overshoot the relative velocity (no energy gain)
             let red = ma * mb / (ma + mb);
             let lim = red * vrel.abs() / dt;
-            let mut f_d = be.c * vrel;
+            let mut f_d = if vrel > 0.0 { be.c_reb } else { be.c } * vrel;
             f_d = f_d.clamp(-lim, lim);
             if yielding {
                 f_d = 0.0; // a crushing member's force is set by the yield limit, not by how fast it is crushed
@@ -201,6 +245,62 @@ impl SoftBody {
             let fv = dir * f;
             self.nodes[a].f += fv;
             self.nodes[b].f -= fv;
+        }
+    }
+
+    /// Rail springs of the slide nodes and latch pins (call after `beam_forces`).
+    pub fn slide_forces(&mut self) {
+        for pn in self.pins.iter_mut() {
+            if pn.broken {
+                continue;
+            }
+            let (na, nb) = (&self.nodes[pn.a], &self.nodes[pn.b]);
+            let f = (nb.p - na.p) * pn.k + (nb.v - na.v) * pn.c;
+            if f.len() > pn.strength {
+                pn.broken = true;
+                continue;
+            }
+            self.nodes[pn.a].f += f;
+            self.nodes[pn.b].f -= f;
+        }
+        for si in 0..self.slides.len() {
+            let sl = &self.slides[si];
+            let p = self.nodes[sl.node].p;
+            // nearest point on the rail polyline
+            let mut best: Option<(f64, usize, f64, V3)> = None;
+            for w in 0..sl.rail.len().saturating_sub(1) {
+                let (a, b) = (self.nodes[sl.rail[w]].p, self.nodes[sl.rail[w + 1]].p);
+                let d = b - a;
+                let dd = d.dot(d);
+                if dd < 1e-12 {
+                    continue;
+                }
+                let mut t = (p - a).dot(d) / dd;
+                let last = w + 2 == sl.rail.len();
+                if (sl.capped || w > 0) && t < 0.0 {
+                    t = 0.0;
+                }
+                if (sl.capped || !last) && t > 1.0 {
+                    t = 1.0;
+                }
+                let q = a + d * t;
+                let dist = (p - q).len2();
+                if best.map_or(true, |bb| dist < bb.0) {
+                    best = Some((dist, w, t, q));
+                }
+            }
+            let Some((_, w, t, q)) = best else { continue };
+            let (ia, ib) = (sl.rail[w], sl.rail[w + 1]);
+            let e = p - q;
+            let vq = self.nodes[ia].v * (1.0 - t) + self.nodes[ib].v * t;
+            let vrel = self.nodes[sl.node].v - vq;
+            // damp only the motion along the error (do not resist sliding along the rail)
+            let el = e.len();
+            let vn = if el > 1e-9 { e * (vrel.dot(e) / (el * el)) } else { V3::ZERO };
+            let f = e * -sl.k - vn * sl.c;
+            self.nodes[sl.node].f += f;
+            self.nodes[ia].f -= f * (1.0 - t);
+            self.nodes[ib].f -= f * t;
         }
     }
 
@@ -305,6 +405,7 @@ impl SoftBody {
     pub fn step(&mut self, dt: f64, ground: &dyn Ground, world: &dyn Obstacles) {
         self.clear_forces();
         self.beam_forces(dt);
+        self.slide_forces();
         self.contacts(ground, world, dt);
         self.integrate(dt);
         self.resolve_world(world, dt);
@@ -318,10 +419,103 @@ impl Default for SoftBody {
 }
 
 #[cfg(test)]
+mod jbeam_feature_tests {
+    use super::*;
+    fn pair(len: f64) -> SoftBody {
+        let mut b = SoftBody::new();
+        b.gravity = V3::ZERO;
+        b.add_node(v3(0.0, 0.0, 10.0), 1.0);
+        b.add_node(v3(len, 0.0, 10.0), 1.0);
+        b.add_beam(0, 1, 1.0e5, 0.0);
+        b
+    }
+
+    #[test]
+    fn support_beams_push_but_never_pull() {
+        let mut b = pair(1.0);
+        b.beams[0].support = true;
+        b.nodes[1].p.x = 1.2; // stretched: no force
+        b.clear_forces();
+        b.beam_forces(1e-4);
+        assert_eq!(b.nodes[1].f.x, 0.0);
+        b.nodes[1].p.x = 0.9; // compressed: pushes apart
+        b.clear_forces();
+        b.beam_forces(1e-4);
+        assert!(b.nodes[1].f.x > 9000.0);
+    }
+
+    #[test]
+    fn beams_snap_at_their_strength() {
+        let mut b = pair(1.0);
+        b.beams[0].break_force = 5000.0;
+        b.nodes[1].p.x = 1.04; // 4000 N
+        b.clear_forces();
+        b.beam_forces(1e-4);
+        assert!(!b.beams[0].broken);
+        b.nodes[1].p.x = 1.06; // 6000 N
+        b.clear_forces();
+        b.beam_forces(1e-4);
+        assert!(b.beams[0].broken);
+    }
+
+    #[test]
+    fn slide_node_stays_on_its_rail_but_slides_freely() {
+        let mut b = SoftBody::new();
+        b.gravity = V3::ZERO;
+        let a = b.add_node(v3(0.0, 0.0, 0.0), 1000.0);
+        let c = b.add_node(v3(0.0, 0.0, 1.0), 1000.0);
+        let s = b.add_node(v3(0.0, 0.0, 0.5), 1.0);
+        b.slides.push(Slide { node: s, rail: vec![a, c], k: 1.0e6, c: 200.0, capped: true });
+        // push sideways: the rail spring brings it back; push along: it slides
+        b.nodes[s].v = v3(0.5, 0.0, 0.3);
+        for _ in 0..4000 {
+            b.clear_forces();
+            b.slide_forces();
+            b.integrate(2.5e-4);
+        }
+        let p = b.nodes[s].p;
+        assert!(p.x.abs() < 0.01, "off the rail by {}", p.x);
+        assert!(p.z > 0.75 && p.z <= 1.0 + 0.01, "did not slide / not capped: {}", p.z);
+    }
+
+    #[test]
+    fn latch_pin_holds_then_lets_go() {
+        let mut b = SoftBody::new();
+        b.gravity = V3::ZERO;
+        let a = b.add_node(v3(0.0, 0.0, 0.0), 1.0);
+        let c = b.add_node(v3(0.0, 0.0, 0.0), 1.0);
+        b.pins.push(Pin { a, b: c, k: 1.0e5, c: 50.0, strength: 1000.0, broken: false });
+        b.nodes[c].p.x = 0.005; // 500 N: holds and pulls back
+        b.clear_forces();
+        b.slide_forces();
+        assert!(b.nodes[c].f.x < -400.0 && !b.pins[0].broken);
+        b.nodes[c].p.x = 0.02; // 2000 N: opens
+        b.clear_forces();
+        b.slide_forces();
+        assert!(b.pins[0].broken && b.nodes[c].f.x == 0.0);
+    }
+
+    #[test]
+    fn rebound_damping_differs_from_bump() {
+        let mut b = pair(1.0);
+        b.beams[0].k = 0.0;
+        b.beams[0].c = 100.0;
+        b.beams[0].c_reb = 300.0;
+        b.nodes[1].v.x = 0.1; // extending
+        b.clear_forces();
+        b.beam_forces(1e-4);
+        assert!((b.nodes[1].f.x + 30.0).abs() < 1e-9);
+        b.nodes[1].v.x = -0.1; // compressing
+        b.clear_forces();
+        b.beam_forces(1e-4);
+        assert!((b.nodes[1].f.x - 10.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::world::{FlatGround, StaticWorld};
-
     fn pair(k: f64, c: f64) -> SoftBody {
         let mut b = SoftBody::new();
         b.gravity = V3::ZERO;

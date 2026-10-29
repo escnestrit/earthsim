@@ -2283,6 +2283,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 name = "earthsim"
 version = "0.1.0"
 dependencies = [
+ "jbeam",
  "phys",
  "scene",
  "world",
@@ -3064,6 +3065,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "jbeam"
 version = "0.1.0"
 dependencies = [
+ "phys",
  "scene",
 ]
 

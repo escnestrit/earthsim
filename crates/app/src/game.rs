@@ -91,6 +91,12 @@ pub struct Game {
     pub soft: SoftVehicle,
     pub soft_on: bool,
     skin: crate::softmesh::SkinnedBody,
+    /// A BeamNG vehicle mod driven with the soft-body solver (replaces the built-in soft car while F3 is on).
+    pub jcar: Option<Box<jbeam::vehicle::JbeamVehicle>>,
+    /// name + loading notes shown in the HUD
+    pub jcar_info: Vec<String>,
+    /// jcar wheel index for FL, FR, RL, RR
+    jcar_map: [Option<usize>; 4],
     pub deformed: Vec<f32>,
     /// Fixed camera (eye, target, fov) used for screenshots and tests instead of the follow cameras.
     pub cam_override: Option<(V3f, V3f, f32)>,
@@ -137,6 +143,9 @@ impl Game {
             soft,
             soft_on: true,
             skin,
+            jcar: None,
+            jcar_info: Vec::new(),
+            jcar_map: [None; 4],
             deformed: Vec::new(),
             cam_override: None,
             stream: None,
@@ -169,11 +178,78 @@ impl Game {
     fn place_car(&mut self, x: f64, y: f64, yaw: f64, speed: f64) {
         self.car.place(x, y, yaw, speed, &self.ground);
         self.soft.place(x, y, yaw, speed, &self.ground);
+        if let Some(j) = self.jcar.as_mut() {
+            j.place(x, y, yaw, speed, &self.ground);
+        }
         self.sync_from_soft_if_on();
+    }
+
+    /// Drive a BeamNG vehicle mod instead of the built-in car.
+    pub fn set_jbeam_car(&mut self, lv: jbeam::LoadedVehicle, name: &str) {
+        let mut v = lv.vehicle;
+        let f = self.car.forward();
+        v.place(self.car.pos.x, self.car.pos.y, f.y.atan2(f.x), 0.0, &self.ground);
+        // FL, FR, RL, RR by position in the car frame
+        let mut map = [None; 4];
+        for (i, w) in v.wheels.iter().enumerate() {
+            let left = (v.body.nodes[w.n1].rest.y + v.body.nodes[w.n2].rest.y) > 0.0;
+            let slot = match (w.front, left) {
+                (true, true) => 0,
+                (true, false) => 1,
+                (false, true) => 2,
+                (false, false) => 3,
+            };
+            if map[slot].is_none() {
+                map[slot] = Some(i);
+            }
+        }
+        self.jcar_map = map;
+        self.jcar_info = vec![format!("CAR: {} FROM MOD ({} NODES, {} BEAMS, MAIN PART {})", name.to_uppercase(), lv.nodes, lv.beams, lv.main_part.to_uppercase())];
+        self.jcar_info.extend(lv.notes.iter().take(4).map(|n| format!("  {}", n.to_uppercase())));
+        self.jcar = Some(Box::new(v));
+        self.soft_on = true;
+        self.sync_from_soft_if_on();
+    }
+
+    fn sync_from_jcar(&mut self) {
+        let Some(j) = self.jcar.as_ref() else { return };
+        self.car.pos = j.pos;
+        self.car.q = j.q;
+        self.car.vel = j.vel;
+        self.car.omega = phys::V3::ZERO;
+        for (slot, m) in self.jcar_map.iter().enumerate() {
+            if let Some(i) = m {
+                self.car.wheels[slot] = j.wheels[*i].state.clone();
+            }
+        }
+        self.car.drive = j.drive.clone();
+        self.car.impact = j.impact;
+        self.car.accel = j.accel;
+        // body surface from the mod's triangles, both sides (their winding is not consistent)
+        let d = &mut self.deformed;
+        d.clear();
+        for t in &j.triangles {
+            let [a, b, c] = t.map(|i| j.body.nodes[i].p);
+            let n = (b - a).cross(c - a);
+            let l = n.len();
+            if l < 1e-9 {
+                continue;
+            }
+            let n = n / l;
+            for (pts, nn) in [([a, b, c], n), ([a, c, b], n * -1.0)] {
+                for p in pts {
+                    d.extend_from_slice(&[p.x as f32, p.y as f32, p.z as f32, nn.x as f32, nn.y as f32, nn.z as f32, 0.0, 0.0, scene::mesh::mat::PAINT]);
+                }
+            }
+        }
     }
 
     fn sync_from_soft_if_on(&mut self) {
         if !self.soft_on {
+            return;
+        }
+        if self.jcar.is_some() {
+            self.sync_from_jcar();
             return;
         }
         let s = &self.soft;
@@ -249,6 +325,9 @@ impl Game {
                         self.car.pos.y += dy;
                         self.soft.pos.x += dx;
                         self.soft.pos.y += dy;
+                        if let Some(j) = self.jcar.as_mut() {
+                            j.shift(phys::v3(dx, dy, 0.0));
+                        }
                         for n in self.soft.body.nodes.iter_mut() {
                             n.p.x += dx;
                             n.p.y += dy;
@@ -407,7 +486,11 @@ impl Game {
         }
         let mut n = 0;
         while self.acc >= PHYS_DT {
-            if self.soft_on {
+            if let (true, Some(j)) = (self.soft_on, self.jcar.as_mut()) {
+                let fwd_speed = j.vel.dot(j.forward());
+                let inp = self.driver.update(PHYS_DT, &self.keys, fwd_speed);
+                j.step(PHYS_DT, &inp, &self.ground, &self.world);
+            } else if self.soft_on {
                 let fwd_speed = self.soft.vel.dot(self.soft.forward());
                 let inp = self.driver.update(PHYS_DT, &self.keys, fwd_speed);
                 self.soft.step(PHYS_DT, &inp, &self.ground, &self.world);
@@ -473,11 +556,26 @@ impl Game {
         let (eye, target, fov) = self.cam_override.unwrap_or((eye, target, fov));
         let body = m4::mul(&m4::from_quat([car.q.w, car.q.x, car.q.y, car.q.z], [cp.x, cp.y, cp.z]), &m4::translate(0.0, 0.0, -CG_HEIGHT as f32));
         let mut wheels = [m4::id(); 4];
+        if let (true, Some(j)) = (self.soft_on, self.jcar.as_ref()) {
+            let (_, _, up) = j.axes();
+            for (slot, w) in wheels.iter_mut().enumerate() {
+                let Some(i) = self.jcar_map[slot] else { continue };
+                let c = j.wheel_center(i);
+                let y = j.wheel_axis(i);
+                let x = y.cross(up).norm();
+                let z = x.cross(y);
+                let basis: m4::M4 = [
+                    x.x as f32, x.y as f32, x.z as f32, 0.0, y.x as f32, y.y as f32, y.z as f32, 0.0, z.x as f32, z.y as f32, z.z as f32, 0.0, c.x as f32, c.y as f32, c.z as f32, 1.0,
+                ];
+                *w = m4::mul(&basis, &m4::rot_y(j.wheels[i].state.spin as f32));
+            }
+        } else {
         for (i, w) in wheels.iter_mut().enumerate() {
             let c = car.wheel_center(i);
             let wl = &car.wheels[i];
             let r = m4::from_quat([car.q.w, car.q.x, car.q.y, car.q.z], [c.x, c.y, c.z]);
             *w = m4::mul(&m4::mul(&r, &m4::rot_z(wl.steer as f32)), &m4::rot_y(wl.spin as f32));
+        }
         }
         let lg = crate::env::lighting(self.hour);
         let braking = self.driver.brake > 0.2 || self.driver.handbrake > 0.0;
@@ -527,7 +625,11 @@ impl Game {
                 lines.push(format!("LAST ERROR: {}", e.to_uppercase()));
             }
         }
-        if self.soft_on {
+        if let (true, Some(j)) = (self.soft_on, self.jcar.as_ref()) {
+            lines.extend(self.jcar_info.iter().cloned());
+            let (dmg, broken) = j.damage();
+            lines.push(format!("PHYSICS: SOFT-BODY FROM JBEAM   BODY DAMAGE {:.0} CM   BROKEN BEAMS {}   (F3 = BUILT-IN RIGID CAR)", dmg * 100.0, broken));
+        } else if self.soft_on {
             let (dmg, broken) = self.soft.damage();
             lines.push(format!("PHYSICS: SOFT-BODY NODE-BEAM ({} NODES, {} BEAMS)   BODY DAMAGE {:.0} CM   BROKEN BEAMS {}", self.soft.body.nodes.len(), self.soft.body.beams.len(), dmg * 100.0, broken));
         } else {
@@ -592,6 +694,26 @@ pub fn build_game(o: &crate::cli::Options, live: Option<Arc<dyn world::fetch::Fe
             Ok(Game::new_streaming(Streamer::new(StreamConfig::default(), f, cache(), o.lat, o.lon), name, o.lat, o.lon))
         }
     }
+    .map(|mut g| {
+        if let Some(path) = &o.car {
+            let p = std::path::Path::new(path);
+            match jbeam::load_vehicle(p, o.car_part.as_deref()) {
+                Ok(lv) => {
+                    let name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    world::log::log(&format!("car mod {path}: main part {}, {} nodes, {} beams", lv.main_part, lv.nodes, lv.beams));
+                    for n in &lv.notes {
+                        world::log::log(&format!("  {n}"));
+                    }
+                    g.set_jbeam_car(lv, &name);
+                }
+                Err(e) => {
+                    world::log::log(&format!("car mod {path} could not be loaded: {e}"));
+                    g.jcar_info = vec![format!("CAR MOD NOT LOADED: {}", e.to_uppercase())];
+                }
+            }
+        }
+        g
+    })
 }
 
 fn on_off(b: bool) -> &'static str {
@@ -627,6 +749,36 @@ mod tests {
         g.key_state(Key::Up, true);
         g.update(5.0); // clamped to 50 ms
         assert!(g.sim_steps_last_frame <= 51);
+    }
+
+    #[test]
+    fn a_jbeam_car_drives_in_the_game_and_shows_its_body() {
+        let mut g = game();
+        let mut lib = jbeam::assemble::Library::default();
+        lib.add_file("car.jbeam", &jbeam::vehicle::synthetic_jbeam());
+        let lv = jbeam::load_from_library(&lib, None).unwrap();
+        g.set_jbeam_car(lv, "test");
+        assert!(g.jcar.is_some() && g.jcar_map.iter().all(|m| m.is_some()));
+        for _ in 0..120 {
+            g.update(1.0 / 60.0);
+        }
+        g.key_state(Key::Up, true);
+        for _ in 0..300 {
+            g.update(1.0 / 60.0);
+        }
+        let h = g.hud();
+        assert!(h.speed_kmh > 20.0, "speed {}", h.speed_kmh);
+        assert!(h.lines.iter().any(|l| l.contains("FROM MOD")));
+        let body = g.deformed_body().expect("mod body mesh");
+        assert_eq!(body.len() % scene::mesh::FLOATS_PER_VERTEX, 0);
+        // wheels are drawn where the mod's axles are
+        let fp = g.frame_params();
+        let j = g.jcar.as_ref().unwrap();
+        let c = j.wheel_center(g.jcar_map[0].unwrap());
+        assert!((fp.wheels[0][12] as f64 - c.x).abs() < 1e-3 && (fp.wheels[0][14] as f64 - c.z).abs() < 1e-3);
+        // F3 switches to the built-in car and back
+        g.key_state(Key::SoftBody, true);
+        assert!(!g.soft_on && g.deformed_body().is_none());
     }
 
     #[test]
@@ -705,7 +857,7 @@ mod tests {
 
     // ---------- streaming ----------
     fn offline_game() -> Game {
-        let o = crate::cli::Options { mode: crate::cli::Mode::Offline, lat: crate::cli::MINSK.0, lon: crate::cli::MINSK.1, cache: None };
+        let o = crate::cli::Options { mode: crate::cli::Mode::Offline, lat: crate::cli::MINSK.0, lon: crate::cli::MINSK.1, cache: None, car: None, car_part: None };
         build_game(&o, None, std::env::temp_dir()).unwrap()
     }
 
