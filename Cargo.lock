@@ -3068,6 +3068,7 @@ name = "jbeam"
 version = "0.1.0"
 dependencies = [
  "phys",
+ "ruzstd",
  "scene",
 ]
 
