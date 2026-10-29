@@ -192,6 +192,11 @@ fn apply(
         Quality::Medium => 30,
         Quality::High => 50,
     });
+    g.people.target = std::env::var("EARTHSIM_PEOPLE").ok().and_then(|v| v.parse().ok()).unwrap_or(match q {
+        Quality::Low => 15,
+        Quality::Medium => 40,
+        Quality::High => 70,
+    });
     g.renderer_info = format!("GRAPHICS {}{} (F5)", gfx.quality.name(), if gfx.safe { ", SAFE MODE" } else { "" });
     world::log::log(&format!("graphics quality {}", gfx.quality.name()));
     gfx.applied = Some(gfx.quality);

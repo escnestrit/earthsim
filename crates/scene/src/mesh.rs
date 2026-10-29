@@ -613,6 +613,49 @@ pub fn simple_car(pm: &mut Mb, pcol: &mut Vec<f32>, c: &crate::model::ParkedCar,
     }
 }
 
+/// A low-detail person standing at the origin facing +X: legs, torso, arms, head. `stride` -1..1 moves the
+/// legs and arms apart for walking frames. Height, build and clothing colours from `seed`.
+pub fn person(m: &mut Mb, col: &mut Vec<f32>, seed: u64, stride: f64) {
+    let fill = |m: &Mb, col: &mut Vec<f32>, c: [f32; 3]| {
+        while col.len() / 3 < m.a.len() / FLOATS_PER_VERTEX {
+            col.extend_from_slice(&c);
+        }
+    };
+    fill(m, col, [1.0, 1.0, 1.0]);
+    let r = |k: u64| hash01(seed, k);
+    let h = 1.58 + r(1) * 0.3;
+    let w = 0.36 + r(2) * 0.1;
+    let k = 1.0 / 0.85;
+    let pick = |p: &[[f32; 3]], x: f64| p[(x * p.len() as f64) as usize % p.len()].map(|c| c * k);
+    let top = pick(&[[0.85, 0.85, 0.85], [0.12, 0.12, 0.14], [0.55, 0.12, 0.12], [0.15, 0.25, 0.5], [0.2, 0.4, 0.25], [0.6, 0.55, 0.45], [0.75, 0.6, 0.2], [0.4, 0.4, 0.42], [0.5, 0.3, 0.5]], r(3));
+    let legs = pick(&[[0.12, 0.16, 0.3], [0.1, 0.1, 0.11], [0.3, 0.3, 0.32], [0.45, 0.4, 0.32], [0.18, 0.22, 0.38]], r(4));
+    let skin = pick(&[[0.85, 0.68, 0.56], [0.78, 0.6, 0.48], [0.62, 0.45, 0.34], [0.42, 0.3, 0.22]], r(5));
+    let hair = pick(&[[0.08, 0.06, 0.05], [0.3, 0.2, 0.12], [0.55, 0.45, 0.3], [0.6, 0.6, 0.6]], r(6));
+    let hip = h * 0.48;
+    let sh = h * 0.82;
+    let sw = stride * 0.16;
+    for (side, dx) in [(1.0, sw), (-1.0, -sw)] {
+        m.obox(dx * 0.5, side * w * 0.22, 0.0, 0.24, 0.14, 0.0, 0.06, mat::TIRE);
+        fill(m, col, [1.0, 1.0, 1.0]);
+        m.obox(dx * 0.5, side * w * 0.22, 0.0, 0.15, 0.14, 0.04, hip, mat::MARKING);
+        fill(m, col, legs);
+    }
+    m.obox(0.0, 0.0, 0.0, 0.24, w, hip - 0.04, sh, mat::MARKING);
+    fill(m, col, top);
+    for (side, dx) in [(1.0, -sw), (-1.0, sw)] {
+        m.obox(dx * 0.6, side * (w / 2.0 + 0.05), 0.0, 0.1, 0.09, hip + 0.02, sh - 0.02, mat::MARKING);
+        fill(m, col, top);
+        m.obox(dx * 0.75, side * (w / 2.0 + 0.05), 0.0, 0.09, 0.08, hip - 0.06, hip + 0.03, mat::MARKING);
+        fill(m, col, skin);
+    }
+    m.obox(0.0, 0.0, 0.0, 0.08, 0.08, sh, sh + 0.06, mat::MARKING);
+    fill(m, col, skin);
+    m.sphere(0.0, 0.0, sh + 0.16, 0.1, 0.12, mat::MARKING, 0.0, 8, 5);
+    fill(m, col, skin);
+    m.sphere(-0.015, 0.0, sh + 0.2, 0.105, 0.09, mat::MARKING, 0.0, 8, 4);
+    fill(m, col, hair);
+}
+
 fn hash01(seed: u64, k: u64) -> f64 {
     let mut h = seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     h ^= h >> 31;

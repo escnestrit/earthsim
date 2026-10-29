@@ -15,12 +15,20 @@ impl Plugin for TrafficPlugin {
     }
 }
 
+type Parts = Vec<(Handle<Mesh>, Handle<StandardMaterial>)>;
+
 #[derive(Resource, Default)]
 struct TrafficView {
     /// per variant: (mesh, material) parts
-    parts: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>>,
+    parts: Vec<Parts>,
     cars: HashMap<u64, Entity>,
+    /// people: per look, per pose (standing, stride, other stride)
+    people_parts: Vec<[Parts; 3]>,
+    /// person -> (entity, pose shown)
+    people: HashMap<u64, (Entity, u8)>,
 }
+
+const LOOKS: u64 = 12;
 
 fn variant_seed(k: u64) -> u64 {
     (k.wrapping_add(1)).wrapping_mul(0x2545_F491_4F6C_DD1D) >> 7
@@ -39,6 +47,51 @@ fn sync(mut commands: Commands, sim: Res<Sim>, mut tv: ResMut<TrafficView>, mut 
                 .map(|(id, mesh)| (meshes.add(mesh), crate::view::mat_handle(&mut tiles, &mut materials, id)))
                 .collect();
             tv.parts.push(parts);
+        }
+    }
+    let people = sim.g().people_list();
+    if tv.people_parts.is_empty() {
+        for k in 0..LOOKS {
+            let mk = |stride: f64, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, tiles: &mut crate::view::Tiles| -> Parts {
+                let (mut m, mut col) = (scene::mesh::Mb::default(), Vec::new());
+                scene::mesh::person(&mut m, &mut col, variant_seed(k + 100), stride);
+                let md = scene::mesh::MeshData { name: "person".into(), verts: m.a, polygon_offset: 0.0, casts_shadow: true, colors: col };
+                crate::view::to_bevy_meshes(&md).into_iter().map(|(id, mesh)| (meshes.add(mesh), crate::view::mat_handle(tiles, materials, id))).collect()
+            };
+            let a = mk(0.0, &mut meshes, &mut materials, &mut tiles);
+            let b = mk(1.0, &mut meshes, &mut materials, &mut tiles);
+            let c = mk(-1.0, &mut meshes, &mut materials, &mut tiles);
+            tv.people_parts.push([a, b, c]);
+        }
+    }
+    let mut seen_p = Vec::with_capacity(people.len());
+    for (id, seed, p, yaw, pose) in people {
+        seen_p.push(id);
+        let t = Transform::from_translation(Vec3::new(p[0], p[1], p[2])).with_rotation(Quat::from_rotation_z(yaw));
+        let look = (seed % LOOKS) as usize;
+        match tv.people.get(&id).copied() {
+            Some((e, shown)) if shown == pose => {
+                if let Ok(mut cur) = tf.get_mut(e) {
+                    *cur = t;
+                }
+            }
+            other => {
+                // new person, or a new walking pose: rebuild its parts
+                if let Some((e, _)) = other {
+                    commands.entity(e).despawn();
+                }
+                let e = commands.spawn((t, Visibility::default(), ChildOf(root))).id();
+                for (mh, mat) in tv.people_parts[look][pose as usize % 3].clone() {
+                    commands.spawn((Mesh3d(mh), MeshMaterial3d(mat), Transform::default(), ChildOf(e)));
+                }
+                tv.people.insert(id, (e, pose));
+            }
+        }
+    }
+    let gone: Vec<u64> = tv.people.keys().copied().filter(|id| !seen_p.contains(id)).collect();
+    for id in gone {
+        if let Some((e, _)) = tv.people.remove(&id) {
+            commands.entity(e).despawn();
         }
     }
     let mut seen = Vec::with_capacity(cars.len());

@@ -254,6 +254,8 @@ pub struct Game {
     bridge_lamps: HashMap<u64, Vec<([f64; 3], [f64; 2], [f64; 2])>>,
     /// cars driving around the player
     pub traffic: crate::traffic::Traffic,
+    /// people on the pavements
+    pub people: crate::people::People,
     traffic_last: Option<(f64, f64)>,
     pub deformed: Vec<f32>,
     /// Fixed camera (eye, target, fov) used for screenshots and tests instead of the follow cameras.
@@ -311,6 +313,7 @@ impl Game {
             lamps: HashMap::new(),
             bridge_lamps: HashMap::new(),
             traffic: crate::traffic::Traffic::default(),
+            people: crate::people::People::default(),
             traffic_last: None,
             deformed: Vec::new(),
             cam_override: None,
@@ -422,8 +425,14 @@ impl Game {
     fn rebuild_traffic(&mut self) {
         let mut ev = crate::traffic::Events::default();
         match self.stream.as_ref() {
-            Some(st) => self.traffic.rebuild(st.scenes.values().map(|s| &**s), &mut ev),
-            None => self.traffic.rebuild(std::iter::once(&self.scene), &mut ev),
+            Some(st) => {
+                self.traffic.rebuild(st.scenes.values().map(|s| &**s), &mut ev);
+                self.people.rebuild(st.scenes.values().map(|s| &**s));
+            }
+            None => {
+                self.traffic.rebuild(std::iter::once(&self.scene), &mut ev);
+                self.people.rebuild(std::iter::once(&self.scene));
+            }
         }
         self.apply_traffic_events(ev);
     }
@@ -446,8 +455,17 @@ impl Game {
         self.traffic.agents.iter().map(|a| (a.id, a.seed, [a.x as f32, a.y as f32, a.z as f32], a.yaw as f32)).collect()
     }
 
+    /// People to draw: (id, seed, position, heading, walking frame 0 = standing, 1 / 2 = strides).
+    pub fn people_list(&self) -> Vec<(u64, u64, [f32; 3], f32, u8)> {
+        self.people
+            .people
+            .iter()
+            .map(|h| (h.id, h.seed, [h.x as f32, h.y as f32, h.z as f32], h.yaw as f32, if !h.walking { 0 } else if h.phase.sin() >= 0.0 { 1 } else { 2 }))
+            .collect()
+    }
+
     fn traffic_tick(&mut self, dt: f64) {
-        if self.traffic.target == 0 && self.traffic.agents.is_empty() {
+        if self.traffic.target == 0 && self.traffic.agents.is_empty() && self.people.target == 0 && self.people.people.is_empty() {
             return;
         }
         let (x, y) = (self.car.pos.x, self.car.pos.y);
@@ -460,6 +478,7 @@ impl Game {
             ground.sample_at(x, y, z).height
         };
         let ev = self.traffic.step(dt, (x, y, f.y.atan2(f.x), speed), &h);
+        self.people.step(dt, (x, y, f.y.atan2(f.x), speed), &h);
         self.apply_traffic_events(ev);
     }
 
@@ -747,6 +766,7 @@ impl Game {
                         let (la, lo, _) = old.from_local(0.0, 0.0, 0.0);
                         let p = new.to_local(la, lo, 0.0);
                         self.traffic.shift(p[0], p[1]);
+                        self.people.shift(p[0], p[1]);
                         self.traffic_last = None;
                         if !self.ground.field.is_empty() {
                             self.ground = phys::TerrainGround { field: Arc::new(self.ground.field.shifted(p[0], p[1])), decks: Default::default() };

@@ -15,23 +15,23 @@ use scene::model::Scene;
 pub const TAG_BASE: u64 = 0xFFFF_0000_0000_0000;
 
 #[derive(Clone, Copy, Debug)]
-struct Edge {
-    to: u32,
+pub(crate) struct Edge {
+    pub to: u32,
     /// speed limit (m/s)
-    vmax: f32,
+    pub vmax: f32,
     /// lateral offset of the right-hand lane from the centre line (m)
-    lane: f32,
+    pub lane: f32,
 }
 
 #[derive(Default)]
-struct Graph {
-    pos: Vec<[f64; 2]>,
-    adj: Vec<Vec<Edge>>,
-    index: HashMap<(i64, i64), u32>,
+pub(crate) struct Graph {
+    pub pos: Vec<[f64; 2]>,
+    pub adj: Vec<Vec<Edge>>,
+    pub index: HashMap<(i64, i64), u32>,
 }
 
 impl Graph {
-    fn node(&mut self, p: [f64; 2]) -> u32 {
+    pub fn node(&mut self, p: [f64; 2]) -> u32 {
         let k = ((p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64);
         if let Some(&i) = self.index.get(&k) {
             return i;
@@ -42,13 +42,13 @@ impl Graph {
         self.index.insert(k, i);
         i
     }
-    fn link(&mut self, a: u32, b: u32, vmax: f32, lane: f32) {
+    pub fn link(&mut self, a: u32, b: u32, vmax: f32, lane: f32) {
         if a == b || self.adj[a as usize].iter().any(|e| e.to == b) {
             return;
         }
         self.adj[a as usize].push(Edge { to: b, vmax, lane });
     }
-    fn edge(&self, a: u32, b: u32) -> Option<Edge> {
+    pub fn edge(&self, a: u32, b: u32) -> Option<Edge> {
         self.adj[a as usize].iter().find(|e| e.to == b).copied()
     }
 }
