@@ -25,6 +25,7 @@ pub mod mat {
     pub const WATER: f32 = 15.0;
     pub const SAND: f32 = 16.0;
     pub const FOREST_FLOOR: f32 = 17.0;
+    pub const PARKING: f32 = 18.0;
     /// Facade styles (walls with window rows); the old OpenGL renderer draws them all as WALL.
     pub const WALL_PLASTER: f32 = 20.0;
     pub const WALL_BRICK: f32 = 21.0;
@@ -240,7 +241,11 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     kinds.dedup();
     for k in kinds {
         let mut am = Mb::default();
-        let (z, off) = if k == crate::model::AreaKind::Water { (0.006, -0.75) } else { (0.004, -0.5) };
+        let (z, off) = match k {
+            crate::model::AreaKind::Water => (0.006, -0.75),
+            crate::model::AreaKind::Parking => (0.008, -0.9),
+            _ => (0.004, -0.5),
+        };
         for a in sc.areas.iter().filter(|a| a.kind == k) {
             for t in &a.tris {
                 let p = t.map(|i| {

@@ -140,7 +140,7 @@ fn link(gl: &Gl, vs: &str, fs: &str, what: &str) -> Result<Prog, String> {
 fn upload(gl: &Gl, m: &MeshData) -> GpuMesh {
     // facade styles and ground cover are newer than this renderer's shader: walls, ground, dark glassy water
     use scene::mesh::mat;
-    let newer = |m: f32| mat::is_facade(m) || (13.5..17.5).contains(&m);
+    let newer = |m: f32| mat::is_facade(m) || (13.5..18.5).contains(&m);
     let remapped;
     let m = if m.verts.chunks_exact(FLOATS_PER_VERTEX).any(|v| newer(v[8])) {
         let mut verts = m.verts.clone();
@@ -150,6 +150,8 @@ fn upload(gl: &Gl, m: &MeshData) -> GpuMesh {
                 v[6] = 0.5;
             } else if v[8] == mat::WATER {
                 v[8] = mat::GLASS;
+            } else if v[8] == mat::PARKING {
+                v[8] = mat::ASPHALT;
             } else if newer(v[8]) {
                 v[8] = mat::GROUND;
             }

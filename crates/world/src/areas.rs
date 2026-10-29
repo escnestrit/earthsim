@@ -19,6 +19,10 @@ pub fn area_kind(tags: &Tags) -> Option<AreaKind> {
     if t("building").is_some() || t("area:highway").is_some() {
         return None;
     }
+    // surface car parks only: multi-storey and underground ones are buildings or invisible
+    if t("amenity") == Some("parking") && !matches!(t("parking"), Some("multi-storey" | "underground" | "rooftop")) {
+        return Some(AreaKind::Parking);
+    }
     if t("natural") == Some("water") || t("waterway") == Some("riverbank") || matches!(t("landuse"), Some("reservoir" | "basin")) {
         return Some(AreaKind::Water);
     }
@@ -351,6 +355,9 @@ mod tests {
         assert_eq!(area_kind(&tags(&[("natural", "beach")])), Some(AreaKind::Sand));
         assert_eq!(area_kind(&tags(&[("leisure", "park"), ("building", "yes")])), None);
         assert_eq!(area_kind(&tags(&[("landuse", "residential")])), None);
+        assert_eq!(area_kind(&tags(&[("amenity", "parking")])), Some(AreaKind::Parking));
+        assert_eq!(area_kind(&tags(&[("amenity", "parking"), ("parking", "surface")])), Some(AreaKind::Parking));
+        assert_eq!(area_kind(&tags(&[("amenity", "parking"), ("parking", "underground")])), None);
     }
 
     #[test]

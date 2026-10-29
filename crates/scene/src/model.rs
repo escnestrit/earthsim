@@ -76,6 +76,8 @@ pub enum AreaKind {
     Park,
     Forest,
     Sand,
+    /// surface car parks (multi-storey ones are buildings)
+    Parking,
 }
 
 impl AreaKind {
@@ -86,6 +88,7 @@ impl AreaKind {
             AreaKind::Grass | AreaKind::Park => mat::GRASS,
             AreaKind::Forest => mat::FOREST_FLOOR,
             AreaKind::Sand => mat::SAND,
+            AreaKind::Parking => mat::PARKING,
         }
     }
     pub fn name(self) -> &'static str {
@@ -95,10 +98,11 @@ impl AreaKind {
             AreaKind::Park => "park",
             AreaKind::Forest => "forest",
             AreaKind::Sand => "sand",
+            AreaKind::Parking => "parking",
         }
     }
     pub fn parse(s: &str) -> Option<AreaKind> {
-        [AreaKind::Water, AreaKind::Grass, AreaKind::Park, AreaKind::Forest, AreaKind::Sand].into_iter().find(|k| k.name() == s)
+        [AreaKind::Water, AreaKind::Grass, AreaKind::Park, AreaKind::Forest, AreaKind::Sand, AreaKind::Parking].into_iter().find(|k| k.name() == s)
     }
 }
 

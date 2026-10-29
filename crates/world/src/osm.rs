@@ -56,7 +56,7 @@ pub fn overpass_query(b: &Bounds) -> String {
         "[out:json][timeout:30];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb});\
          way[\"natural\"~\"^(water|wood|scrub|heath|grassland|wetland|sand|beach)$\"]({bb});\
          way[\"landuse\"~\"^(forest|grass|meadow|village_green|recreation_ground|cemetery|reservoir|basin|allotments|orchard)$\"]({bb});\
-         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb}););out geom;",
+         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb});way[\"amenity\"=\"parking\"]({bb}););out geom;",
         hw.join("|")
     )
 }

@@ -178,6 +178,7 @@ pub fn area_tags(layer: &str, f: &Feature) -> Option<Vec<(String, String)>> {
             (_, "pitch" | "golf_course") => kv("leisure", "pitch"),
             (_, "grass" | "meadow" | "village_green" | "recreation_ground" | "cemetery" | "allotments" | "orchard") => kv("landuse", "grass"),
             (_, "beach") => kv("natural", "beach"),
+            (_, "parking" | "parking_space") => kv("amenity", "parking"),
             _ => None,
         },
         _ => None,

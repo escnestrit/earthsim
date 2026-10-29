@@ -77,6 +77,7 @@ fn material_for(id: u32) -> StandardMaterial {
         x if x == mat::GRASS => ([0.26, 0.40, 0.17], 0.95, 0.0, 0.5, false),
         x if x == mat::FOREST_FLOOR => ([0.17, 0.25, 0.11], 1.0, 0.0, 0.5, false),
         x if x == mat::SAND => ([0.74, 0.68, 0.50], 0.95, 0.0, 0.5, false),
+        x if x == mat::PARKING => ([0.16, 0.16, 0.17], 0.85, 0.0, 0.7, false),
         x if x == mat::WATER => ([0.09, 0.19, 0.25], 0.06, 0.0, 0.8, false),
         _ => ([0.6, 0.6, 0.6], 0.8, 0.0, 0.0, false),
     };
