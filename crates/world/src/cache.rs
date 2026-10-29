@@ -6,8 +6,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Bumped when the data fetched per tile changes (2: ground cover - water, parks, forests).
-const FORMAT_MARK: &str = "\"earthsim_format\":2";
+/// Bumped when the data fetched per tile changes (2: ground cover; 3: OSM storey counts on Overture buildings).
+const FORMAT_MARK: &str = "\"earthsim_format\":3";
 
 pub struct DiskCache {
     root: PathBuf,
@@ -34,7 +34,9 @@ impl DiskCache {
         let text = fs::read_to_string(&p).ok()?;
         let age = fs::metadata(&p).and_then(|m| m.modified()).ok().and_then(|m| SystemTime::now().duration_since(m).ok()).unwrap_or(Duration::ZERO);
         let current = text.get(..64).is_some_and(|h| h.contains(FORMAT_MARK)) || text.len() < 64 && text.contains(FORMAT_MARK);
-        Some((text, age > self.max_age || !current))
+        // tiles whose OSM height lookup failed are refetched when the network allows
+        let heights_missing = text.get(..200).unwrap_or(&text).contains(crate::enrich::HEIGHTS_FAILED);
+        Some((text, age > self.max_age || !current || heights_missing))
     }
 
     pub fn put(&self, t: TileId, text: &str) -> io::Result<()> {

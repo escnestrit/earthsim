@@ -3,6 +3,7 @@
 pub mod areas;
 pub mod basemap;
 pub mod cache;
+pub mod enrich;
 pub mod fetch;
 pub mod geo;
 pub mod log;

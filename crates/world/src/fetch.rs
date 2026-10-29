@@ -476,7 +476,8 @@ mod winhttp {
         match std::env::var("EARTHSIM_SOURCE").unwrap_or_default().as_str() {
             "overpass" => overpass,
             "overture" => Arc::new(LazyOverture::new()),
-            _ => Arc::new(ChainFetcher(vec![Arc::new(LazyOverture::new()), overpass])),
+            // Overture shapes, OSM storey counts on top (see enrich.rs); Overpass alone if Overture is down
+            _ => Arc::new(crate::enrich::EnrichFetcher { base: Arc::new(ChainFetcher(vec![Arc::new(LazyOverture::new()), overpass.clone()])), osm: overpass }),
         }
     }
 
