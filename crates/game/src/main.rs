@@ -115,6 +115,20 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
         // deterministic captures: fixed 1/60 s per frame, plus an optional warm-up
         if !*warm {
             *warm = true;
+            // EARTHSIM_SHOT_KEYS=left,up: keys held through the warm-up (steering, throttle)
+            let keys = std::env::var("EARTHSIM_SHOT_KEYS").unwrap_or_default();
+            for k in keys.split(',') {
+                let key = match k.trim() {
+                    "left" => Some(earthsim::game::Key::Left),
+                    "right" => Some(earthsim::game::Key::Right),
+                    "up" => Some(earthsim::game::Key::Up),
+                    "down" => Some(earthsim::game::Key::Down),
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    sim.g().key_state(key, true);
+                }
+            }
             let mut t = 0.0;
             while t < s.warmup_sim_s {
                 sim.g().update(0.02);

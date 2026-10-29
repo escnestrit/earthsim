@@ -6,6 +6,9 @@ fn main() {
     println!("eye {:?}", v.eye.rest);
     for p in &lv.visual.as_ref().unwrap().props {
         for sm in &p.submeshes { println!("  sub {} verts {} tris {}", sm.material, sm.positions.len(), sm.indices.len() / 3); }
+        let (mut rl, mut rh) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for sm in &p.submeshes { for q in &sm.positions { for i in 0..3 { rl[i] = rl[i].min(q[i]); rh[i] = rh[i].max(q[i]); } } }
+        println!("  raw mesh bbox {:?}..{:?} base {:?} trans {:?} axis {:?}", rl, rh, p.base_rot_deg, p.base_trans, p.axis);
         let (o, m) = p.pose(&nodes, 0.0);
         let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
         for sm in &p.submeshes {
@@ -21,3 +24,4 @@ fn main() {
         println!("{} refs {:?} origin {:?} bbox {:?}..{:?} axis(mesh z) {:?}", p.mesh, p.refs.map(|i| nodes[i]), o, lo, hi, [m[0][2], m[1][2], m[2][2]]);
     }
 }
+// raw mesh bbox printed separately

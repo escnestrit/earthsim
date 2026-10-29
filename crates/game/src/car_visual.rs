@@ -34,6 +34,8 @@ struct PartVis {
     /// entity per submesh (None: never drawn)
     ents: Vec<Option<Entity>>,
     snap: Vec<V3>,
+    /// a tyre, rim or brake (near a wheel): re-skinned every frame, never deferred
+    wheelish: bool,
 }
 
 /// A drawn submesh of the car (material/visibility change with damage).
@@ -55,7 +57,16 @@ struct CarVis {
     groups_gen: u32,
     /// (entity, prop) for the steering wheel and other node-carried meshes
     props: Vec<(Entity, jbeam::props::Prop)>,
+    /// nodes of wheel-borne parts (they turn, so they are never held at their rest position)
+    spin_node: Vec<bool>,
 }
+
+/// Body nodes within this distance (m) of where they belong in the undeformed car are drawn there: the soft
+/// body's fine vibration would otherwise make dashboards and trim shimmer.
+const REST_DEADBAND: f64 = 0.015;
+/// Before any damage, a body node this far (m) from its place hangs loose in the simulation (a part it
+/// is tied to is missing from the mod); it is drawn where it belongs.
+const FLOPPY: f64 = 0.12;
 
 /// A node-carried rigid car mesh (steering wheel).
 #[derive(Component)]
@@ -192,7 +203,12 @@ fn setup(
             ents.push(Some(e));
         }
         let snap = part.nodes.iter().map(|&n| j.body.nodes[n as usize].rest).collect();
-        parts.push(PartVis { part, meshes: handles, ents, snap });
+        // near a wheel centre: tyre, rim, brake disc, hub
+        let wheelish = part.wheel.is_none() && !part.nodes.is_empty() && {
+            let c = part.nodes.iter().fold(phys::math::V3::ZERO, |a, &n| a + j.body.nodes[n as usize].rest) * (1.0 / part.nodes.len() as f64);
+            j.wheels.iter().any(|w| ((j.body.nodes[w.n1].rest + j.body.nodes[w.n2].rest) * 0.5 - c).len() < 0.45)
+        };
+        parts.push(PartVis { part, meshes: handles, ents, snap, wheelish });
     }
     world::log::log(&format!("car meshes: {} parts, {} textures ({failed} failed), {} materials", parts.len(), tex.len(), mat_handles.len()));
     let rest_com = j.rest_com();
@@ -210,7 +226,17 @@ fn setup(
         props.push((e, pr));
     }
     let groups_gen = j.groups.generation;
-    commands.insert_resource(CarVis { root: car_root, parts, wheels, rest_com, cursor: 0, pos: Vec::new(), nrm: Vec::new(), mats: mat_handles, groups_gen, props });
+    let mut spin_node = vec![false; j.body.nodes.len()];
+    for pv in parts.iter().filter(|p| p.wheelish) {
+        for &n in &pv.part.nodes {
+            spin_node[n as usize] = true;
+        }
+    }
+    for w in &j.wheels {
+        spin_node[w.n1] = true;
+        spin_node[w.n2] = true;
+    }
+    commands.insert_resource(CarVis { root: car_root, parts, wheels, rest_com, cursor: 0, pos: Vec::new(), nrm: Vec::new(), mats: mat_handles, groups_gen, props, spin_node });
 }
 
 #[allow(clippy::type_complexity)]
@@ -245,7 +271,7 @@ fn update(
     }
     // copy what is needed and let the physics thread go on
     let rc = vis.rest_com;
-    let (r, pos, nodes, wheel_tf, groups, steer) = {
+    let (r, pos, nodes, rest, wheel_tf, groups, steer, intact) = {
         let guard = g.jcar.as_ref().unwrap().lock();
         let j = &guard.v;
         let steer = j.steer_cmd;
@@ -260,7 +286,11 @@ fn update(
                 (vec3(j.wheel_center(wi)), Mat3::from_cols(vec3(x), vec3(y), vec3(z)), j.wheels[wi].state.spin as f32)
             })
             .collect();
-        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), wheel_tf, groups, steer)
+        let rest: Vec<V3> = j.body.nodes.iter().map(|n| n.rest).collect();
+        // no beam broken yet: anything far from its place is a floppy node (its holding part is missing
+        // from the mod), not crash damage
+        let intact = !j.body.beams.iter().any(|b| b.broken);
+        (j.body_rotation(), j.pos, j.body.nodes.iter().map(|n| n.p).collect::<Vec<V3>>(), rest, wheel_tf, groups, steer, intact)
     };
     drop(g);
     // damage groups changed (glass cracked, lights broken, or everything repaired): swap materials
@@ -292,12 +322,39 @@ fn update(
     }
     // node positions in the rest frame
     let inv = r.conj();
-    let local: Vec<V3> = nodes.iter().map(|p| inv.rotate(*p - pos) + rc).collect();
+    let raw_local: Vec<V3> = nodes.iter().map(|p| inv.rotate(*p - pos) + rc).collect();
+    // body nodes still where they belong (within the deadband) are drawn at rest: no shimmer
+    let local: Vec<V3> = raw_local
+        .iter()
+        .zip(&rest)
+        .enumerate()
+        .map(|(i, (l, r))| {
+            let spin = vis.spin_node.get(i).copied().unwrap_or(true);
+            let d = (*l - *r).len();
+            if !spin && (d < REST_DEADBAND || intact && d > FLOPPY) { *r } else { *l }
+        })
+        .collect();
     // steering wheel and other props follow their three nodes (rest-frame coordinates, like the car root)
     if !vis.props.is_empty() {
-        let lp: Vec<[f64; 3]> = local.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let lp: Vec<[f64; 3]> = raw_local.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let rp: Vec<[f64; 3]> = rest.iter().map(|p| [p.x, p.y, p.z]).collect();
         for (e, pr) in &vis.props {
-            let (o, m) = pr.pose(&lp, steer);
+            // the undeformed frame while the dashboard is intact: the soft body's small vibrations would
+            // otherwise rock the wheel; the moving nodes once a crash has bent it (more than 4 cm)
+            // judged by the two direction nodes (the reference node of a wheel is often a floppy one);
+            // when they moved, the reference follows their mean displacement
+            let disp = |i: usize| [lp[i][0] - rp[i][0], lp[i][1] - rp[i][1], lp[i][2] - rp[i][2]];
+            let len = |d: [f64; 3]| (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let bent = !intact && pr.refs[1..].iter().any(|&i| len(disp(i)) > 0.04);
+            let (o, m) = if bent {
+                let (dx, dy) = (disp(pr.refs[1]), disp(pr.refs[2]));
+                let mut q = lp.clone();
+                let r0 = pr.refs[0];
+                q[r0] = [0, 1, 2].map(|k| rp[r0][k] + (dx[k] + dy[k]) / 2.0);
+                pr.pose(&q, steer)
+            } else {
+                pr.pose(&rp, steer)
+            };
             if let Ok(mut t) = prop_tf.get_mut(*e) {
                 let cols = Mat3::from_cols(
                     Vec3::new(m[0][0] as f32, m[1][0] as f32, m[2][0] as f32),
@@ -307,7 +364,7 @@ fn update(
                 *t = Transform { translation: Vec3::new(o[0] as f32, o[1] as f32, o[2] as f32), rotation: Quat::from_mat3(&cols), scale: Vec3::ONE };
                 if std::env::var("EARTHSIM_DEBUG_PROPS").is_ok() {
                     let wp = pos + r.rotate(phys::math::v3(o[0], o[1], o[2]) - rc);
-                    world::log::log(&format!("prop {} at {:?} rot {:?}; world (sim) {:.2} {:.2} {:.2}", pr.mesh, t.translation, t.rotation, wp.x, wp.y, wp.z));
+                    world::log::log(&format!("prop {} at {:?} rot {:?}; world (sim) {:.2} {:.2} {:.2}; refs local {:?} rest {:?}", pr.mesh, t.translation, t.rotation, wp.x, wp.y, wp.z, pr.refs.map(|i| lp[i]), pr.refs.map(|i| rp[i])));
                 }
             }
         }
@@ -316,8 +373,9 @@ fn update(
     let mut budget = RESKIN_BUDGET;
     let start = vis.cursor;
     let CarVis { parts, pos, nrm, cursor, .. } = &mut *vis;
-    for k in 0..n {
-        let pi = (start + k) % n;
+    // tyres and rims first and always (a deferred tyre would lag behind its rim)
+    let order: Vec<usize> = (0..n).filter(|&i| parts[i].wheelish).chain((0..n).map(|k| (start + k) % n).filter(|&i| !parts[i].wheelish)).collect();
+    for pi in order {
         let pv = &mut parts[pi];
         if pv.part.wheel.is_some() {
             continue;
@@ -327,7 +385,7 @@ fn update(
             continue;
         }
         let verts: usize = pv.part.binds.iter().map(|b| b.len()).sum();
-        if verts > budget && budget < RESKIN_BUDGET {
+        if !pv.wheelish && verts > budget && budget < RESKIN_BUDGET {
             *cursor = pi; // continue here next frame
             break;
         }
