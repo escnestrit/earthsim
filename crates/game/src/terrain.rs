@@ -23,18 +23,20 @@ struct TerrainState {
     plane_y: Option<f32>,
 }
 
-/// Grid mesh (sim coordinates, Z up) every `step` field cells.
-pub fn terrain_mesh(f: &phys::HeightField, step: usize) -> Mesh {
-    let nx = (f.nx - 1) / step + 1;
-    let ny = (f.ny - 1) / step + 1;
+/// Grid mesh (sim coordinates, Z up) with `sub` vertices per field cell, at the physics' bilinear heights,
+/// so the drawn ground and the ground the car stands on agree to a few centimetres.
+pub fn terrain_mesh(f: &phys::HeightField, sub: usize) -> Mesh {
+    let nx = (f.nx - 1) * sub + 1;
+    let ny = (f.ny - 1) * sub + 1;
+    let step = 1.0 / sub as f64;
     let mut pos = Vec::with_capacity(nx * ny);
     let mut nrm = Vec::with_capacity(nx * ny);
     let mut uv = Vec::with_capacity(nx * ny);
     for j in 0..ny {
         for i in 0..nx {
-            let (x, y) = (f.x0 + (i * step) as f64 * f.cell, f.y0 + (j * step) as f64 * f.cell);
+            let (x, y) = (f.x0 + i as f64 * step * f.cell, f.y0 + j as f64 * step * f.cell);
             // a little under the draped roads and ground cover
-            pos.push([x as f32, y as f32, f.height(x, y) as f32 - 0.03]);
+            pos.push([x as f32, y as f32, f.height(x, y) as f32 - 0.02]);
             let n = f.normal(x, y);
             nrm.push([n.x as f32, n.y as f32, n.z as f32]);
             uv.push([x as f32, y as f32]);
@@ -76,7 +78,7 @@ fn update(
         st.plane_y = None;
         if !field.is_empty() {
             if let Ok(root) = root.single() {
-                let m = meshes.add(terrain_mesh(&field, 2));
+                let m = meshes.add(terrain_mesh(&field, 1));
                 let gm = tiles.materials[&(mat::GROUND as u32)].clone();
                 let e = commands.spawn((Mesh3d(m), MeshMaterial3d(gm), Transform::default(), ChildOf(root))).id();
                 st.entity = Some(e);

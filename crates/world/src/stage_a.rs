@@ -420,6 +420,30 @@ mod depth_tests {
     }
 }
 
+/// Move a counter-clockwise ring outward by `d` (mitred, limited at sharp corners).
+pub fn offset_ring(r: &[(f64, f64)], d: f64) -> Vec<(f64, f64)> {
+    let n = r.len();
+    (0..n)
+        .map(|i| {
+            let (p, c, q) = (r[(i + n - 1) % n], r[i], r[(i + 1) % n]);
+            let nrm = |a: (f64, f64), b: (f64, f64)| {
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let l = dx.hypot(dy).max(1e-9);
+                (dy / l, -dx / l)
+            };
+            let (n1, n2) = (nrm(p, c), nrm(c, q));
+            let (mx, my) = (n1.0 + n2.0, n1.1 + n2.1);
+            let ml = mx.hypot(my);
+            if ml < 1e-9 {
+                return c;
+            }
+            let (mx, my) = (mx / ml, my / ml);
+            let k = d / (mx * n1.0 + my * n1.1).max(0.3);
+            (c.0 + mx * k, c.1 + my * k)
+        })
+        .collect()
+}
+
 pub fn signed_area(r: &[(f64, f64)]) -> f64 {
     let n = r.len();
     0.5 * (0..n).map(|i| {
@@ -671,6 +695,10 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
     }
     if area < 0.0 {
         ring.reverse();
+    }
+    // a part's walls stand 6 cm proud of the outline it lies in, so coinciding walls never flicker
+    if tag(tags, "building:part").is_some() && tag(tags, "building").is_none() {
+        ring = offset_ring(&ring, 0.06);
     }
     // what the building is: unknown classes are guessed from the other tags, the name and the shape
     let owned: Vec<(String, String)>;

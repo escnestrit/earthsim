@@ -191,6 +191,22 @@ pub fn ground_mesh(e: f64) -> MeshData {
     MeshData { name: "ground".into(), verts: g.a, polygon_offset: 0.0, casts_shadow: false, colors: Vec::new() }
 }
 
+/// Split a triangle at the midpoint of its longest edge until no edge is longer than `max` (or `depth` runs
+/// out); winding is kept.
+pub fn split_tri(t: [V; 3], max: f64, depth: u32, out: &mut Vec<[V; 3]>) {
+    let l = |a: V, b: V| (a[0] - b[0]).hypot(a[1] - b[1]);
+    let e = [l(t[0], t[1]), l(t[1], t[2]), l(t[2], t[0])];
+    let (k, lk) = e.iter().enumerate().fold((0, 0.0), |m, (i, &v)| if v > m.1 { (i, v) } else { m });
+    if lk <= max || depth == 0 {
+        out.push(t);
+        return;
+    }
+    let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+    let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0];
+    split_tri([a, m, c], max, depth - 1, out);
+    split_tri([m, b, c], max, depth - 1, out);
+}
+
 /// Road-like strip along a polyline with mitred joins (mitre length clamped).
 fn ribbon(mb: &mut Mb, pts: &[[f64; 2]], hw: f64, z: f64, m: f32) {
     let n = pts.len();
@@ -276,10 +292,14 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     kinds.dedup();
     for k in kinds {
         let mut am = Mb::default();
+        // every kind at its own height, so overlapping covers (a park inside a grass area) never fight
         let (z, off) = match k {
-            crate::model::AreaKind::Water => (0.006, -0.75),
-            crate::model::AreaKind::Parking => (0.008, -0.9),
-            _ => (0.004, -0.5),
+            crate::model::AreaKind::Grass => (0.004, -0.5),
+            crate::model::AreaKind::Park => (0.006, -0.55),
+            crate::model::AreaKind::Forest => (0.008, -0.6),
+            crate::model::AreaKind::Sand => (0.010, -0.65),
+            crate::model::AreaKind::Parking => (0.012, -0.9),
+            crate::model::AreaKind::Water => (0.014, -0.75),
         };
         for a in sc.areas.iter().filter(|a| a.kind == k) {
             for t in &a.tris {
@@ -290,8 +310,13 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
                 // counter-clockwise from above whatever the ring orientation
                 let up = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]) > 0.0;
                 let (b, c) = if up { (p[1], p[2]) } else { (p[2], p[1]) };
-                for q in [p[0], b, c] {
-                    am.v(q, [0.0, 0.0, 1.0], q[0] / 4.0, q[1] / 4.0, k.material());
+                // small triangles, so the cover follows the terrain when draped (vertices sit on the ground)
+                let mut tris = Vec::new();
+                split_tri([p[0], b, c], 12.0, 12, &mut tris);
+                for t in tris {
+                    for q in t {
+                        am.v(q, [0.0, 0.0, 1.0], q[0] / 4.0, q[1] / 4.0, k.material());
+                    }
                 }
             }
         }
@@ -304,7 +329,7 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
         if r.cls.starts_with("motorway") || r.cls.starts_with("trunk") {
             continue;
         }
-        ribbon(&mut sw, pts, r.width / 2.0 + if r.cls == "service" { 1.2 } else { 2.4 }, 0.01, mat::SIDEWALK);
+        ribbon(&mut sw, pts, r.width / 2.0 + if r.cls == "service" { 1.2 } else { 2.4 }, 0.016, mat::SIDEWALK);
     }
     out.push(MeshData { name: "sidewalk".into(), verts: sw.a, polygon_offset: -1.0, casts_shadow: false, colors: Vec::new() });
 
@@ -1002,6 +1027,9 @@ pub fn lamp_posts(sc: &Scene) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
             cum += len;
         }
     }
+    // none on another road's carriageway (crossing streets, dual carriageways, wide roads drawn narrow)
+    let index = crate::model::RoadIndex::new(sc);
+    out.retain(|(p, _, _)| !index.on_road(p[0], p[1], 0.6));
     // none standing in the embankment of a bridge ramp
     let spans = crate::bridge::spans(sc);
     if !spans.is_empty() {

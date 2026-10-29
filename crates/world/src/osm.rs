@@ -406,6 +406,8 @@ pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar>
     let junctions: Vec<[f64; 2]> = sc.roads.iter().flat_map(|r| r.pts.iter().zip(&r.junction).filter(|(_, j)| **j).map(|(p, _)| *p)).collect();
     let near_junction = |x: f64, y: f64| junctions.iter().any(|j| (j[0] - x).hypot(j[1] - y) < 12.0);
     let ramps = scene::bridge::spans(sc);
+    // never on a carriageway: a car is 1.9 m wide, so its centre stays 0.9 m clear of every road edge
+    let roads = scene::model::RoadIndex::new(sc);
     for r in &sc.roads {
         if !matches!(r.cls.as_str(), "residential" | "living_street" | "unclassified" | "tertiary" | "service") || r.width < 4.0 || r.bridge {
             continue;
@@ -427,7 +429,7 @@ pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar>
                     let off = r.width / 2.0 + 1.0;
                     let (x, y) = (a[0] + ux * s - uy * off * side, a[1] + uy * s + ux * off * side);
                     let h = hash(x, y, 1);
-                    if h % 100 >= 50 || near_junction(x, y) || in_building(x, y) || out.len() >= MAX || scene::bridge::on_ramp(&ramps, x, y, 1.0) {
+                    if h % 100 >= 50 || near_junction(x, y) || in_building(x, y) || out.len() >= MAX || scene::bridge::on_ramp(&ramps, x, y, 1.0) || roads.on_road(x, y, 0.85) {
                         continue;
                     }
                     // a little untidy: small offsets and angles
@@ -474,7 +476,7 @@ pub fn park_cars(sc: &Scene, frame: &LocalFrame) -> Vec<scene::model::ParkedCar>
             while s < s1 - 1.3 && out.len() < MAX {
                 let (x, y) = (p0[0] + ux * s + vx * t, p0[1] + uy * s + vy * t);
                 let h = hash(x, y, 2);
-                if inside(x, y) && h % 100 < 70 && !in_building(x, y) {
+                if inside(x, y) && h % 100 < 70 && !in_building(x, y) && !roads.on_road(x, y, 2.6) {
                     let yaw = vy.atan2(vx) + if row % 2 == 0 { 0.0 } else { std::f64::consts::PI } + ((h >> 12) % 100) as f64 / 100.0 * 0.06 - 0.03;
                     out.push(scene::model::ParkedCar { x, y, yaw, seed: h });
                 }
@@ -772,5 +774,26 @@ mod tests {
         assert!(e.p[1].abs() < 0.1 && (e.p[0] - 30.0).abs() < 0.2, "on the south wall: {:?}", e.p);
         assert!(e.out[1] < -0.99, "facing south, out of the building: {:?}", e.out);
         assert!(scene::mesh::scene_meshes_opts(&sc, false).iter().any(|m| m.name == "entrances" && !m.verts.is_empty()));
+    }
+
+    #[test]
+    fn parked_cars_and_lamps_stay_off_every_carriageway() {
+        use scene::model::Road;
+        let road = |pts: Vec<[f64; 2]>, cls: &str, w: f64| Road { cls: cls.into(), width: w, junction: vec![false; pts.len()], pts, bridge: false, oneway: 0 };
+        let mut sc = Scene::default();
+        // a residential street with a wide avenue running beside it and a street crossing it
+        sc.roads.push(road((0..=30).map(|i| [i as f64 * 10.0, 0.0]).collect(), "residential", 6.0));
+        sc.roads.push(road((0..=30).map(|i| [i as f64 * 10.0, 9.0]).collect(), "primary", 12.0));
+        sc.roads.push(road((-10..=10).map(|i| [150.0, i as f64 * 10.0]).collect(), "tertiary", 7.0));
+        let frame = LocalFrame::new(53.9, 27.56, 0.0);
+        let cars = park_cars(&sc, &frame);
+        assert!(!cars.is_empty());
+        let idx = scene::model::RoadIndex::new(&sc);
+        for c in &cars {
+            assert!(!idx.on_road(c.x, c.y, 0.8), "car at ({:.1}, {:.1}) on a road", c.x, c.y);
+        }
+        for (p, _, _) in scene::mesh::lamp_posts(&sc) {
+            assert!(!idx.on_road(p[0], p[1], 0.5), "lamp at ({:.1}, {:.1}) on a road", p[0], p[1]);
+        }
     }
 }

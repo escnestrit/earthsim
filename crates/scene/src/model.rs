@@ -449,3 +449,46 @@ mod tests {
         assert_eq!((w.poly_count(), w.circle_count()), (1, 2));
     }
 }
+
+/// Road carriageways in a grid, to keep things (parked cars, lamp posts, trees) off every road, not only
+/// the one they were placed along.
+pub struct RoadIndex {
+    segs: Vec<([f64; 2], [f64; 2], f64)>,
+    grid: std::collections::HashMap<(i64, i64), Vec<u32>>,
+}
+
+const ROAD_CELL: f64 = 20.0;
+
+impl RoadIndex {
+    pub fn new(sc: &Scene) -> RoadIndex {
+        let mut segs = Vec::new();
+        let mut grid: std::collections::HashMap<(i64, i64), Vec<u32>> = std::collections::HashMap::new();
+        for r in sc.roads.iter().filter(|r| !r.bridge) {
+            let hw = r.width / 2.0;
+            for w in r.pts.windows(2) {
+                let k = segs.len() as u32;
+                segs.push((w[0], w[1], hw));
+                let m = hw + 3.0;
+                let (x0, x1) = (w[0][0].min(w[1][0]) - m, w[0][0].max(w[1][0]) + m);
+                let (y0, y1) = (w[0][1].min(w[1][1]) - m, w[0][1].max(w[1][1]) + m);
+                for i in (x0 / ROAD_CELL).floor() as i64..=(x1 / ROAD_CELL).floor() as i64 {
+                    for j in (y0 / ROAD_CELL).floor() as i64..=(y1 / ROAD_CELL).floor() as i64 {
+                        grid.entry((i, j)).or_default().push(k);
+                    }
+                }
+            }
+        }
+        RoadIndex { segs, grid }
+    }
+    /// Is (x, y) within `margin` of any carriageway (centre line distance < half width + margin)?
+    pub fn on_road(&self, x: f64, y: f64, margin: f64) -> bool {
+        let Some(list) = self.grid.get(&((x / ROAD_CELL).floor() as i64, (y / ROAD_CELL).floor() as i64)) else { return false };
+        list.iter().any(|&k| {
+            let (a, b, hw) = self.segs[k as usize];
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = (dx * dx + dy * dy).max(1e-9);
+            let t = (((x - a[0]) * dx + (y - a[1]) * dy) / l2).clamp(0.0, 1.0);
+            (a[0] + dx * t - x).hypot(a[1] + dy * t - y) < hw + margin
+        })
+    }
+}
