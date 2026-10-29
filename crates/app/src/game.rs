@@ -250,6 +250,9 @@ pub struct Game {
     pub jcar_has_visual: bool,
     /// street lamp heads per tile (u64::MAX: the static scene)
     lamps: HashMap<u64, Vec<[f64; 3]>>,
+    /// cars driving around the player
+    pub traffic: crate::traffic::Traffic,
+    traffic_last: Option<(f64, f64)>,
     pub deformed: Vec<f32>,
     /// Fixed camera (eye, target, fov) used for screenshots and tests instead of the follow cameras.
     pub cam_override: Option<(V3f, V3f, f32)>,
@@ -304,11 +307,14 @@ impl Game {
             jcar_visual: None,
             jcar_has_visual: false,
             lamps: HashMap::new(),
+            traffic: crate::traffic::Traffic::default(),
+            traffic_last: None,
             deformed: Vec::new(),
             cam_override: None,
             stream: None,
         };
         g.rebuild_decks();
+        g.rebuild_traffic();
         g
     }
 
@@ -407,6 +413,51 @@ impl Game {
                 j.spawn();
             }
         }
+    }
+
+    /// Road network for the traffic from the loaded tiles.
+    fn rebuild_traffic(&mut self) {
+        let mut ev = crate::traffic::Events::default();
+        match self.stream.as_ref() {
+            Some(st) => self.traffic.rebuild(st.scenes.values().map(|s| &**s), &mut ev),
+            None => self.traffic.rebuild(std::iter::once(&self.scene), &mut ev),
+        }
+        self.apply_traffic_events(ev);
+    }
+
+    fn apply_traffic_events(&mut self, ev: crate::traffic::Events) {
+        if ev.wrecked.is_empty() && ev.cleared.is_empty() {
+            return;
+        }
+        for id in ev.cleared {
+            self.world.remove_tag(crate::traffic::TAG_BASE + id);
+        }
+        for (id, o) in ev.wrecked {
+            self.world.add_poly_tagged(crate::traffic::TAG_BASE + id, o);
+        }
+        self.publish_world();
+    }
+
+    /// Traffic cars to draw: (id, seed, position, heading).
+    pub fn traffic_cars(&self) -> Vec<(u64, u64, [f32; 3], f32)> {
+        self.traffic.agents.iter().map(|a| (a.id, a.seed, [a.x as f32, a.y as f32, a.z as f32], a.yaw as f32)).collect()
+    }
+
+    fn traffic_tick(&mut self, dt: f64) {
+        if self.traffic.target == 0 && self.traffic.agents.is_empty() {
+            return;
+        }
+        let (x, y) = (self.car.pos.x, self.car.pos.y);
+        let speed = self.traffic_last.map_or(0.0, |(lx, ly)| (x - lx).hypot(y - ly) / dt.max(1e-3));
+        self.traffic_last = Some((x, y));
+        let f = self.car.forward();
+        let ground = self.ground.clone();
+        let h = move |x: f64, y: f64, z: f64| {
+            use phys::Ground;
+            ground.sample_at(x, y, z).height
+        };
+        let ev = self.traffic.step(dt, (x, y, f.y.atan2(f.x), speed), &h);
+        self.apply_traffic_events(ev);
     }
 
     /// Bridge decks of the loaded tiles on the current ground, for the physics.
@@ -681,6 +732,8 @@ impl Game {
                     {
                         let (la, lo, _) = old.from_local(0.0, 0.0, 0.0);
                         let p = new.to_local(la, lo, 0.0);
+                        self.traffic.shift(p[0], p[1]);
+                        self.traffic_last = None;
                         if !self.ground.field.is_empty() {
                             self.ground = phys::TerrainGround { field: Arc::new(self.ground.field.shifted(p[0], p[1])), decks: Default::default() };
                             self.terrain.generation += 1;
@@ -712,6 +765,7 @@ impl Game {
         }
         if changed || rebased {
             self.rebuild_decks();
+            self.rebuild_traffic();
         }
         let Some(st) = self.stream.as_mut() else { return };
         if changed || rebased {
@@ -901,6 +955,9 @@ impl Game {
             self.sync_from_soft_if_on();
         }
         self.sim_steps_last_frame = n;
+        if !frozen && dt > 0.0 {
+            self.traffic_tick(dt);
+        }
         // camera follows the heading with a lag
         let f = self.car.forward();
         let yaw = f.y.atan2(f.x);

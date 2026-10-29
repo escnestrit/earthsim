@@ -452,32 +452,8 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     // parked cars: body, glazed cabin with a painted roof, wheels; colours in typical proportions
     let mut pm = Mb::default();
     let mut pcol: Vec<f32> = Vec::new();
-    let fill = |m: &Mb, col: &mut Vec<f32>, c: [f32; 3]| {
-        while col.len() / 3 < m.a.len() / FLOATS_PER_VERTEX {
-            col.extend_from_slice(&c);
-        }
-    };
     for c in &sc.parked {
-        let (l, w) = c.size();
-        let pal: [[f32; 3]; 10] = [[0.92, 0.92, 0.92], [0.92, 0.92, 0.92], [0.62, 0.64, 0.66], [0.62, 0.64, 0.66], [0.06, 0.06, 0.07], [0.06, 0.06, 0.07], [0.32, 0.34, 0.36], [0.55, 0.06, 0.06], [0.08, 0.16, 0.36], [0.55, 0.50, 0.42]];
-        let paint = pal[(c.seed >> 20) as usize % pal.len()];
-        let tall = (c.seed % 1000) > 700; // SUV/estate: taller cabin
-        let (zb, zt) = (0.32, if tall { 1.0 } else { 0.85 });
-        pm.obox(c.x, c.y, c.yaw, l, w, zb, zt, mat::MARKING);
-        fill(&pm, &mut pcol, [paint[0] / 0.85, paint[1] / 0.85, paint[2] / 0.82]);
-        let (cl, ch) = (l * if tall { 0.62 } else { 0.5 }, if tall { 1.75 } else { 1.42 });
-        let back = -l * 0.06;
-        let (cx, cy) = (c.x + c.yaw.cos() * back, c.y + c.yaw.sin() * back);
-        pm.obox(cx, cy, c.yaw, cl, w * 0.9, zt, ch - 0.06, mat::GLASS);
-        fill(&pm, &mut pcol, [1.0, 1.0, 1.0]);
-        pm.obox(cx, cy, c.yaw, cl * 0.96, w * 0.86, ch - 0.06, ch, mat::MARKING);
-        fill(&pm, &mut pcol, [paint[0] / 0.85, paint[1] / 0.85, paint[2] / 0.82]);
-        for (a, b) in [(0.33, 0.5), (0.33, -0.5), (-0.33, 0.5), (-0.33, -0.5)] {
-            let (da, db) = (a * l, b * (w - 0.18));
-            let (wx, wy) = (c.x + c.yaw.cos() * da - c.yaw.sin() * db, c.y + c.yaw.sin() * da + c.yaw.cos() * db);
-            pm.obox(wx, wy, c.yaw, 0.64, 0.2, 0.0, 0.64, mat::TIRE);
-        }
-        fill(&pm, &mut pcol, [1.0, 1.0, 1.0]);
+        simple_car(&mut pm, &mut pcol, c, false);
     }
     out.push(MeshData { name: "parked_cars".into(), verts: pm.a, polygon_offset: 0.0, casts_shadow: true, colors: pcol });
 
@@ -591,6 +567,50 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "trees".into(), verts: tm.a, polygon_offset: 0.0, casts_shadow: true, colors: tcol });
     out
+}
+
+/// A low-detail car (body, glazed cabin, painted roof, wheels; lamps when `lights`) for parked cars and
+/// traffic. Paint colours in typical proportions: white, silver, black, grey most often.
+pub fn simple_car(pm: &mut Mb, pcol: &mut Vec<f32>, c: &crate::model::ParkedCar, lights: bool) {
+    let fill = |m: &Mb, col: &mut Vec<f32>, c: [f32; 3]| {
+        while col.len() / 3 < m.a.len() / FLOATS_PER_VERTEX {
+            col.extend_from_slice(&c);
+        }
+    };
+    fill(pm, pcol, [1.0, 1.0, 1.0]);
+    let (l, w) = c.size();
+    let pal: [[f32; 3]; 10] = [[0.92, 0.92, 0.92], [0.92, 0.92, 0.92], [0.62, 0.64, 0.66], [0.62, 0.64, 0.66], [0.06, 0.06, 0.07], [0.06, 0.06, 0.07], [0.32, 0.34, 0.36], [0.55, 0.06, 0.06], [0.08, 0.16, 0.36], [0.55, 0.50, 0.42]];
+    let paint = pal[(c.seed >> 20) as usize % pal.len()];
+    let paint = [paint[0] / 0.85, paint[1] / 0.85, paint[2] / 0.82];
+    let tall = (c.seed % 1000) > 700; // SUV/estate: taller cabin
+    let (zb, zt) = (0.32, if tall { 1.0 } else { 0.85 });
+    pm.obox(c.x, c.y, c.yaw, l, w, zb, zt, mat::MARKING);
+    fill(pm, pcol, paint);
+    let (cl, ch) = (l * if tall { 0.62 } else { 0.5 }, if tall { 1.75 } else { 1.42 });
+    let back = -l * 0.06;
+    let (cx, cy) = (c.x + c.yaw.cos() * back, c.y + c.yaw.sin() * back);
+    pm.obox(cx, cy, c.yaw, cl, w * 0.9, zt, ch - 0.06, mat::GLASS);
+    fill(pm, pcol, [1.0, 1.0, 1.0]);
+    pm.obox(cx, cy, c.yaw, cl * 0.96, w * 0.86, ch - 0.06, ch, mat::MARKING);
+    fill(pm, pcol, paint);
+    let at = |a: f64, b: f64| (c.x + c.yaw.cos() * a - c.yaw.sin() * b, c.y + c.yaw.sin() * a + c.yaw.cos() * b);
+    for (a, b) in [(0.33, 0.5), (0.33, -0.5), (-0.33, 0.5), (-0.33, -0.5)] {
+        let (wx, wy) = at(a * l, b * (w - 0.18));
+        pm.obox(wx, wy, c.yaw, 0.64, 0.2, 0.0, 0.64, mat::TIRE);
+    }
+    fill(pm, pcol, [1.0, 1.0, 1.0]);
+    if lights {
+        for b in [0.32, -0.32] {
+            let (hx, hy) = at(l / 2.0, b * w);
+            pm.obox(hx, hy, c.yaw, 0.06, 0.32, 0.62, 0.76, mat::HEADLIGHT);
+        }
+        fill(pm, pcol, [1.0, 1.0, 1.0]);
+        for b in [0.36, -0.36] {
+            let (tx, ty) = at(-l / 2.0, b * w);
+            pm.obox(tx, ty, c.yaw, 0.06, 0.26, 0.66, 0.8, mat::TAILLIGHT);
+        }
+        fill(pm, pcol, [1.0, 1.0, 1.0]);
+    }
 }
 
 fn hash01(seed: u64, k: u64) -> f64 {

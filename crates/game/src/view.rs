@@ -170,7 +170,7 @@ pub fn to_bevy_meshes(m: &MeshData) -> Vec<(u32, Mesh)> {
     out
 }
 
-fn mat_handle(t: &mut Tiles, materials: &mut Assets<StandardMaterial>, id: u32) -> Handle<StandardMaterial> {
+pub fn mat_handle(t: &mut Tiles, materials: &mut Assets<StandardMaterial>, id: u32) -> Handle<StandardMaterial> {
     t.materials.entry(id).or_insert_with(|| materials.add(material_for(id))).clone()
 }
 

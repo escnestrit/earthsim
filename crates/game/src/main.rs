@@ -13,6 +13,7 @@ mod lights;
 mod map;
 mod settings;
 mod terrain;
+mod traffic;
 mod view;
 
 use bevy::prelude::*;
@@ -103,7 +104,7 @@ fn main() {
         .insert_resource(bevy::render::error_handler::RenderErrorHandler(settings::on_render_error));
     }
     app.insert_resource(Sim(std::sync::Mutex::new(game)))
-        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin, settings::SettingsPlugin, lights::LightsPlugin, terrain::TerrainPlugin))
+        .add_plugins((view::ViewPlugin, input::InputPlugin, hud::HudPlugin, car_visual::CarVisualPlugin, map::MapPlugin, settings::SettingsPlugin, lights::LightsPlugin, terrain::TerrainPlugin, traffic::TrafficPlugin))
         .add_systems(Update, step_sim.after(input::read_input).before(view::sync_world));
     app.run();
 }

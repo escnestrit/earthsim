@@ -186,6 +186,12 @@ fn apply(
     world::areas::MAX_TREES_PER_TILE.store(trees, std::sync::atomic::Ordering::Relaxed);
     let mut g = sim.g();
     g.set_view_radius(radius);
+    // cars driving around: EARTHSIM_TRAFFIC=<count> overrides the quality default (0 = none)
+    g.traffic.target = std::env::var("EARTHSIM_TRAFFIC").ok().and_then(|v| v.parse().ok()).unwrap_or(match q {
+        Quality::Low => 12,
+        Quality::Medium => 30,
+        Quality::High => 50,
+    });
     g.renderer_info = format!("GRAPHICS {}{} (F5)", gfx.quality.name(), if gfx.safe { ", SAFE MODE" } else { "" });
     world::log::log(&format!("graphics quality {}", gfx.quality.name()));
     gfx.applied = Some(gfx.quality);

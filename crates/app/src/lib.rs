@@ -9,5 +9,6 @@ pub mod m4;
 pub mod render;
 pub mod shaders;
 pub mod softmesh;
+pub mod traffic;
 #[cfg(any(windows, earthsim_check_win))]
 pub mod win;
