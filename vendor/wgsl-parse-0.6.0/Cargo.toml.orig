@@ -1,0 +1,49 @@
+[package]
+name = "wgsl-parse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Parse a wgsl source file to a syntax tree"
+repository.workspace = true
+license.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+annotate-snippets = "0.12.4"
+derive_more = {
+  version = "2.0.1",
+  features = [
+    "as_ref",
+    "constructor",
+    "deref",
+    "deref_mut",
+    "from",
+    "is_variant",
+    "try_unwrap",
+    "unwrap",
+  ]
+}
+itertools = "0.15.0"
+lalrpop-util = "0.23.1"
+lexical = { version = "7.0.5", features = ["format", "power-of-two"] }
+logos = "0.16.0"
+serde = { version = "1.0.215", features = ["derive", "rc"], optional = true }
+thiserror = "2.0.12"
+tokrepr = { workspace = true, optional = true }
+wgsl-types = { workspace = true }
+
+[features]
+default = []
+# experimental
+generics = ["wesl"]
+# See crates/wesl/Cargo.toml
+naga-ext = ["wgsl-types/naga-ext"]
+serde = ["dep:serde", "wgsl-types/serde"]
+tokrepr = ["dep:tokrepr", "wgsl-types/tokrepr"]
+wesl = []
+
+[lints]
+workspace = true

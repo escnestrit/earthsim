@@ -1,0 +1,10 @@
+pub static PACKAGE: StaticPackage = StaticPackage {
+    crate_name: "b",
+    root: &MODULE,
+    dependencies: &[&super::r#c2::PACKAGE, &super::r#d2::PACKAGE],
+};
+pub static MODULE: StaticPackageModule = StaticPackageModule {
+    name: "b",
+    source: "public import c::{ VERSION as C_VERSION };\npublic import d::{ VERSION as D_VERSION };\npublic const VERSION = 0x010;\n",
+    submodules: &[],
+};

@@ -1,0 +1,84 @@
+on: [push, pull_request]
+
+name: CI
+
+jobs:
+  fmt:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Cargo fmt
+        run: cargo fmt -- --check
+
+  docs:
+    name: Check documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate internal documentation
+        run: RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps --document-private-items
+      - name: Generate public documentation
+        run: RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps
+
+  test:
+    name: Check and test
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - 1.65.0
+        experimental: [false]
+        include:
+          - rust: nightly
+            features: --features=std
+            experimental: true
+          - rust: nightly
+            features: --no-default-features
+            experimental: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Cargo check
+        run: cargo check --all-targets ${{ matrix.features }}
+      - name: Run tests
+        run: cargo test ${{ matrix.features }}
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      matrix:
+        rust:
+          - stable
+        experimental: [false]
+        features:
+          - --features=std
+          - --no-default-features
+        include:
+          - rust: nightly
+            experimental: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings

@@ -1,0 +1,332 @@
+//! A hash set where the elements are held by weak pointers and compared by pointer.
+
+use crate::common::*;
+use crate::compat::*;
+use crate::inner;
+
+use super::by_ptr::ByPtr;
+use super::ptr_weak_key_hash_map as base;
+use super::traits::*;
+
+pub use super::PtrWeakHashSet;
+
+universal_hashless_members! {
+    PtrWeakHashSet
+    ("`PtrWeakHashSet`", a "set")
+    super::PtrWeakKeyHashMap::with_capacity_and_hasher
+    {T}
+}
+
+impl<T: WeakElement, S: BuildHasher> PtrWeakHashSet<T, S>
+where
+    T::Strong: Deref,
+{
+    universal_key_independent_members! {"elements"}
+
+    /// Returns true if the set contains the specified key.
+    ///
+    /// expected *O*(1) time; worst-case *O*(*p*) time
+    pub fn contains(&self, key: &T::Strong) -> bool {
+        self.0.contains_key(key)
+    }
+
+    /// Unconditionally inserts `key` into this set,
+    /// replacing any previous entry with the same key.
+    ///
+    /// Returns true if the key was absent before, and false otherwise.
+    ///
+    /// (Note that unlike `HashSet::insert`, this insert method always replaces
+    /// the key.)
+    ///
+    /// expected *O*(1) time; worst-case *O*(*p*) time
+    pub fn insert(&mut self, key: T::Strong) -> bool {
+        self.0.insert(key, ()).is_some()
+    }
+
+    /// Removes the element matching the given key, if it exists.
+    ///
+    /// Returns true if an entry was removed.
+    ///
+    /// expected *O*(1) time; worst-case *O*(*p*) time
+    pub fn remove(&mut self, key: &T::Strong) -> bool {
+        self.0.remove(key).is_some()
+    }
+
+    /// Removes all elements not satisfying the given predicate.
+    ///
+    /// Also removes any expired elements.
+    ///
+    /// *O*(*n*) time
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(T::Strong) -> bool,
+    {
+        self.0.retain(|k, _| f(k));
+    }
+
+    /// Is self a subset of other?
+    ///
+    /// expected *O*(*n*) time; worst-case *O*(*nq*) time (where *n* is
+    /// `self.capacity()` and *q* is the length of the probe sequences
+    /// in `other`)
+    pub fn is_subset<S1>(&self, other: &PtrWeakHashSet<T, S1>) -> bool
+    where
+        S1: BuildHasher,
+    {
+        self.0.domain_is_subset(&other.0)
+    }
+
+    /// Helper: return true if 'self' contains 'item'.
+    fn contains_strong(&self, item: &T::Strong) -> bool {
+        self.contains(item)
+    }
+
+    set_op_methods! {PtrWeakHashSet}
+    set_relationships! {PtrWeakHashSet}
+}
+
+/// An iterator over the elements of a set.
+pub struct Iter<'a, T: 'a>(base::Keys<'a, ByPtr<T>, ()>);
+
+impl<'a, T: WeakElement> Iterator for Iter<'a, T> {
+    type Item = T::Strong;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+/// An iterator over the elements of a set.
+pub struct IntoIter<T>(base::IntoIter<ByPtr<T>, ()>);
+
+impl<T: WeakElement> Iterator for IntoIter<T> {
+    type Item = T::Strong;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|pair| pair.0)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+/// A draining iterator over the elements of a set.
+///
+/// Once this iterator is dropped, all elements are removed from the set,
+/// whether the iterator itself was drained or not.
+pub struct Drain<'a, T: 'a>(base::Drain<'a, ByPtr<T>, ()>);
+
+impl<'a, T: WeakElement> Iterator for Drain<'a, T> {
+    type Item = T::Strong;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|pair| pair.0)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl<T: WeakElement, S> PtrWeakHashSet<T, S> {
+    /// Gets an iterator over the elements of this set.
+    ///
+    /// *O*(1) time
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter(self.0.keys())
+    }
+
+    /// Gets a draining iterator, which removes all the elements but retains the storage.
+    ///
+    /// *O*(1) time (and *O*(*n*) time to dispose of the result)
+    pub fn drain(&mut self) -> Drain<'_, T> {
+        Drain(self.0.drain())
+    }
+
+    /// Gets an iterator that removes and returns elements matching a given predicate.
+    ///
+    /// Expired elements are also removed.
+    ///
+    /// If this iterator is dropped before it is completed, then no further
+    /// elements are removed.
+    /// (This is in contrast to the behavior of [`drain`](Self::drain)).
+    ///
+    /// *O*(1) time
+    pub fn extract_if<'a, F>(&'a mut self, mut f: F) -> ExtractIf<'a, T, F>
+    where
+        F: FnMut(T::Strong) -> bool + 'a,
+    {
+        ExtractIf {
+            inner: self.0 .0 .0.extract_if(move |e| {
+                if let Some(k) = e.0.val.view() {
+                    f(k)
+                } else {
+                    true
+                }
+            }),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// An iterator that removes members that match a given predicate.
+#[must_use = "iterators do nothing unless consumed; \
+    consider using `retain` instead"]
+pub struct ExtractIf<'a, T: WeakElement, F> {
+    /// The underlying iterator.
+    inner: inner::ExtractIf<'a, inner::WeakK<ByPtr<T>>, inner::Owned<()>>,
+    /// A marker so that F does not appear unused.
+    _phantom: PhantomData<F>,
+}
+
+impl<'a, T: WeakElement, F> Iterator for ExtractIf<'a, T, F> {
+    type Item = T::Strong;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, ())| k)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+set_op_types! {PtrWeakHashSet where {T: WeakElement, T::Strong: Deref}}
+set_operators! {PtrWeakHashSet where {T: WeakElement, T::Strong: Deref}}
+
+impl<T, S, S1> PartialEq<PtrWeakHashSet<T, S1>> for PtrWeakHashSet<T, S>
+where
+    T: WeakElement,
+    T::Strong: Deref,
+    S: BuildHasher,
+    S1: BuildHasher,
+{
+    fn eq(&self, other: &PtrWeakHashSet<T, S1>) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T: WeakElement, S: BuildHasher> Eq for PtrWeakHashSet<T, S> where T::Strong: Deref {}
+
+impl<T, S> FromIterator<T::Strong> for PtrWeakHashSet<T, S>
+where
+    T: WeakElement,
+    T::Strong: Deref,
+    S: BuildHasher + Default,
+{
+    fn from_iter<I: IntoIterator<Item = T::Strong>>(iter: I) -> Self {
+        PtrWeakHashSet(base::PtrWeakKeyHashMap::<T, (), S>::from_iter(
+            iter.into_iter().map(|k| (k, ())),
+        ))
+    }
+}
+
+#[cfg(any(test, feature = "std", feature = "ahash"))]
+impl<T, const N: usize> From<[T::Strong; N]> for PtrWeakHashSet<T, RandomState>
+where
+    T: WeakElement,
+    T::Strong: Deref,
+{
+    /// Converts an array of elements into a set.
+    ///
+    /// If any entries in the array are equal,
+    /// all but one of the corresponding values will be dropped.
+    fn from(value: [T::Strong; N]) -> Self {
+        Self::from_iter(value)
+    }
+}
+
+impl<T, S> Extend<T::Strong> for PtrWeakHashSet<T, S>
+where
+    T: WeakElement,
+    T::Strong: Deref,
+    S: BuildHasher,
+{
+    fn extend<I: IntoIterator<Item = T::Strong>>(&mut self, iter: I) {
+        self.0.extend(iter.into_iter().map(|k| (k, ())));
+    }
+}
+
+impl<T, S> Debug for PtrWeakHashSet<T, S>
+where
+    T: WeakElement,
+    T::Strong: Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+impl<T: WeakElement, S> IntoIterator for PtrWeakHashSet<T, S> {
+    type Item = T::Strong;
+    type IntoIter = IntoIter<T>;
+
+    /// Creates an owning iterator from `self`.
+    ///
+    /// *O*(1) time (and *O*(*n*) time to dispose of the result)
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter(self.0.into_iter())
+    }
+}
+
+impl<'a, T: WeakElement, S> IntoIterator for &'a PtrWeakHashSet<T, S>
+where
+    T::Strong: Deref,
+{
+    type Item = T::Strong;
+    type IntoIter = Iter<'a, T>;
+
+    /// Creates a borrowing iterator from `self`.
+    ///
+    /// *O*(1) time
+    fn into_iter(self) -> Self::IntoIter {
+        Iter(self.0.keys())
+    }
+}
+
+/// Helper: Given two references to sets, return them in ascending order of
+/// len().
+fn sort_by_size<'a, T: WeakElement, S: BuildHasher>(
+    a: &'a PtrWeakHashSet<T, S>,
+    b: &'a PtrWeakHashSet<T, S>,
+) -> (&'a PtrWeakHashSet<T, S>, &'a PtrWeakHashSet<T, S>)
+where
+    T::Strong: Deref,
+{
+    if a.len() < b.len() {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    // TODO 050: remove.
+    #![cfg_attr(feature = "ahash", allow(deprecated))]
+
+    use super::PtrWeakHashSet;
+    use crate::{
+        compat::{
+            format,
+            rc::{Rc, Weak},
+        },
+        tests::util::VecDebugAsSet,
+    };
+
+    crate::tests::common::empty_constructor_tests! {PtrWeakHashSet<Weak<u8>>}
+    crate::tests::set_operations::set_operation_tests! {PtrWeakHashSet, 1}
+
+    #[test]
+    fn test_debug() {
+        let s = [Rc::new(1), Rc::new(2)];
+        let set: PtrWeakHashSet<Weak<u32>> = s.clone().into();
+        let v: VecDebugAsSet<_> = set.iter().collect();
+        assert_eq!(format!("{v:?}"), format!("{set:?}"));
+    }
+}

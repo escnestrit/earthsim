@@ -1,0 +1,28 @@
+[package]
+name = "wgsl-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Type-checking of WGSL types and builtins"
+repository.workspace = true
+license.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+half = { version = "2.4.1", features = ["num-traits"] }
+itertools = "0.15.0"
+num-traits = "0.2.19"
+serde = { version = "1.0.215", features = ["derive", "rc"], optional = true }
+tokrepr = { workspace = true, optional = true }
+
+[features]
+# See crates/wesl/Cargo.toml
+naga-ext = []
+serde = ["dep:serde"]
+tokrepr = ["dep:tokrepr"]
+
+[lints]
+workspace = true

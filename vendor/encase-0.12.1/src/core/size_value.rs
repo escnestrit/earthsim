@@ -1,0 +1,81 @@
+use core::num::NonZeroU64;
+
+/// Helper type for size calculations
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SizeValue(pub NonZeroU64);
+
+impl SizeValue {
+    #[inline]
+    pub const fn new(val: u64) -> Self {
+        match val {
+            0 => panic!("Size can't be 0!"),
+            val => {
+                // SAFETY: This is safe since we checked if the value is 0
+                Self(unsafe { NonZeroU64::new_unchecked(val) })
+            }
+        }
+    }
+
+    #[inline]
+    pub const fn from(val: NonZeroU64) -> Self {
+        Self(val)
+    }
+
+    #[inline]
+    pub const fn get(&self) -> u64 {
+        self.0.get()
+    }
+
+    #[inline]
+    pub const fn mul(self, rhs: u64) -> Self {
+        match self.get().checked_mul(rhs) {
+            None => panic!("Overflow occurred while multiplying size values!"),
+            Some(val) => Self::new(val),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::SizeValue;
+    use alloc::format;
+
+    #[test]
+    fn new() {
+        assert_eq!(4, SizeValue::new(4).get());
+    }
+
+    #[test]
+    #[should_panic]
+    fn new_panic() {
+        SizeValue::new(0);
+    }
+
+    #[test]
+    fn mul() {
+        assert_eq!(SizeValue::new(64), SizeValue::new(8).mul(8));
+    }
+
+    #[test]
+    #[should_panic]
+    fn mul_panic() {
+        SizeValue::new(8).mul(u64::MAX);
+    }
+
+    #[test]
+    #[should_panic]
+    fn mul_zero_panic() {
+        SizeValue::new(8).mul(0);
+    }
+
+    #[test]
+    fn derived_traits() {
+        let size = SizeValue::new(8);
+        #[allow(clippy::clone_on_copy)]
+        let size_clone = size.clone();
+
+        assert!(size == size_clone);
+
+        assert_eq!(format!("{size:?}"), "SizeValue(8)");
+    }
+}

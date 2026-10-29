@@ -1,0 +1,73 @@
+[package]
+name = "wesl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The WESL compiler"
+repository.workspace = true
+license.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+annotate-snippets = "0.12.4"
+anstream = "1.0.0"
+derive_more = {
+  version = "2.0.1",
+  features = [
+    "as_ref",
+    "deref",
+    "deref_mut",
+    "display",
+    "from",
+    "unwrap",
+  ]
+}
+glob = "0.3"
+half = { version = "2.4.1", features = ["num-traits"] }
+itertools = "0.15.0"
+num-traits = "0.2.19"
+proc-macro2 = { version = "1.0.93", optional = true }  # dep for feature 'package'
+quote = { version = "1.0.38", optional = true }  # dep for feature 'package'
+serde = { version = "1.0", features = ["derive"] }  # dep for feature 'package'
+thiserror = "2.0.11"
+toml = "1.1"
+wesl-core = { workspace = true }
+wesl-macros = { workspace = true, features = ["query"] }
+wesl-quote = { workspace = true, optional = true }  # dep for feature 'eval'
+wgsl-parse = { workspace = true, features = ["wesl"] }
+wgsl-types = { workspace = true }
+
+[dev-dependencies]
+insta = { version = "1.48.0", features = ["yaml"] }
+tokio = { version = "1.53.1", features = ["macros", "rt"] }  # for testing async compile functions
+
+[features]
+eval = ["dep:wesl-quote"]
+generics = ["wgsl-parse/generics"]
+# Allow naga/wgpu extensions.
+# They are not well-documented, the best I could find is this:
+# * https://github.com/gfx-rs/wgpu/issues/4410
+# * https://github.com/gfx-rs/wgpu/blob/trunk/docs/api-specs/ray_tracing.md
+# * https://github.com/gfx-rs/wgpu/blob/b93b55920a978ef9f013efe8d75cb10e69488629/naga/src/valid/mod.rs#L83
+# * test files in https://github.com/gfx-rs/wgpu/tree/trunk/naga/tests
+#
+# List of supported naga extensions:
+# * 64-bit types: i64/u64/f64 and li, lu, lf literal suffixes
+# * extra builtins: `subgroup_id`, `num_subgroups`, `primitive_index`, `barycentric`, `barycentric_no_perspective`, `view_index`
+# * extra texel formats: see `TexelFormat`
+# * `immediate` address space
+# * `atomic` access mode for textures
+# * ray queries API (built-in functions, constants and struct types)
+# * `atomic<f32>`
+# * `texture_1d_array`, `texture_storage_1d_array`, `texture_multisampled_2d_array`
+# * `subgroupBallot()` with no argument (defaults to `true`)
+# * `textureSampleGrad()` with 1D texture
+naga-ext = ["wgsl-parse/naga-ext", "wgsl-types/naga-ext"]
+package = ["dep:proc-macro2", "dep:quote"]
+serde = ["wgsl-parse/serde"]
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "wesl-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Macros for the WESL compiler"
+repository.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+itertools = "0.15.0"
+proc-macro2 = "1.0.86"
+quote = "1.0.37"
+syn = "3.0.2"
+
+[features]
+query = []
+
+[lints]
+workspace = true

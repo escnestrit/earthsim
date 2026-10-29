@@ -1,0 +1,1113 @@
+use std::str::FromStr;
+use crate::{error::ParseError, lexer::Token};
+use crate::span::{Spanned, Span};
+use crate::syntax::*;
+use crate::parser_support::*;
+
+grammar;
+
+extern {
+    type Location = usize;
+    type Error = (usize, ParseError, usize);
+    enum Token {
+        // HACK: parsing entrypoints.
+        // see: https://github.com/lalrpop/lalrpop/issues/65#issuecomment-516769995
+        EntryPointTryTemplateList => Token::EntryPointTryTemplateList,
+        EntryPointTranslationUnit => Token::EntryPointTranslationUnit,
+        EntryPointGlobalDecl => Token::EntryPointGlobalDecl,
+        EntryPointLiteral => Token::EntryPointLiteral,
+        EntryPointGlobalDirective => Token::EntryPointGlobalDirective,
+        EntryPointExpression => Token::EntryPointExpression,
+        EntryPointStatement => Token::EntryPointStatement,
+
+        // wesl extension
+        EntryPointImportStatement => Token::EntryPointImportStatement,
+
+        // syntactic tokens
+        // https://www.w3.org/TR/WGSL/#syntactic-tokens
+        "&" => Token::SymAnd,
+        "&&" => Token::SymAndAnd,
+        "->" => Token::SymArrow,
+        "@" => Token::SymAttr,
+        "/" => Token::SymForwardSlash,
+        "!" => Token::SymBang,
+        "[" => Token::SymBracketLeft,
+        "]" => Token::SymBracketRight,
+        "{" => Token::SymBraceLeft,
+        "}" => Token::SymBraceRight,
+        ":" => Token::SymColon,
+        "," => Token::SymComma,
+        "=" => Token::SymEqual,
+        "==" => Token::SymEqualEqual,
+        "!=" => Token::SymNotEqual,
+        ">" => Token::SymGreaterThan,
+        ">=" => Token::SymGreaterThanEqual,
+        ">>" => Token::SymShiftRight,
+        "<" => Token::SymLessThan,
+        "<=" => Token::SymLessThanEqual,
+        "<<" => Token::SymShiftLeft,
+        "%" => Token::SymModulo,
+        "-" => Token::SymMinus,
+        "--" => Token::SymMinusMinus,
+        "." => Token::SymPeriod,
+        "+" => Token::SymPlus,
+        "++" => Token::SymPlusPlus,
+        "|" => Token::SymOr,
+        "||" => Token::SymOrOr,
+        "(" => Token::SymParenLeft,
+        ")" => Token::SymParenRight,
+        ";" => Token::SymSemicolon,
+        "*" => Token::SymStar,
+        "~" => Token::SymTilde,
+        "_" => Token::SymUnderscore,
+        "^" => Token::SymXor,
+        "+=" => Token::SymPlusEqual,
+        "-=" => Token::SymMinusEqual,
+        "*=" => Token::SymTimesEqual,
+        "/=" => Token::SymDivisionEqual,
+        "%=" => Token::SymModuloEqual,
+        "&=" => Token::SymAndEqual,
+        "|=" => Token::SymOrEqual,
+        "^=" => Token::SymXorEqual,
+        ">>=" => Token::SymShiftRightAssign,
+        "<<=" => Token::SymShiftLeftAssign,
+
+        // keywords
+        // https://www.w3.org/TR/WGSL/#keyword-summary
+        "alias" => Token::KwAlias,
+        "break" => Token::KwBreak,
+        "case" => Token::KwCase,
+        "const" => Token::KwConst,
+        "const_assert" => Token::KwConstAssert,
+        "continue" => Token::KwContinue,
+        "continuing" => Token::KwContinuing,
+        "default" => Token::KwDefault,
+        "diagnostic" => Token::KwDiagnostic,
+        "discard" => Token::KwDiscard,
+        "else" => Token::KwElse,
+        "enable" => Token::KwEnable,
+        "false" => Token::KwFalse,
+        "fn" => Token::KwFn,
+        "for" => Token::KwFor,
+        "if" => Token::KwIf,
+        "let" => Token::KwLet,
+        "loop" => Token::KwLoop,
+        "override" => Token::KwOverride,
+        "requires" => Token::KwRequires,
+        "return" => Token::KwReturn,
+        "struct" => Token::KwStruct,
+        "switch" => Token::KwSwitch,
+        "true" => Token::KwTrue,
+        "var" => Token::KwVar,
+        "while" => Token::KwWhile,
+
+        IdentPatternToken => Token::Ident(<String>),
+        ReservedWord => Token::ReservedWord(<String>),
+        TokAbstractInt => Token::AbstractInt(<i64>),
+        TokAbstractFloat => Token::AbstractFloat(<f64>),
+        TokI32 => Token::I32(<i32>),
+        TokU32 => Token::U32(<u32>),
+        TokF32 => Token::F32(<f32>),
+        TokF16 => Token::F16(<f32>),
+        TokTemplateArgsStart => Token::TemplateArgsStart,
+        TokTemplateArgsEnd => Token::TemplateArgsEnd,
+
+        // extension: wesl-visibility
+        // https://github.com/webgpu-tools/wesl-spec/blob/main/visibility.md
+        // date: 2026-09-06, hash: af8236a875332f672a0fc5bcc4f9a034aec4f1ee
+        "public" => Token::KwPublic,
+        "private" => Token::KwPrivate,
+
+        // extension: wesl-imports
+        // https://github.com/webgpu-tools/wesl-spec/blob/imports-update/Imports.md
+        // date: 2025-01-18, hash: 2db8e7f681087db6bdcd4a254963deb5c0159775
+        "::" => Token::SymColonColon,
+        "self" => Token::KwSelf,
+        "super" => Token::KwSuper,
+        "package" => Token::KwPackage,
+        "as" => Token::KwAs,
+        "import" => Token::KwImport,
+
+        // naga extensions
+        TokI64 => Token::I64(<i64>),
+        TokU64 => Token::U64(<u64>),
+        TokF64 => Token::F64(<f64>),
+    }
+}
+
+// these are context-dependent names. e.g. the @const attribute.
+Keyword: String = {
+    "alias" => <>.to_string(),
+    "break" => <>.to_string(),
+    "case" => <>.to_string(),
+    "const" => <>.to_string(),
+    "const_assert" => <>.to_string(),
+    "continue" => <>.to_string(),
+    "continuing" => <>.to_string(),
+    "default" => <>.to_string(),
+    "diagnostic" => <>.to_string(),
+    "discard" => <>.to_string(),
+    "else" => <>.to_string(),
+    "enable" => <>.to_string(),
+    "false" => <>.to_string(),
+    "fn" => <>.to_string(),
+    "for" => <>.to_string(),
+    "if" => <>.to_string(),
+    "let" => <>.to_string(),
+    "loop" => <>.to_string(),
+    "override" => <>.to_string(),
+    "requires" => <>.to_string(),
+    "return" => <>.to_string(),
+    "struct" => <>.to_string(),
+    "switch" => <>.to_string(),
+    "true" => <>.to_string(),
+    "var" => <>.to_string(),
+    "while" => <>.to_string(),
+
+    // wesl import extension
+    "self" => <>.to_string(),
+    "super" => <>.to_string(),
+    "as" => <>.to_string(),
+    "import" => <>.to_string(),
+};
+
+// HACK: parsing entrypoints.
+// see: https://github.com/lalrpop/lalrpop/issues/65#issuecomment-516769995
+pub EntryPoint: ParseEntryPoint = {
+    EntryPointTryTemplateList <TryTemplateList> => ParseEntryPoint::TryTemplateList(<>),
+    EntryPointTranslationUnit <TranslationUnit> => ParseEntryPoint::TranslationUnit(<>),
+    EntryPointGlobalDecl <GlobalDecl> => ParseEntryPoint::GlobalDecl(<>),
+    EntryPointLiteral <Literal> => ParseEntryPoint::Literal(<>),
+    EntryPointGlobalDirective <GlobalDirective> => ParseEntryPoint::GlobalDirective(<>),
+    EntryPointExpression <Expression> => ParseEntryPoint::Expression(<>),
+    EntryPointStatement <Statement> => ParseEntryPoint::Statement(<>),
+
+    // wesl extension
+    EntryPointImportStatement <ImportStatement> => ParseEntryPoint::ImportStatement(<>),
+};
+
+// custom entrypoint called by the lexer when it sees [Token::Ident, Token::SymLessThan].
+// if this parse succeeds, the next token emitted by the lexer will be TokTemplateList.
+TryTemplateList: Span = {
+    <l:@L> TokTemplateArgsStart TemplateArgCommaList TokTemplateArgsEnd <r:@R> => Span::new(l..r),
+};
+
+// =====================
+// === Begin grammar ===
+// =====================
+
+// 2. WGSL MODULE
+// https://www.w3.org/TR/WGSL/#wgsl-module
+
+TranslationUnit: TranslationUnit = {
+    <imports: ImportStatement*> <global_directives: GlobalDirective*> <global_declarations: GlobalDeclarationNode*> => TranslationUnit {
+        imports, global_directives, global_declarations
+    },
+};
+
+GlobalDecl: GlobalDeclaration = {
+    ";"                             => GlobalDeclaration::Void,
+    <GlobalVariableOrValueDecl> ";" => GlobalDeclaration::Declaration(<>),
+    <TypeAliasDecl> ";"             => GlobalDeclaration::TypeAlias(<>),
+    <StructDecl>                    => GlobalDeclaration::Struct(<>),
+    <FunctionDecl>                  => GlobalDeclaration::Function(<>),
+    <ConstAssertStatement> ";"      => GlobalDeclaration::ConstAssert(<>),
+    // wesl extension
+    <CompoundGlobalDecl> => GlobalDeclaration::Compound(<>),
+};
+
+GlobalDeclarationNode: GlobalDeclarationNode = Spanned<GlobalDecl>;
+
+DiagnosticRuleName: String = {
+    DiagnosticNameToken,
+    <first: DiagnosticNameToken> "." <last: DiagnosticNameToken> => format!("{first}.{last}"),
+};
+
+// 3. TEXTUAL STRUCTURE
+// https://www.w3.org/TR/WGSL/textual-structure#
+
+// XXX: non-conformant
+// https://www.w3.org/TR/WGSL/#syntax-literal
+Literal: LiteralExpression = {
+    TokAbstractInt   => LiteralExpression::AbstractInt(<>),
+    TokAbstractFloat => LiteralExpression::AbstractFloat(<>),
+    TokI32           => LiteralExpression::I32(<>),
+    TokU32           => LiteralExpression::U32(<>),
+    TokF32           => LiteralExpression::F32(<>),
+    TokF16           => LiteralExpression::F16(<>),
+    "true"           => LiteralExpression::Bool(true),
+    "false"          => LiteralExpression::Bool(false),
+
+    // naga extensions
+    <_l: @L> <_tok: TokI64> <_r: @R> =>? {
+        #[cfg(feature = "naga-ext")]
+        {
+            Ok(LiteralExpression::I64(_tok))
+        }
+        #[cfg(not(feature = "naga-ext"))]
+        {
+            Err(lalrpop_util::ParseError::User{ error: (_l, ParseError::UnsupportedExtension("naga-ext"), _r) })
+        }
+    },
+    <_l: @L> <_tok: TokU64> <_r: @R> =>? {
+        #[cfg(feature = "naga-ext")]
+        {
+            Ok(LiteralExpression::U64(_tok))
+        }
+        #[cfg(not(feature = "naga-ext"))]
+        {
+            Err(lalrpop_util::ParseError::User{ error: (_l, ParseError::UnsupportedExtension("naga-ext"), _r) })
+        }
+    },
+    <_l: @L> <_tok: TokF64> <_r: @R> =>? {
+        #[cfg(feature = "naga-ext")]
+        {
+            Ok(LiteralExpression::F64(_tok))
+        }
+        #[cfg(not(feature = "naga-ext"))]
+        {
+            Err(lalrpop_util::ParseError::User{ error: (_l, ParseError::UnsupportedExtension("naga-ext"), _r) })
+        }
+    },
+};
+
+Name: String = {
+    IdentPatternToken => <>,
+    <l: @L> <word: ReservedWord> <r: @R> =>? {
+        Err(lalrpop_util::ParseError::User{ error: (l, ParseError::ReservedWord(word), r) })
+    },
+}
+
+Ident: Ident = {
+    Name => Ident::new(<>),
+};
+
+MemberIdent: Ident = Ident;
+
+DiagnosticNameToken: String = Name;
+
+SeverityControlName: DiagnosticSeverity = {
+    <l: @L> <name: Name> <r: @R> =>? {
+        DiagnosticSeverity::from_str(&name)
+            .map_err(|()| lalrpop_util::ParseError::User{ error: (l, ParseError::DiagnosticSeverity, r) })
+    },
+};
+
+EnableExtensionName: String = Name;
+
+SoftwareExtensionName: String = Name;
+
+InterpolateSamplingName: String = Name;
+
+SwizzleName: String = Name;
+
+TemplateList: Vec<TemplateArg> = {
+    TokTemplateArgsStart <TemplateArgCommaList> TokTemplateArgsEnd,
+};
+
+TemplateArgCommaList: Vec<TemplateArg> = {
+    Comma1<TemplateArgExpression>,
+};
+
+TemplateArgExpression: TemplateArg = {
+    ExpressionNode => TemplateArg { expression: <> },
+    WithSpan<"private"> => {
+        let (_, span) = <>;
+        TemplateArg {
+            expression: Spanned::new(Expression::TypeOrIdentifier(Ident::new("private".to_string()).into()), span)
+        }
+    }
+};
+
+// 4. DIRECTIVES
+// https://www.w3.org/TR/WGSL/#directives
+
+GlobalDirective: GlobalDirective = {
+    DiagnosticDirective => GlobalDirective::Diagnostic(<>),
+    EnableDirective     => GlobalDirective::Enable(<>),
+    RequiresDirective   => GlobalDirective::Requires(<>),
+};
+
+DiagnosticDirective: DiagnosticDirective = {
+    <Attributes> "diagnostic" <DiagnosticControl> ";" => {
+        let (attributes, (severity, rule_name)) = (<>);
+        DiagnosticDirective { attributes, severity, rule_name }
+    },
+};
+
+EnableDirective: EnableDirective = {
+    <attributes: Attributes> "enable" <extensions: EnableExtensionList> ";" => EnableDirective {
+        attributes, extensions
+    },
+};
+
+EnableExtensionList: Vec<String> = {
+    Comma1<EnableExtensionName>,
+};
+
+RequiresDirective: RequiresDirective = {
+    <attributes: Attributes> "requires" <extensions: SoftwareExtensionList> ";" => RequiresDirective {
+        attributes, extensions
+    },
+};
+
+SoftwareExtensionList: Vec<String> = {
+    Comma1<SoftwareExtensionName>,
+};
+
+// 6. TYPES
+// https://www.w3.org/TR/WGSL/#types
+
+StructDecl: Struct = {
+    <attributes: Attributes> <visibility: Visibility?> "struct" <ident: Ident> <members: StructBodyDecl> => Struct {
+        attributes, visibility: visibility.unwrap_or_default(), ident, members
+    },
+};
+
+StructBodyDecl: Vec<StructMemberNode> = {
+    "{" <Comma1<Spanned<StructMember>>> "}",
+};
+
+StructMember: StructMember = {
+    <attributes: Attributes> <ident: MemberIdent> ":" <ty: TypeSpecifier> => StructMember {
+        attributes, ident, ty
+    },
+};
+
+TypeAliasDecl: TypeAlias = {
+    <attributes: Attributes> <visibility: Visibility?> "alias" <ident: Ident> "=" <ty: TypeSpecifier> => TypeAlias {
+        attributes, visibility: visibility.unwrap_or_default(), ident, ty
+    },
+};
+
+TypeSpecifier: TypeExpression = TemplateElaboratedIdent;
+
+TemplateElaboratedIdent: TypeExpression = {
+    <path: ModulePath?> <ident: Ident> <template_args: TemplateList?> => TypeExpression {
+        path, ident, template_args
+    },
+};
+
+// 7. VARIABLE AND VALUE DECLARATIONS
+// https://www.w3.org/TR/WGSL/#var-and-value
+
+VariableOrValueStatement: Declaration = {
+    <l: @L> <decl: Declaration> <r: @R> =>? {
+        validate_declaration(&decl, DeclarationScope::Function)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })?;
+        Ok(decl)
+    },
+};
+
+GlobalVariableOrValueDecl: Declaration = {
+    <l: @L> <decl: Declaration> <r: @R> =>? {
+        validate_declaration(&decl, DeclarationScope::Module)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })?;
+        Ok(decl)
+    },
+};
+
+Declaration: Declaration = {
+    <attributes: Attributes> <visibility: Visibility?> <kind: DeclarationKind> <ident: Ident> <ty: (":" <TypeSpecifier>)?> <initializer: ("=" <ExpressionNode>)?> => {
+        Declaration {
+            attributes,
+            visibility: visibility.unwrap_or_default(),
+            kind,
+            ident,
+            ty,
+            initializer,
+        }
+    }
+};
+
+DeclarationKind: DeclarationKind = {
+    "const" => DeclarationKind::Const,
+    "override" => DeclarationKind::Override,
+    "let" => DeclarationKind::Let,
+    <l: @L> "var" <template_args: TemplateList?> <r: @R> =>? {
+        let address_space = parse_var_template(template_args)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })?;
+        Ok(DeclarationKind::Var(address_space))
+    },
+};
+
+// 8. EXPRESSIONS
+// https://www.w3.org/TR/WGSL/#expressions
+
+BinaryExpression<Op, E1, E2>: Expression = {
+    <left: Spanned<E1>> <operator: Op> <right: Spanned<E2>> => Expression::Binary(BinaryExpression {
+        operator, left, right
+    }),
+};
+
+SelfAssociativeBinaryExpression<Op, E>: Expression = {
+    <l: @L> <left: Spanned<E>> <right_chain: (Op Spanned<E>)+> <r: @R> =>? {
+        fold_same_operator(left, right_chain)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })
+    },
+};
+
+
+IdentExpression: Expression = TemplateElaboratedIdent => Expression::TypeOrIdentifier(<>);
+
+LiteralExpression: Expression = Literal => Expression::Literal(<>);
+
+CallExpression: Expression = {
+    CallPhrase => Expression::FunctionCall(<>),
+};
+
+CallPhrase: FunctionCall = {
+    <ty: TemplateElaboratedIdent> <arguments: ArgumentExpressionList> => {
+        FunctionCallExpression {
+            ty, arguments
+        }
+    },
+};
+
+ArgumentExpressionList: Vec<ExpressionNode> = {
+    "(" <ExpressionCommaList?> ")" => <>.unwrap_or_default(),
+};
+
+ExpressionCommaList: Vec<ExpressionNode> = {
+    Comma1<ExpressionNode>,
+};
+
+ParenExpression<E>: Expression = {
+    "(" <Spanned<E>> ")" => Expression::Parenthesized(ParenthesizedExpression {
+        expression: <>
+    }),
+};
+
+NamedComponentExpression<E>: Expression = {
+    <base: Spanned<E>> "." <component: MemberIdent> => Expression::NamedComponent(NamedComponentExpression {
+            base, component
+    }),
+};
+
+IndexingExpression<E>: Expression = {
+    <base: Spanned<E>> "[" <index: Spanned<Expression>> "]" => Expression::Indexing(IndexingExpression {
+            base, index
+    }),
+};
+
+UnaryExpression<E>: Expression = {
+    <operator: UnaryOperator> <operand: Spanned<E>> => Expression::Unary(UnaryExpression {
+        operator, operand
+    }),
+};
+
+UnaryOperator: UnaryOperator = {
+    "-" => UnaryOperator::Negation,
+    "!" => UnaryOperator::LogicalNegation,
+    "~" => UnaryOperator::BitwiseComplement,
+    "*" => UnaryOperator::Indirection,
+    "&" => UnaryOperator::AddressOf,
+};
+
+CoreLhsExpression: Expression = {
+};
+
+// This production rule guarantees that it doesn't start with `(`.
+// We need it because this sentence is not LR: `@attribute(x) (y) = z`.
+// so we only allow attributes on statements that don't start with `(`.
+// see https://github.com/webgpu-tools/wesl-rs/issues/162
+LhsExpressionNoParen: Expression = {
+    #[precedence(level="0")]
+    TemplateElaboratedIdent => Expression::TypeOrIdentifier(<>),
+    CallExpression,
+    NamedComponentExpression<LhsExpressionNoParen>,
+    IndexingExpression<LhsExpressionNoParen>,
+
+    #[precedence(level="1")]
+    "*" <operand: Spanned<LhsExpression>> => Expression::Unary(UnaryExpression {
+        operator: UnaryOperator::Indirection, operand
+    }),
+    "&" <operand: Spanned<LhsExpression>> => Expression::Unary(UnaryExpression {
+        operator: UnaryOperator::AddressOf, operand
+    }),
+};
+
+// This production rule guarantees that it starts with `(`.
+LhsExpressionParen: Expression = {
+    ParenExpression<LhsExpressionNoParen>,
+    NamedComponentExpression<LhsExpressionParen>,
+    IndexingExpression<LhsExpressionParen>,
+};
+
+LhsExpression: Expression = {
+    LhsExpressionNoParen,
+    LhsExpressionParen,
+};
+
+MultiplicativeExpression<E1, E2>: Expression = BinaryExpression<MultiplicativeOperator, E1, E2>;
+
+MultiplicativeOperator: BinaryOperator = {
+    "*" => BinaryOperator::Multiplication,
+    "/" => BinaryOperator::Division,
+    "%" => BinaryOperator::Remainder,
+};
+
+AdditiveExpression<E1, E2>: Expression = {
+    BinaryExpression<AdditiveOperator, E1, E2>,
+    // this handles the special case `x = 5--7` which must be parsed as `x = 5 - (-7)`
+    <left: Spanned<E1>> <l: @L> "--" <right: Spanned<E2>> => {
+        let outer_span = Span::new((l+1)..right.span().range().end);
+        let right = Spanned::new(Expression::Unary(UnaryExpression {
+            operator: UnaryOperator::Negation, operand: right,
+        }), outer_span);
+        Expression::Binary(BinaryExpression {
+            operator: BinaryOperator::Subtraction, left, right
+        })
+    },
+};
+
+AdditiveOperator: BinaryOperator = {
+    "+" => BinaryOperator::Addition,
+    "-" => BinaryOperator::Subtraction,
+};
+
+ShiftExpression<E1, E2>: Expression = BinaryExpression<ShiftOperator, E1, E2>;
+
+ShiftOperator: BinaryOperator = {
+    "<<" => BinaryOperator::ShiftLeft,
+    ">>" => BinaryOperator::ShiftRight,
+}
+
+RelationalExpression<E1, E2>: Expression = BinaryExpression<RelationalOperator, E1, E2>;
+
+RelationalOperator: BinaryOperator = {
+    "<" => BinaryOperator::LessThan,
+    ">" => BinaryOperator::GreaterThan,
+    "<=" => BinaryOperator::LessThanEqual,
+    ">=" => BinaryOperator::GreaterThanEqual,
+    "==" => BinaryOperator::Equality,
+    "!=" => BinaryOperator::Inequality,
+};
+
+ShortCircuitExpression<E>: Expression = SelfAssociativeBinaryExpression<ShortCircuitOperator, E>;
+
+ShortCircuitOperator: BinaryOperator = {
+    "&&" => BinaryOperator::ShortCircuitAnd,
+    "||" => BinaryOperator::ShortCircuitOr,
+};
+
+BitwiseExpression<E>: Expression = SelfAssociativeBinaryExpression<BitwiseOperator, E>;
+
+BitwiseOperator: BinaryOperator = {
+    "|" => BinaryOperator::BitwiseOr,
+    "&" => BinaryOperator::BitwiseAnd,
+    "^" => BinaryOperator::BitwiseXor,
+};
+
+// ExpressionXYZ rules take one or two <Expression> template parameters because of how complex precedence and associativity is in WGSL.
+// See explanatory GitHub comment:
+// https://github.com/lalrpop/lalrpop/issues/951#issuecomment-2476984972
+//
+// Below, we hand-roll lalrpop's #[precedence] and #[assoc] markers, because the following constraints are otherwise not representable:
+// * BinaryAnd, BinaryOr and BinaryXor associate with Unary and themselves, but not with each other.
+// * Same with ShortCircuitAnd and ShortCircuitOr: they associate with Relational and themselves, but not with each other.
+// * Relational associates with both Shift and Additive (so they are in the same group), but Additive associates with Multiplicative whereas Shift associates with Unary.
+
+ExpressionPrimary: Expression = {
+    IdentExpression,
+    LiteralExpression,
+    CallExpression,
+    ParenExpression<Expression>,
+    NamedComponentExpression<ExpressionPrimary>,
+    IndexingExpression<ExpressionPrimary>,
+}
+
+ExpressionUnary: Expression = {
+    UnaryExpression<ExpressionUnary>,
+    ExpressionPrimary,
+}
+
+ExpressionMultiplicative: Expression = {
+    MultiplicativeExpression<ExpressionMultiplicative, ExpressionUnary>,
+    ExpressionUnary,
+}
+
+ExpressionAdditive: Expression = {
+    AdditiveExpression<ExpressionAdditive, ExpressionMultiplicative>,
+    ExpressionMultiplicative,
+}
+
+ExpressionShift: Expression = {
+    ShiftExpression<ExpressionUnary, ExpressionUnary>,
+    ExpressionAdditive,
+}
+
+ExpressionRelational: Expression = {
+    RelationalExpression<ExpressionRelational, ExpressionShift>,
+    ExpressionShift,
+}
+
+Expression: Expression = {
+    ShortCircuitExpression<ExpressionRelational>,
+    BitwiseExpression<ExpressionUnary>,
+    ExpressionRelational,
+};
+
+// operand nodes for the flat operator chains above.
+ExpressionUnaryNode: ExpressionNode = Spanned<ExpressionUnary>;
+RelationalNode: ExpressionNode = Spanned<ExpressionRelational>;
+
+
+ExpressionNode: ExpressionNode = Spanned<Expression>;
+
+// 9. STATEMENTS
+// https://www.w3.org/TR/WGSL/#statements
+
+
+CompoundStatement: CompoundStatement = {
+    <attributes: Attributes> "{" <statements: StatementNode*> "}" => CompoundStatement {
+        attributes, statements
+    },
+};
+
+AssignmentStatement: AssignmentStatement = {
+    <attributes: Attributes> <lhs: Spanned<LhsExpressionNoParen>> "=" <rhs: ExpressionNode> => AssignmentStatement {
+        attributes, operator: AssignmentOperator::Equal, lhs, rhs
+    },
+    <attributes: Attributes> <lhs: Spanned<LhsExpressionNoParen>> <operator: CompoundAssignmentOperator> <rhs: ExpressionNode> => AssignmentStatement {
+        attributes, operator, lhs, rhs
+    },
+    <lhs: Spanned<LhsExpressionParen>> "=" <rhs: ExpressionNode> => AssignmentStatement {
+        attributes: vec![], operator: AssignmentOperator::Equal, lhs, rhs
+    },
+    <lhs: Spanned<LhsExpressionParen>> <operator: CompoundAssignmentOperator> <rhs: ExpressionNode> => AssignmentStatement {
+        attributes: vec![], operator, lhs, rhs
+    },
+    <attributes: Attributes> <l: @L> "_" <r: @R> "=" <rhs: ExpressionNode> => {
+        let lhs = Expression::TypeOrIdentifier(Ident::new("_".to_string()).into());
+        let span = (l..r).into();
+        let lhs = Spanned::new(lhs, span);
+        AssignmentStatement { attributes, operator: AssignmentOperator::Equal, lhs, rhs }
+    },
+};
+
+CompoundAssignmentOperator: AssignmentOperator = {
+    "+=" => AssignmentOperator::PlusEqual,
+    "-=" => AssignmentOperator::MinusEqual,
+    "*=" => AssignmentOperator::TimesEqual,
+    "/=" => AssignmentOperator::DivisionEqual,
+    "%=" => AssignmentOperator::ModuloEqual,
+    "&=" => AssignmentOperator::AndEqual,
+    "|=" => AssignmentOperator::OrEqual,
+    "^=" => AssignmentOperator::XorEqual,
+    ">>=" => AssignmentOperator::ShiftRightAssign,
+    "<<=" => AssignmentOperator::ShiftLeftAssign,
+};
+
+IncrementStatement: IncrementStatement = {
+    <attributes: Attributes> <expression: Spanned<LhsExpressionNoParen>> "++" => IncrementStatement {
+        attributes, expression
+    },
+    <expression: Spanned<LhsExpressionParen>> "++" => IncrementStatement {
+        attributes: vec![], expression
+    },
+};
+
+DecrementStatement: DecrementStatement = {
+    <attributes: Attributes> <expression: Spanned<LhsExpressionNoParen>> "--" => DecrementStatement {
+        attributes, expression
+    },
+    <expression: Spanned<LhsExpressionParen>> "--" => DecrementStatement {
+        attributes: vec![], expression
+    },
+};
+
+IfStatement: IfStatement = {
+    <attributes: Attributes> <if_clause: IfClause> <else_if_clauses: ElseIfClause*> <else_clause: ElseClause?> => IfStatement {
+        attributes, if_clause, else_if_clauses, else_clause
+    },
+};
+
+IfClause: IfClause = "if" <expression: ExpressionNode> <body: CompoundStatement> => IfClause {
+    expression, body
+};
+
+ElseIfClause: ElseIfClause = {
+    "else" "if" <expression: ExpressionNode> <body: CompoundStatement> => ElseIfClause {
+        attributes: vec![], expression, body
+    },
+} ;
+
+ElseClause: ElseClause = {
+    "else" <body: CompoundStatement> => ElseClause {
+        attributes: vec![], body
+    },
+}
+
+SwitchStatement: SwitchStatement = {
+    <attributes: Attributes> "switch" <expression: ExpressionNode> <body: SwitchBody> => {
+        let (body_attributes, clauses) = body;
+        SwitchStatement {
+            attributes, expression, body_attributes, clauses
+        }
+    },
+};
+
+SwitchBody: (Vec<AttributeNode>, Vec<SwitchClause>) = {
+    <Attributes> "{" <SwitchClause+> "}",
+};
+
+SwitchClause: SwitchClause = {
+    CaseClause,
+    DefaultAloneClause,
+};
+
+CaseClause: SwitchClause = {
+    <attributes: Attributes> "case" <case_selectors: CaseSelectors> ":"? <body: CompoundStatement> => SwitchClause {
+        attributes, case_selectors, body
+    },
+};
+
+DefaultAloneClause: SwitchClause = {
+    <attributes: Attributes> "default" ":"? <body: CompoundStatement> => SwitchClause {
+        attributes, case_selectors: vec![CaseSelector::Default], body
+    },
+};
+
+CaseSelectors: Vec<CaseSelector> = {
+    Comma1<CaseSelector>,
+};
+
+CaseSelector: CaseSelector = {
+    "default" => CaseSelector::Default,
+    ExpressionNode => CaseSelector::Expression(<>),
+};
+
+LoopStatement: LoopStatement = {
+    <attributes: Attributes> "loop" <body_attributes: Attributes> "{" <statements: StatementNode*> <continuing: ContinuingStatement?> "}" => {
+        let body = CompoundStatement { attributes: body_attributes, statements };
+        LoopStatement {
+            attributes, body, continuing
+        }
+    },
+};
+
+ForStatement: ForStatement = {
+     <attributes: Attributes> "for" "(" <header: ForHeader> ")" <body: CompoundStatement> => {
+        let (initializer, condition, update) = header;
+        ForStatement {
+            attributes, initializer, condition, update, body
+        }
+    },
+};
+
+ForHeader: (Option<StatementNode>, Option<ExpressionNode>, Option<StatementNode>) = {
+    <ForInit?> ";" <ExpressionNode?> ";" <ForUpdate?>,
+};
+
+ForInit: StatementNode = {
+    <statement: WithSpan<VariableOrValueStatement>>  => {
+        let (statement, span) = statement;
+        Spanned::new(Statement::Declaration(statement), span)
+    },
+    <statement: WithSpan<VariableUpdatingStatement>> => {
+        let (statement, span) = statement;
+        Spanned::new(statement, span)
+    },
+    <statement: WithSpan<FuncCallStatement>> => {
+        let (statement, span) = statement;
+        Spanned::new(Statement::FunctionCall(statement), span)
+    },
+};
+
+ForUpdate: StatementNode = {
+    <statement: WithSpan<VariableUpdatingStatement>> => {
+        let (statement, span) = statement;
+        Spanned::new(statement, span)
+    },
+    <statement: WithSpan<FuncCallStatement>> => {
+        let (statement, span) = statement;
+        Spanned::new(Statement::FunctionCall(statement), span)
+    },
+};
+
+WhileStatement: WhileStatement = {
+    <attributes: Attributes> "while" <condition: ExpressionNode> <body: CompoundStatement> => WhileStatement {
+        attributes, condition, body
+    },
+};
+
+BreakStatement: BreakStatement = {
+    <attributes: Attributes> "break" => BreakStatement {
+        attributes
+    },
+};
+
+BreakIfStatement: BreakIfStatement = {
+    <attributes: Attributes> "break" "if" <expression: ExpressionNode> ";" => BreakIfStatement {
+        attributes, expression
+    },
+};
+
+ContinueStatement: ContinueStatement = {
+    <attributes: Attributes> "continue" => ContinueStatement {
+        attributes
+    },
+};
+
+ContinuingStatement: ContinuingStatement = {
+    <Attributes> "continuing" <ContinuingCompoundStatement> => {
+        let (attributes, mut statement) = (<>);
+        statement.attributes = attributes;
+        statement
+    },
+};
+
+ContinuingCompoundStatement: ContinuingStatement = {
+    <attributes: Attributes> "{" <statements: StatementNode*> <break_if: BreakIfStatement?> "}" => {
+        let body = CompoundStatement { attributes, statements };
+        ContinuingStatement { attributes: Vec::new(), body, break_if }
+    },
+};
+
+ReturnStatement: ReturnStatement = {
+    <attributes: Attributes> "return" <expression: ExpressionNode?> => ReturnStatement {
+        attributes, expression
+    },
+};
+
+DiscardStatement: DiscardStatement = {
+    <attributes: Attributes> "discard" => DiscardStatement {
+        attributes
+    },
+};
+
+FuncCallStatement: FunctionCallStatement = {
+    <attributes: Attributes> <call: CallPhrase> => FunctionCallStatement {
+        attributes, call
+    },
+}
+
+ConstAssertStatement: ConstAssertStatement = {
+    <attributes: Attributes> "const_assert" <expression: ExpressionNode> => ConstAssertStatement {
+        attributes, expression
+    },
+};
+
+Statement: Statement = {
+    ";" => Statement::Void,
+    <ReturnStatement> ";" => Statement::Return(<>),
+    <IfStatement> => Statement::If(<>),
+    <SwitchStatement> => Statement::Switch(<>),
+    <LoopStatement> => Statement::Loop(<>),
+    <ForStatement> => Statement::For(<>),
+    <WhileStatement> => Statement::While(<>),
+    <FuncCallStatement> ";" => Statement::FunctionCall(<>),
+    <VariableOrValueStatement> ";" => Statement::Declaration(<>),
+    <BreakStatement> ";" => Statement::Break(<>),
+    <ContinueStatement> ";" => Statement::Continue(<>),
+    <DiscardStatement> ";" => Statement::Discard(<>),
+    <VariableUpdatingStatement> ";" => <>,
+    <CompoundStatement> => Statement::Compound(<>),
+    <ConstAssertStatement> ";" => Statement::ConstAssert(<>),
+};
+
+StatementNode: StatementNode = Spanned<Statement>;
+
+VariableUpdatingStatement: Statement = {
+    AssignmentStatement => Statement::Assignment(<>),
+    IncrementStatement => Statement::Increment(<>),
+    DecrementStatement => Statement::Decrement(<>),
+};
+
+// 10. FUNCTIONS
+// https://www.w3.org/TR/WGSL/#functions
+
+FunctionDecl: Function = {
+    <attributes: Attributes> <visibility: Visibility?> <header: FunctionHeader> <body: CompoundStatement> => {
+        let (ident, parameters, return_attributes, return_type) = header;
+        Function { attributes, visibility: visibility.unwrap_or_default(), ident, parameters, return_attributes, return_type, body }
+    },
+};
+
+FunctionHeader: (Ident, Vec<FormalParameter>, Vec<AttributeNode>, Option<TypeExpression>) = {
+    "fn" <ident: Ident> "(" <parameters: ParamList?> ")" <ret: ("->" <Attributes> <TemplateElaboratedIdent>)?> => {
+        let (return_attributes, return_type) = ret.map(|(return_attributes, return_type)| {
+            (return_attributes, Some(return_type))
+        }).unwrap_or_default();
+        let parameters = parameters.unwrap_or_default();
+        (ident, parameters, return_attributes, return_type)
+    },
+};
+
+ParamList: Vec<FormalParameter> = {
+    Comma1<Param>,
+};
+
+Param: FormalParameter = {
+    <attributes: Attributes> <ident: Ident> ":" <ty: TypeSpecifier> => FormalParameter {
+        attributes, ident, ty
+    },
+};
+
+CompoundGlobalDecl: CompoundGlobalDeclaration = {
+    <attributes: Attributes> "{" <body: GlobalDeclarationNode*> "}" => CompoundGlobalDeclaration {
+        attributes, body
+    },
+};
+
+// 11. ATTRIBUTES
+// https://www.w3.org/TR/WGSL/#attributes
+
+Attribute: Attribute = {
+    <l: @L> "@" <name: IdentPatternToken> <arguments: ArgumentExpressionList?> <r: @R> =>? {
+        parse_attribute(name, arguments)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })
+    },
+    <l: @L> "@" <name: Keyword> <arguments: ArgumentExpressionList?> <r: @R> =>? {
+        parse_attribute(name, arguments)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })
+    },
+    <l: @L> "@" <name: ReservedWord> <arguments: ArgumentExpressionList?> <r: @R> =>? {
+        parse_attribute(name, arguments)
+            .map_err(|e| lalrpop_util::ParseError::User{ error: (l, e, r) })
+    },
+};
+
+Attributes: Vec<AttributeNode> = Spanned<Attribute>*;
+
+DiagnosticControl: (DiagnosticSeverity, String) = {
+    "(" <SeverityControlName> "," <DiagnosticRuleName> ","? ")",
+};
+
+// EXTENSION: WESL-VISIBILITY
+// https://github.com/webgpu-tools/wesl-spec/blob/main/Visibility.md
+// date: 2026-09-06, hash: af8236a875332f672a0fc5bcc4f9a034aec4f1ee
+
+Visibility: Visibility = {
+    "public" => Visibility::Public,
+    "private" => Visibility::Private,
+};
+
+// EXTENSION: WESL-IMPORTS
+// https://github.com/webgpu-tools/wesl-spec/blob/imports-update/Imports.md
+// date: 2025-01-18, hash: 2db8e7f681087db6bdcd4a254963deb5c0159775
+
+PathIdent: String = {
+    IdentPatternToken => <>,
+    ReservedWord => <>,
+    // All keywords and reserved words are allowed module names, except import-related ones (import, as, self, super)
+    // The "else" keyword is the only exception, because of a LR(1) conflict: if () {} else::call_fn();
+    // see wesl-spec#127 and wesl-spec#76
+    "alias" => <>.to_string(),
+    "break" => <>.to_string(),
+    "case" => <>.to_string(),
+    "const" => <>.to_string(),
+    "const_assert" => <>.to_string(),
+    "continue" => <>.to_string(),
+    "continuing" => <>.to_string(),
+    "default" => <>.to_string(),
+    "diagnostic" => <>.to_string(),
+    "discard" => <>.to_string(),
+    "enable" => <>.to_string(),
+    "false" => <>.to_string(),
+    "fn" => <>.to_string(),
+    "for" => <>.to_string(),
+    "if" => <>.to_string(),
+    "let" => <>.to_string(),
+    "loop" => <>.to_string(),
+    "override" => <>.to_string(),
+    "requires" => <>.to_string(),
+    "return" => <>.to_string(),
+    "struct" => <>.to_string(),
+    "switch" => <>.to_string(),
+    "true" => <>.to_string(),
+    "var" => <>.to_string(),
+    "while" => <>.to_string(),
+};
+
+ImportStatement: ImportStatement = {
+    <attributes: Attributes> <visibility: Visibility?> "import" <path: ModulePath?> <content: ImportContent> ";" => {
+        ImportStatement { attributes, visibility: visibility.unwrap_or_default(), path, content }
+    },
+};
+
+PathOrigin: PathOrigin = {
+    // NOTE: `self::` is no longer part of the spec.
+    "self" "::" => {
+        PathOrigin::Relative(0)
+    },
+    "super" "::" <parents: ("super" "::")*> => {
+        let n = 1 + parents.len();
+        PathOrigin::Relative(n)
+    },
+    "package" "::" => {
+        PathOrigin::Absolute
+    },
+    <name: PathIdent> "::" => {
+        PathOrigin::Package(name)
+    },
+};
+
+#[inline]
+ModulePath: ModulePath = {
+    <origin: PathOrigin> <components: (<PathIdent> "::")*> => ModulePath {
+        origin, components
+    },
+};
+
+Import: Import = {
+    <path: (<PathIdent> "::")*> <item: ImportItem> => Import {
+        path, content: ImportContent::Item(item)
+    },
+    <path: (<PathIdent> "::")+> <coll: ImportCollection> => Import {
+        path, content: ImportContent::Collection(coll)
+    },
+};
+
+ImportContent: ImportContent = {
+    ImportItem => ImportContent::Item(<>),
+    ImportCollection => ImportContent::Collection(<>),
+};
+
+ImportItem: ImportItem = {
+    <ident: PathIdent> <rename: ("as" <PathIdent>)?> => ImportItem {
+        ident: Ident::new(ident), rename: rename.map(Ident::new)
+    },
+};
+
+ImportCollection: Vec<Import> = {
+    "{" <Comma1<Import>> "}"
+};
+
+// ===================
+// === End grammar ===
+// ===================
+
+// ----------- below: macros -----------
+
+Comma<T>: Vec<T> = {
+    <mut v: (<T> ",")*> <e: T?> => match e {
+        Some(e) => {
+            v.push(e);
+            v
+        }
+        None => v,
+    }
+};
+
+Spanned<T>: Spanned<T> = <@L> <T> <@R> => {
+    let (l, t, r) = (<>);
+    let span = (l..r).into();
+    Spanned::new(t, span)
+};
+
+WithSpan<T>: (T, Span) = <@L> <T> <@R> => {
+    let (l, t, r) = (<>);
+    let span = (l..r).into();
+    (t, span)
+};
+
+Comma1<T> = Sep1<",", T>;
+
+Sep1<S, T>: Vec<T> = {
+    <mut v: (<T> S)*> <e: T> S? => {
+        v.push(e);
+        v
+    }
+};

@@ -1,0 +1,70 @@
+[package]
+name = "weak-table"
+version = "0.4.0"
+authors = ["Jesse A. Tov <jesse.tov@gmail.com>", "Nick Mathewson <nickm@torproject.org>"]
+description = "Weak hash maps and sets"
+repository = "https://github.com/tov/weak-table-rs"
+readme = "README.md"
+license = "MIT"
+keywords = ["containers", "Rc", "Arc", "weak", "no_std"]
+categories = ["data-structures"]
+edition = "2021"
+rust-version = "1.65.0"
+
+[workspace]
+members = ["bench-weak-table"]
+
+[lib]
+bench = false
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# Note that this feature is deprecated and will be removed.
+# TODO 050: remove.
+ahash = { version = "0.8.12", optional = true, default-features = false, features = ["runtime-rng"] }
+cfg-if = "1"
+hashbrown = { version = "0.16.1", default-features = false, features = ["inline-more"] }
+
+[dev-dependencies]
+# We use ahash for testing with nostd
+ahash = { version = "0.8.12", default-features = false, features = ["runtime-rng"] }
+quickcheck = { version = "1", default-features = false }
+
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+noop_method_call = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = "warn"
+cargo_common_metadata = "warn"
+cast_lossless = "warn"
+checked_conversions = "warn"
+cognitive_complexity = "warn"
+debug_assert_with_mut_call = "warn"
+exhaustive_enums = "warn"
+exhaustive_structs = "warn"
+expl_impl_clone_on_copy = "warn"
+fallible_impl_from = "warn"
+implicit_clone = "warn"
+large_stack_arrays = "warn"
+manual_ok_or = "warn"
+missing_docs_in_private_items = "warn"
+needless_borrow = "warn"
+needless_pass_by_value = "warn"
+option_option = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+rc_buffer = "warn"
+ref_option_ref = "warn"
+semicolon_if_nothing_returned = "warn"
+trait_duplication_in_bounds = "warn"
+unchecked_time_subtraction = "warn"
+unnecessary_wraps = "warn"
+unseparated_literal_suffix = "warn"
+unwrap_used = "warn"
+mod_module_files = "warn"

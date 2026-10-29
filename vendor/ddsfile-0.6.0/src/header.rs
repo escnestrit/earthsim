@@ -1,0 +1,397 @@
+use bitflags::bitflags;
+
+use crate::error::*;
+use crate::{D3DFormat, DataFormat, DxgiFormat, PixelFormat};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::fmt;
+use std::io::{Read, Write};
+
+/// The mandatory 124-byte DDS header present in every DDS file.
+///
+/// Contains surface dimensions, pixel format, mipmap count, and capability flags.
+/// Most users should use the getter methods on [`Dds`](crate::Dds) rather than
+/// reading these fields directly, as the getters handle both D3D and DXGI paths.
+///
+/// The fields are public for direct inspection and advanced use cases.
+#[derive(Clone)]
+pub struct Header {
+    // Size of this structure in bytes; set to 124
+    // technically not required, we could take this out
+    size: u32,
+
+    // Flags indicating which members contain valid data
+    flags: HeaderFlags,
+
+    /// Surface height in pixels.
+    pub height: u32,
+
+    /// Surface width in pixels.
+    pub width: u32,
+
+    /// Bytes per scanline for uncompressed textures. Mutually exclusive with
+    /// `linear_size`. `None` for compressed formats.
+    pub pitch: Option<u32>,
+
+    /// Total bytes of the top-level texture for compressed formats. Mutually
+    /// exclusive with `pitch`. `None` for uncompressed formats.
+    pub linear_size: Option<u32>,
+
+    /// Depth for volume textures. `None` for non-volume textures.
+    pub depth: Option<u32>,
+
+    /// Number of mipmap levels. `None` when no mipmaps are present.
+    pub mip_map_count: Option<u32>,
+
+    // Unused (reserved)
+    // technically not required, but we write back what we read
+    reserved1: [u32; 11],
+
+    /// The pixel format descriptor. For DXGI files, the FourCC is `"DX10"` and
+    /// the actual format is in [`Header10::dxgi_format`](crate::Header10::dxgi_format).
+    pub spf: PixelFormat,
+
+    /// Surface complexity flags.
+    pub caps: Caps,
+
+    /// Additional surface flags (cubemap faces, volume).
+    pub caps2: Caps2,
+
+    // Unused
+    // technically not required, but we write back what we read
+    caps3: u32,
+
+    // Unused
+    // technically not required, but we write back what we read
+    caps4: u32,
+
+    // Unused
+    // technically not required, but we write back what we read
+    reserved2: u32,
+}
+
+impl Default for Header {
+    fn default() -> Header {
+        Header {
+            size: 124, // must be 124
+            flags: HeaderFlags::CAPS
+                | HeaderFlags::HEIGHT
+                | HeaderFlags::WIDTH
+                | HeaderFlags::PIXELFORMAT,
+            height: 0,
+            width: 0,
+            pitch: None,
+            linear_size: None,
+            depth: None,
+            mip_map_count: None,
+            reserved1: [0; 11],
+            spf: Default::default(),
+            caps: Caps::TEXTURE,
+            caps2: Caps2::empty(),
+            caps3: 0,
+            caps4: 0,
+            reserved2: 0,
+        }
+    }
+}
+
+impl Header {
+    pub fn new_d3d(
+        height: u32,
+        width: u32,
+        depth: Option<u32>,
+        format: D3DFormat,
+        mipmap_levels: Option<u32>,
+        caps2: Option<Caps2>,
+    ) -> Result<Header, Error> {
+        let mut header: Header = Header {
+            height,
+            width,
+            mip_map_count: mipmap_levels,
+            depth,
+            spf: From::from(format),
+            ..Default::default()
+        };
+
+        if let Some(mml) = mipmap_levels {
+            if mml > 1 {
+                header.flags.insert(HeaderFlags::MIPMAPCOUNT);
+                header.caps.insert(Caps::COMPLEX | Caps::MIPMAP);
+            }
+        }
+        if let Some(d) = depth {
+            if d > 1 {
+                header.caps.insert(Caps::COMPLEX);
+                header.flags |= HeaderFlags::DEPTH;
+            }
+        }
+
+        // Let the caller handle caps2.
+        if let Some(c2) = caps2 {
+            header.caps2 = c2;
+        }
+
+        let compressed: bool = format.get_block_size().is_some();
+        let pitch: u32 = match format.get_pitch(width) {
+            Some(pitch) => pitch,
+            None => return Err(Error::UnsupportedFormat),
+        };
+
+        let depth = depth.unwrap_or(1);
+
+        if compressed {
+            header.flags |= HeaderFlags::LINEARSIZE;
+            let pitch_height = format.get_pitch_height();
+            let raw_height = height.div_ceil(pitch_height);
+            header.linear_size = Some(pitch * raw_height * depth);
+        } else {
+            header.flags |= HeaderFlags::PITCH;
+            header.pitch = Some(pitch);
+        }
+
+        Ok(header)
+    }
+
+    pub fn new_dxgi(
+        height: u32,
+        width: u32,
+        depth: Option<u32>,
+        format: DxgiFormat,
+        mipmap_levels: Option<u32>,
+        array_layers: Option<u32>,
+        caps2: Option<Caps2>,
+    ) -> Result<Header, Error> {
+        let mut header: Header = Header {
+            height,
+            width,
+            mip_map_count: mipmap_levels,
+            depth,
+            spf: From::from(format),
+            ..Default::default()
+        };
+
+        if let Some(mml) = mipmap_levels {
+            if mml > 1 {
+                header.flags.insert(HeaderFlags::MIPMAPCOUNT);
+                header.caps.insert(Caps::COMPLEX | Caps::MIPMAP);
+            }
+        }
+        if let Some(d) = depth {
+            if d > 1 {
+                header.caps.insert(Caps::COMPLEX);
+                header.flags |= HeaderFlags::DEPTH;
+            }
+        }
+        if let Some(al) = array_layers {
+            if al > 1 {
+                header.caps.insert(Caps::COMPLEX);
+            }
+        }
+
+        // Let the caller handle caps2.
+        if let Some(c2) = caps2 {
+            header.caps2 = c2;
+        }
+
+        let compressed: bool = format.get_block_size().is_some();
+        let pitch: u32 = match format.get_pitch(width) {
+            Some(pitch) => pitch,
+            None => return Err(Error::UnsupportedFormat),
+        };
+
+        let depth = depth.unwrap_or(1);
+
+        if compressed {
+            header.flags |= HeaderFlags::LINEARSIZE;
+            let pitch_height = format.get_pitch_height();
+            let raw_height = height.div_ceil(pitch_height);
+            header.linear_size = Some(pitch * raw_height * depth);
+        } else {
+            header.flags |= HeaderFlags::PITCH;
+            header.pitch = Some(pitch);
+        }
+
+        Ok(header)
+    }
+
+    pub fn read<R: Read>(mut r: R) -> Result<Header, Error> {
+        let size = r.read_u32::<LittleEndian>()?;
+        if size != 124 {
+            return Err(Error::InvalidField("Header struct size".to_owned()));
+        }
+        let flags = HeaderFlags::from_bits_truncate(r.read_u32::<LittleEndian>()?);
+        let height = r.read_u32::<LittleEndian>()?;
+        let width = r.read_u32::<LittleEndian>()?;
+        let pitch_or_linear_size = r.read_u32::<LittleEndian>()?;
+        let depth = r.read_u32::<LittleEndian>()?;
+        let mip_map_count = r.read_u32::<LittleEndian>()?;
+        let mut reserved1 = [0_u32; 11];
+        r.read_u32_into::<LittleEndian>(&mut reserved1)?;
+        let spf = PixelFormat::read(&mut r)?;
+        let caps = r.read_u32::<LittleEndian>()?;
+        let caps2 = r.read_u32::<LittleEndian>()?;
+        let caps3 = r.read_u32::<LittleEndian>()?;
+        let caps4 = r.read_u32::<LittleEndian>()?;
+        let reserved2 = r.read_u32::<LittleEndian>()?;
+        Ok(Header {
+            size,
+            flags,
+            height,
+            width,
+            pitch: if flags.contains(HeaderFlags::PITCH) {
+                Some(pitch_or_linear_size)
+            } else {
+                None
+            },
+            linear_size: if flags.contains(HeaderFlags::LINEARSIZE) {
+                Some(pitch_or_linear_size)
+            } else {
+                None
+            },
+            depth: if flags.contains(HeaderFlags::DEPTH) {
+                Some(depth)
+            } else {
+                None
+            },
+            mip_map_count: if flags.contains(HeaderFlags::MIPMAPCOUNT) {
+                Some(mip_map_count)
+            } else {
+                None
+            },
+            reserved1,
+            spf,
+            caps: Caps::from_bits_truncate(caps),
+            caps2: Caps2::from_bits_truncate(caps2),
+            caps3,
+            caps4,
+            reserved2,
+        })
+    }
+
+    pub fn write<W: Write>(&self, w: &mut W) -> Result<(), Error> {
+        w.write_u32::<LittleEndian>(self.size)?;
+        w.write_u32::<LittleEndian>(self.flags.bits())?;
+        w.write_u32::<LittleEndian>(self.height)?;
+        w.write_u32::<LittleEndian>(self.width)?;
+        if let Some(pitch) = self.pitch {
+            w.write_u32::<LittleEndian>(pitch)?;
+        } else if let Some(ls) = self.linear_size {
+            w.write_u32::<LittleEndian>(ls)?;
+        } else {
+            w.write_u32::<LittleEndian>(0)?;
+        }
+        w.write_u32::<LittleEndian>(self.depth.unwrap_or(0))?;
+        w.write_u32::<LittleEndian>(self.mip_map_count.unwrap_or(0))?;
+        for u in &self.reserved1 {
+            w.write_u32::<LittleEndian>(*u)?;
+        }
+        self.spf.write(w)?;
+        w.write_u32::<LittleEndian>(self.caps.bits())?;
+        w.write_u32::<LittleEndian>(self.caps2.bits())?;
+        w.write_u32::<LittleEndian>(self.caps3)?;
+        w.write_u32::<LittleEndian>(self.caps4)?;
+        w.write_u32::<LittleEndian>(self.reserved2)?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Header {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "  Header:")?;
+        writeln!(f, "    flags: {:?}", self.flags)?;
+        writeln!(
+            f,
+            "    height: {:?}, width: {:?}, depth: {:?}",
+            self.height, self.width, self.depth
+        )?;
+        writeln!(
+            f,
+            "    pitch: {:?}  linear_size: {:?}",
+            self.pitch, self.linear_size
+        )?;
+        writeln!(f, "    mipmap_count: {:?}", self.mip_map_count)?;
+        writeln!(f, "    caps: {:?}, caps2 {:?}", self.caps, self.caps2)?;
+        write!(f, "{:?}", self.spf)?;
+
+        Ok(())
+    }
+}
+
+bitflags! {
+    /// Flags indicating which header fields contain valid data.
+    ///
+    /// Set automatically when constructing headers. Most users don't need to
+    /// inspect or modify these directly.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct HeaderFlags: u32 {
+        /// Required in every DDS file
+        const CAPS = 0x1;
+        /// Required in every DDS file
+        const HEIGHT = 0x2;
+        /// Required in every DDS file
+        const WIDTH = 0x4;
+        /// Required when pitch is provided for an uncompressed texture
+        const PITCH = 0x8;
+        /// Required in every DDS file
+        const PIXELFORMAT = 0x1000;
+        /// Required in a mipmapped texture
+        const MIPMAPCOUNT = 0x20000;
+        /// Required when pitch is provided for a compressed texture
+        const LINEARSIZE = 0x80000;
+        /// Required in a depth texture
+        const DEPTH = 0x800000;
+    }
+}
+
+bitflags! {
+    /// Surface complexity flags.
+    ///
+    /// [`TEXTURE`](Self::TEXTURE) is always set. [`COMPLEX`](Self::COMPLEX) and
+    /// [`MIPMAP`](Self::MIPMAP) are set automatically when creating mipmapped,
+    /// cubemap, or volume textures.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Caps: u32 {
+        /// Optional; Must be used on any file that contains more than one surface
+        /// (a mipmap, a cubic environment, or a mipmapped volume texture)
+        const COMPLEX = 0x8;
+        /// Optional; should be used for a mipmap
+        const MIPMAP = 0x400000;
+        /// Required
+        const TEXTURE = 0x1000;
+    }
+}
+
+bitflags! {
+    /// Additional surface detail flags for cubemaps and volume textures.
+    ///
+    /// For cubemaps, set [`CUBEMAP`](Self::CUBEMAP) along with one or more face
+    /// flags, or use [`CUBEMAP_ALLFACES`](Self::CUBEMAP_ALLFACES) for all six.
+    /// For volume textures, set [`VOLUME`](Self::VOLUME). Pass these via the
+    /// `caps2` field in [`NewD3dParams`](crate::NewD3dParams) or
+    /// [`NewDxgiParams`](crate::NewDxgiParams).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Caps2: u32 {
+        /// Required for a cube map
+        const CUBEMAP = 0x200;
+        /// Required when these surfaces are stored in a cubemap
+        const CUBEMAP_POSITIVEX = 0x400;
+        /// Required when these surfaces are stored in a cubemap
+        const CUBEMAP_NEGATIVEX = 0x800;
+        /// Required when these surfaces are stored in a cubemap
+        const CUBEMAP_POSITIVEY = 0x1000;
+        /// Required when these surfaces are stored in a cubemap
+        const CUBEMAP_NEGATIVEY = 0x2000;
+        /// Required when these surfaces are stored in a cubemap
+        const CUBEMAP_POSITIVEZ = 0x4000;
+        /// Required when these surfaces are stored in a cubemap
+        const CUBEMAP_NEGATIVEZ = 0x8000;
+        /// Required for a volume texture
+        const VOLUME = 0x200000;
+        /// Identical to setting all cubemap direction flags
+        const CUBEMAP_ALLFACES = Self::CUBEMAP_POSITIVEX.bits()
+            | Self::CUBEMAP_NEGATIVEX.bits()
+            | Self::CUBEMAP_POSITIVEY.bits()
+            | Self::CUBEMAP_NEGATIVEY.bits()
+            | Self::CUBEMAP_POSITIVEZ.bits()
+            | Self::CUBEMAP_NEGATIVEZ.bits();
+    }
+}
