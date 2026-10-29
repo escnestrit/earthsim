@@ -127,6 +127,8 @@ pub struct RoofPlan {
     /// index of a long edge (the ridge runs parallel to it)
     pub long_edge: usize,
     pub roof_h: f64,
+    /// dome/onion: intermediate rings (scale about the apex, fraction of roof height) between eaves and apex
+    pub profile: Vec<(f64, f64)>,
 }
 
 /// Drop vertices where the outline barely turns (< ~8 degrees) or that are closer than 0.3 m.
@@ -162,7 +164,9 @@ pub fn roof_plan(tags: &Tags, ring: &[(f64, f64)], h: f64) -> Option<RoofPlan> {
     let shape = match tag(tags, "roof:shape") {
         Some("gabled") | Some("gambrel") | Some("saltbox") => "gabled",
         Some("hipped") | Some("half-hipped") | Some("mansard") => "hipped",
-        Some("pyramidal") => "pyramidal",
+        Some("pyramidal") | Some("cone") | Some("conical") => "pyramidal",
+        Some("dome") => "dome",
+        Some("onion") => "onion",
         Some(_) => return None,
         None => {
             let small_house = matches!(class, "house" | "detached" | "semidetached_house" | "bungalow" | "cabin" | "farm" | "hut" | "dacha");
@@ -170,6 +174,10 @@ pub fn roof_plan(tags: &Tags, ring: &[(f64, f64)], h: f64) -> Option<RoofPlan> {
         }
     };
     let c = simplify(ring);
+    // pointed and round roofs on any convex outline (towers, church domes, kiosks)
+    if matches!(shape, "pyramidal" | "dome" | "onion") && c.len() != 4 {
+        return apex_roof(tags, &c, h, shape);
+    }
     if c.len() != 4 {
         return None;
     }
@@ -213,7 +221,40 @@ pub fn roof_plan(tags: &Tags, ring: &[(f64, f64)], h: f64) -> Option<RoofPlan> {
             }
         }
     };
-    Some(RoofPlan { corners: c, top, long_edge: a, roof_h })
+    let profile = match shape {
+        "dome" | "onion" => return apex_roof(tags, &c, h, shape),
+        _ => Vec::new(),
+    };
+    Some(RoofPlan { corners: c, top, long_edge: a, roof_h, profile })
+}
+
+fn is_convex(c: &[(f64, f64)]) -> bool {
+    let n = c.len();
+    n >= 3 && (0..n).all(|i| {
+        let (a, b, d) = (c[i], c[(i + 1) % n], c[(i + 2) % n]);
+        (b.0 - a.0) * (d.1 - b.1) - (b.1 - a.1) * (d.0 - b.0) >= -1e-9
+    })
+}
+
+/// Roof rising to one apex over the centroid: pyramid/cone, or a dome/onion through profile rings.
+fn apex_roof(tags: &Tags, c: &[(f64, f64)], h: f64, shape: &str) -> Option<RoofPlan> {
+    if c.len() > 48 || !is_convex(c) {
+        return None;
+    }
+    let n = c.len() as f64;
+    let ctr = (c.iter().map(|p| p.0).sum::<f64>() / n, c.iter().map(|p| p.1).sum::<f64>() / n);
+    let rad = c.iter().map(|p| (p.0 - ctr.0).hypot(p.1 - ctr.1)).sum::<f64>() / n;
+    let tagged_h = tag(tags, "roof:height").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| *v > 0.0);
+    let (roof_h, profile) = match shape {
+        "dome" => (tagged_h.unwrap_or(rad), vec![(0.95, 0.3), (0.82, 0.58), (0.6, 0.8), (0.32, 0.95)]),
+        "onion" => (tagged_h.unwrap_or(rad * 2.2), vec![(1.12, 0.15), (1.15, 0.3), (0.95, 0.48), (0.55, 0.66), (0.22, 0.82), (0.06, 0.93)]),
+        _ => (tagged_h.unwrap_or(rad * 0.9), Vec::new()),
+    };
+    let roof_h = roof_h.min(h * 0.75);
+    if roof_h < 0.3 || h - roof_h < 0.0 {
+        return None;
+    }
+    Some(RoofPlan { corners: c.to_vec(), top: vec![ctr], long_edge: 0, roof_h, profile })
 }
 
 pub fn signed_area(r: &[(f64, f64)]) -> f64 {
@@ -313,7 +354,16 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
         ring.reverse();
     }
     let (h, origin) = estimate_height(tags);
-    let shaped = roof_plan(tags, &ring, h);
+    // parts that start above the ground (overhangs, upper storeys, arches): min_height or building:min_level
+    let base = tag(tags, "min_height")
+        .and_then(|v| v.split_whitespace().next().and_then(|x| x.replace(',', ".").parse::<f64>().ok()))
+        .or_else(|| tag(tags, "building:min_level").and_then(|v| v.trim().parse::<f64>().ok()).map(|l| l * LEVEL_H))
+        .filter(|b| b.is_finite() && *b > 0.0 && *b < h - 0.5)
+        .unwrap_or(0.0);
+    let shaped = roof_plan(tags, &ring, h - base).map(|mut r| {
+        r.roof_h = r.roof_h.min(h - base);
+        r
+    });
     if let Some(sh) = &shaped {
         ring = sh.corners.clone();
     }
@@ -322,7 +372,7 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
     let n = ring.len();
     let mut verts: Vec<f32> = Vec::with_capacity(n * 6 + 6);
     for p in &ring {
-        verts.extend_from_slice(&[p.0 as f32, p.1 as f32, 0.0]);
+        verts.extend_from_slice(&[p.0 as f32, p.1 as f32, base as f32]);
     }
     for p in &ring {
         verts.extend_from_slice(&[p.0 as f32, p.1 as f32, wall_h as f32]);
@@ -335,11 +385,34 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
     let ok_roof = tris.is_some();
     match &shaped {
         Some(sh) => {
+            let t = |k: usize| (n + k % n) as u32;
+            if !sh.profile.is_empty() {
+                // dome / onion: rings scaled about the apex, then the apex
+                let apex = sh.top[0];
+                let mut prev: Vec<u32> = (0..n).map(t).collect();
+                for &(sc, fz) in &sh.profile {
+                    let first = (verts.len() / 3) as u32;
+                    for p in &ring {
+                        let q = (apex.0 + (p.0 - apex.0) * sc, apex.1 + (p.1 - apex.1) * sc);
+                        verts.extend_from_slice(&[q.0 as f32, q.1 as f32, (wall_h + sh.roof_h * fz) as f32]);
+                    }
+                    let cur: Vec<u32> = (0..n as u32).map(|k| first + k).collect();
+                    for k in 0..n {
+                        let k1 = (k + 1) % n;
+                        indices.extend_from_slice(&[prev[k], prev[k1], cur[k1], prev[k], cur[k1], cur[k]]);
+                    }
+                    prev = cur;
+                }
+                let ai = (verts.len() / 3) as u32;
+                verts.extend_from_slice(&[apex.0 as f32, apex.1 as f32, h as f32]);
+                for k in 0..n {
+                    indices.extend_from_slice(&[prev[k], prev[(k + 1) % n], ai]);
+                }
+            } else {
             let base = (verts.len() / 3) as u32;
             for p in &sh.top {
                 verts.extend_from_slice(&[p.0 as f32, p.1 as f32, h as f32]);
             }
-            let t = |k: usize| (n + k % n) as u32;
             if sh.top.len() == 1 {
                 for k in 0..n {
                     indices.extend_from_slice(&[t(k), t(k + 1), base]);
@@ -353,12 +426,21 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
                 indices.extend_from_slice(&[t(a + 1), t(a + 2), r1]);
                 indices.extend_from_slice(&[t(a + 3), t(a), r3]);
             }
+            }
         }
         None => {
             if let Some(tr) = &tris {
                 for tri in tr {
                     indices.extend_from_slice(&[(n + tri[0]) as u32, (n + tri[1]) as u32, (n + tri[2]) as u32]);
                 }
+            }
+        }
+    }
+    // a part floating above the ground shows its underside
+    if base > 0.0 {
+        if let Some(tr) = &tris {
+            for tri in tr {
+                indices.extend_from_slice(&[tri[0] as u32, tri[2] as u32, tri[1] as u32]);
             }
         }
     }
@@ -537,5 +619,26 @@ mod tests {
         let fr = LocalFrame::new(53.9, 27.5, 0.0);
         assert!(build("x", &[(53.9, 27.5), (53.9, 27.5)], &[], &fr).is_none());
         assert!(build("x", &[(53.9, 27.5), (53.90001, 27.5), (53.9, 27.5)], &[], &fr).is_none());
+    }
+
+    #[test]
+    fn parts_start_at_min_height_and_domes_rise_round() {
+        let f = LocalFrame::new(53.9, 27.56, 0.0);
+        let m = 1.0 / 111_320.0;
+        let k = 1.0 / (111_320.0 * 53.9f64.to_radians().cos());
+        let sq: Vec<(f64, f64)> = vec![(53.9, 27.56), (53.9, 27.56 + 10.0 * k), (53.9 + 10.0 * m, 27.56 + 10.0 * k), (53.9 + 10.0 * m, 27.56), (53.9, 27.56)];
+        let b = build("p", &sq, &t(&[("building:part", "yes"), ("height", "30"), ("min_height", "12")]), &f).unwrap().building;
+        let zs: Vec<f32> = b.verts.chunks(3).map(|v| v[2]).collect();
+        assert!((zs.iter().cloned().fold(f32::MAX, f32::min) - 12.0).abs() < 1e-4, "starts at 12 m");
+        // octagonal tower with an onion dome: round profile above the walls, apex at the top
+        let oct: Vec<(f64, f64)> = (0..=8).map(|i| {
+            let a = (i % 8) as f64 / 8.0 * std::f64::consts::TAU;
+            (53.9 + 4.0 * a.sin() * m, 27.56 + 4.0 * a.cos() * k)
+        }).collect();
+        let b = build("d", &oct, &t(&[("building", "church"), ("height", "20"), ("roof:shape", "onion")]), &f).unwrap().building;
+        let zmax = b.verts.chunks(3).map(|v| v[2]).fold(f32::MIN, f32::max);
+        assert!((zmax - 20.0).abs() < 1e-3);
+        let above_eaves = b.verts.chunks(3).filter(|v| v[2] > 12.0 && v[2] < 19.9).count();
+        assert!(above_eaves >= 8 * 5, "onion profile rings: {above_eaves}");
     }
 }

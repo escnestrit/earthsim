@@ -133,7 +133,11 @@ fn step_sim(sim: ResMut<Sim>, time: Res<Time>, shot: Option<Res<Shot>>, mut warm
         // EARTHSIM_SHOT_CAM=side|front: fixed camera beside / in front of the car (for checking car models)
         // EARTHSIM_SHOT_CAM=interior: the driver's view
         let view = std::env::var("EARTHSIM_SHOT_CAM").ok();
-        if view.as_deref() == Some("interior") {
+        // EARTHSIM_SHOT_EYE="x,y,z,tx,ty,tz": free camera in local metres (checking generated buildings)
+        let free: Option<Vec<f32>> = std::env::var("EARTHSIM_SHOT_EYE").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+        if let Some(e) = free.filter(|e| e.len() == 6) {
+            g.cam_override = Some(([e[0], e[1], e[2]], [e[3], e[4], e[5]], 60.0));
+        } else if view.as_deref() == Some("interior") {
             g.cam_mode = 1;
         } else if let Some(view) = view {
             let (p, f) = (g.car.pos, g.car.forward());

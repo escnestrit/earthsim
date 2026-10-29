@@ -36,6 +36,16 @@ pub struct RawBuilding {
     pub tags: Vec<(String, String)>,
     /// (lat, lon), closed ring (first == last)
     pub ring: Vec<(f64, f64)>,
+    /// a `building:part` (drawn instead of the outline it lies in)
+    pub part: bool,
+}
+
+/// An OSM entrance node (`entrance=*`): a door of a building.
+#[derive(Clone, Debug)]
+pub struct RawEntrance {
+    pub lat: f64,
+    pub lon: f64,
+    pub kind: String,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +56,7 @@ pub struct TileRaw {
     pub trees: Vec<(f64, f64)>,
     /// ground cover clipped to the tile
     pub areas: Vec<crate::areas::RawArea>,
+    pub entrances: Vec<RawEntrance>,
     pub elements: usize,
 }
 
@@ -56,7 +67,7 @@ pub fn overpass_query(b: &Bounds) -> String {
         "[out:json][timeout:30];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb});\
          way[\"natural\"~\"^(water|wood|scrub|heath|grassland|wetland|sand|beach)$\"]({bb});\
          way[\"landuse\"~\"^(forest|grass|meadow|village_green|recreation_ground|cemetery|reservoir|basin|allotments|orchard)$\"]({bb});\
-         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb});way[\"amenity\"=\"parking\"]({bb}););out geom;",
+         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb});way[\"amenity\"=\"parking\"]({bb});way[\"building:part\"]({bb});node[\"entrance\"]({bb}););out geom;",
         hw.join("|")
     )
 }
@@ -121,7 +132,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
     }
     let mut pend: Vec<Pending> = Vec::new();
     let mut node_use: HashMap<i64, u32> = HashMap::new();
-    let mut out = TileRaw { tile, roads: Vec::new(), buildings: Vec::new(), trees: Vec::new(), areas: Vec::new(), elements: elements.len() };
+    let mut out = TileRaw { tile, roads: Vec::new(), buildings: Vec::new(), trees: Vec::new(), areas: Vec::new(), entrances: Vec::new(), elements: elements.len() };
 
     for el in elements {
         let ty = el.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -129,6 +140,13 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
         let tg = |k: &str| stage_a::tag(&tags, k);
         match ty {
             "node" => {
+                if let Some(kind) = tg("entrance") {
+                    if let (Some(la), Some(lo)) = (el.get("lat").and_then(|v| v.as_f64()), el.get("lon").and_then(|v| v.as_f64())) {
+                        if valid_latlon((la, lo)) && TileId::from_lat_lon(la, lo, tile.z) == tile {
+                            out.entrances.push(RawEntrance { lat: la, lon: lo, kind: kind.to_string() });
+                        }
+                    }
+                }
                 if tg("natural") == Some("tree") {
                     if let (Some(la), Some(lo)) = (el.get("lat").and_then(|v| v.as_f64()), el.get("lon").and_then(|v| v.as_f64())) {
                         if valid_latlon((la, lo)) && TileId::from_lat_lon(la, lo, tile.z) == tile {
@@ -164,7 +182,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                             out.areas.push(crate::areas::RawArea { kind, rings: vec![r] });
                         }
                     }
-                } else if tg("building").is_some() {
+                } else if tg("building").is_some_and(|b| b != "no") || tg("building:part").is_some_and(|b| b != "no") {
                     if pts.len() < 4 || pts.first() != pts.last() {
                         continue;
                     }
@@ -174,7 +192,8 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
                         continue;
                     }
                     let id = el.get("id").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
-                    out.buildings.push(RawBuilding { id, tags, ring: pts });
+                    let part = tg("building:part").is_some_and(|b| b != "no");
+                    out.buildings.push(RawBuilding { id, tags, ring: pts, part });
                 }
             }
             // Overture polygons with holes (see overture::to_overpass)
@@ -194,6 +213,23 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
             }
             _ => {}
         }
+    }
+
+    // outlines whose parts cover most of them are drawn as the parts (OSM Simple 3D Buildings)
+    let ll_area = |r: &[(f64, f64)]| stage_a::signed_area(r).abs();
+    let centroid = |r: &[(f64, f64)]| {
+        let m = (r.len() - 1).max(1) as f64;
+        (r[..r.len() - 1].iter().map(|p| p.0).sum::<f64>() / m, r[..r.len() - 1].iter().map(|p| p.1).sum::<f64>() / m)
+    };
+    let parts: Vec<((f64, f64), f64)> = out.buildings.iter().filter(|b| b.part).map(|b| (centroid(&b.ring), ll_area(&b.ring))).collect();
+    if !parts.is_empty() {
+        out.buildings.retain(|b| {
+            if b.part {
+                return true;
+            }
+            let covered: f64 = parts.iter().filter(|(c, _)| crate::areas::point_in(*c, &b.ring)).map(|(_, a)| *a).sum();
+            covered < 0.6 * ll_area(&b.ring)
+        });
     }
 
     for p in pend {
@@ -266,6 +302,46 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
             })
         })
     };
+    // entrances: onto the nearest wall within 3 m, facing out of the building
+    let mut edges: HashMap<(i64, i64), Vec<([f64; 2], [f64; 2])>> = HashMap::new();
+    for b in &sc.buildings {
+        let f = &b.footprint;
+        for i in 0..f.len() {
+            let (a, c) = (f[i], f[(i + 1) % f.len()]);
+            let m = [(a[0] + c[0]) / 2.0, (a[1] + c[1]) / 2.0];
+            let len = (c[0] - a[0]).hypot(c[1] - a[1]);
+            let r = (len / 2.0 / 20.0).ceil() as i64;
+            let (ci, cj) = ((m[0] / 20.0).floor() as i64, (m[1] / 20.0).floor() as i64);
+            for di in -r..=r {
+                for dj in -r..=r {
+                    edges.entry((ci + di, cj + dj)).or_default().push((a, c));
+                }
+            }
+        }
+    }
+    for e in &raw.entrances {
+        let p = loc(e.lat, e.lon);
+        let (ci, cj) = ((p[0] / 20.0).floor() as i64, (p[1] / 20.0).floor() as i64);
+        let mut best: Option<(f64, [f64; 2], [f64; 2])> = None;
+        for (a, c) in edges.get(&(ci, cj)).into_iter().flatten() {
+            let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            if l2 < 1.0 {
+                continue;
+            }
+            let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.1, 0.9);
+            let q = [a[0] + dx * t, a[1] + dy * t];
+            let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+            let l = l2.sqrt();
+            // footprints are counter-clockwise: outside is to the right of the edge
+            if d < 3.0 && best.is_none_or(|b| d < b.0) {
+                best = Some((d, q, [dy / l, -dx / l]));
+            }
+        }
+        if let Some((_, q, out)) = best {
+            sc.entrances.push(scene::model::Entrance { p: q, out, kind: e.kind.clone() });
+        }
+    }
     let (areas, area_trees) = crate::areas::build_areas(&raw.areas, frame, &on_road);
     sc.areas = areas;
     sc.trees.extend(area_trees);
@@ -401,5 +477,41 @@ mod tests {
         let q = overpass_query(&b);
         assert!(q.contains("out geom") && q.contains("residential") && q.contains("natural") && q.contains("building"));
         assert!(q.contains(&format!("{:.6}", b.south)));
+    }
+
+    #[test]
+    fn building_parts_replace_their_outline_and_entrances_sit_on_walls() {
+        let (la, lo) = MINSK;
+        let m = 1.0 / 111_320.0;
+        let k = 1.0 / (111_320.0 * la.to_radians().cos());
+        let sq = |x0: f64, y0: f64, x1: f64, y1: f64| format!(
+            r#"[{{"lat":{a},"lon":{b}}},{{"lat":{a},"lon":{d}}},{{"lat":{c},"lon":{d}}},{{"lat":{c},"lon":{b}}},{{"lat":{a},"lon":{b}}}]"#,
+            a = la + y0 * m, b = lo + x0 * k, c = la + y1 * m, d = lo + x1 * k
+        );
+        let json = format!(
+            r#"{{"elements":[
+              {{"type":"way","id":1,"tags":{{"building":"apartments","building:levels":"9"}},"geometry":{}}},
+              {{"type":"way","id":2,"tags":{{"building:part":"yes","building:levels":"9"}},"geometry":{}}},
+              {{"type":"way","id":3,"tags":{{"building:part":"yes","building:levels":"16","building:min_level":"9"}},"geometry":{}}},
+              {{"type":"way","id":4,"tags":{{"building":"yes","building:levels":"2"}},"geometry":{}}},
+              {{"type":"node","id":5,"lat":{},"lon":{},"tags":{{"entrance":"staircase","ref":"1"}}}}]}}"#,
+            sq(0.0, 0.0, 40.0, 12.0), sq(0.0, 0.0, 40.0, 12.0), sq(10.0, 0.0, 20.0, 12.0), sq(60.0, 0.0, 70.0, 10.0), la - 0.5 * m, lo + 30.0 * k
+        );
+        let tile = TileId::from_lat_lon(la + 6.0 * m, lo + 20.0 * k, 15);
+        let raw = parse_overpass(&json, tile).unwrap();
+        // the outline is covered by its parts and dropped; the other house stays
+        assert_eq!(raw.buildings.len(), 3, "{:?}", raw.buildings.iter().map(|b| b.id).collect::<Vec<_>>());
+        assert!(!raw.buildings.iter().any(|b| b.id == 1));
+        assert_eq!(raw.entrances.len(), 1);
+        let f = LocalFrame::new(la, lo, 0.0);
+        let sc = build_scene(&raw, &f);
+        let tower = sc.buildings.iter().find(|b| b.id.ends_with("/3")).unwrap();
+        let zmin = tower.verts.chunks(3).map(|v| v[2]).fold(f32::MAX, f32::min);
+        assert!((zmin - 27.0).abs() < 0.01, "upper part starts at storey 9: {zmin}");
+        assert_eq!(sc.entrances.len(), 1);
+        let e = &sc.entrances[0];
+        assert!(e.p[1].abs() < 0.1 && (e.p[0] - 30.0).abs() < 0.2, "on the south wall: {:?}", e.p);
+        assert!(e.out[1] < -0.99, "facing south, out of the building: {:?}", e.out);
+        assert!(scene::mesh::scene_meshes_opts(&sc, false).iter().any(|m| m.name == "entrances" && !m.verts.is_empty()));
     }
 }

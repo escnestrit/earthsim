@@ -906,7 +906,9 @@ pub fn build_game(o: &crate::cli::Options, live: Option<Arc<dyn world::fetch::Fe
             Ok(Game::new(Scene::from_json_str(&text).map_err(|e| format!("'{p}': {e}"))?))
         }
         Mode::Offline => {
-            let v = Arc::new(VirtualOsm::from_overpass_json(DEMO_OVERPASS)?);
+            // EARTHSIM_OFFLINE_OSM=<overpass json> replaces the bundled demo data (tests, own extracts)
+            let text = std::env::var("EARTHSIM_OFFLINE_OSM").ok().and_then(|p| std::fs::read_to_string(p).ok());
+            let v = Arc::new(VirtualOsm::from_overpass_json(text.as_deref().unwrap_or(DEMO_OVERPASS))?);
             let mut cfg = StreamConfig::default();
             cfg.min_request_interval = std::time::Duration::ZERO;
             Ok(Game::new_streaming(Streamer::new(cfg, v, None, o.lat, o.lon), name, o.lat, o.lon))

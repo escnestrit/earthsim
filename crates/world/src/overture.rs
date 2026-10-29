@@ -69,6 +69,7 @@ pub fn building_tags(f: &Feature) -> Vec<(String, String)> {
     put("height", num(f.prop("height")).filter(|h| *h > 0.0).map(|h| format!("{h:.2}")));
     put("min_height", num(f.prop("min_height")).filter(|h| *h > 0.0).map(|h| format!("{h:.2}")));
     put("building:levels", num(f.prop("num_floors")).filter(|n| *n > 0.0).map(|n| format!("{}", n.round() as i64)));
+    put("building:min_level", num(f.prop("min_floor")).filter(|n| *n > 0.0).map(|n| format!("{}", n.round() as i64)));
     put("roof:shape", s(f.prop("roof_shape")));
     put("roof:height", num(f.prop("roof_height")).map(|h| format!("{h:.2}")));
     put("roof:colour", s(f.prop("roof_color")));
@@ -221,12 +222,15 @@ pub fn to_overpass_with_base(z: u8, x: u32, y: u32, buildings: &[Layer], transpo
             }
         }
     }
-    for l in buildings.iter().filter(|l| l.name == "building") {
+    for l in buildings.iter().filter(|l| l.name == "building" || l.name == "building_part") {
         for f in l.features.iter().filter(|f| f.kind == GeomType::Polygon) {
             if matches!(f.prop("is_underground"), Some(Value::Bool(true))) {
                 continue;
             }
-            let tags = building_tags(f);
+            let mut tags = building_tags(f);
+            if l.name == "building_part" {
+                tags[0] = ("building:part".into(), "yes".into());
+            }
             for ring in f.parts.iter().filter(|r| mvt::ring_area(r) > 0.0 && r.len() >= 4) {
                 let ring = clip_ring(ring, l.extent as i32);
                 if ring.len() < 4 || mvt::ring_area(&ring) < 1.0 {

@@ -67,6 +67,18 @@ pub struct Scene {
     pub trees: Vec<[f64; 2]>,
     /// ground cover: water, grass, parks, forest floor, sand (flat, drawn under the roads)
     pub areas: Vec<Area>,
+    /// building doors from OSM entrance nodes, snapped to a wall
+    pub entrances: Vec<Entrance>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Entrance {
+    /// on the wall line (local metres)
+    pub p: [f64; 2],
+    /// unit vector out of the building
+    pub out: [f64; 2],
+    /// OSM `entrance` value: main, staircase, service, garage, emergency, yes...
+    pub kind: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -21,7 +21,7 @@ pub fn heights_query(b: &Bounds) -> String {
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);
     format!(
         "[out:json][timeout:25];(way[\"building\"][\"building:levels\"]({bb});way[\"building\"][\"height\"]({bb});\
-         relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb}););out tags center;"
+         relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb});node[\"entrance\"]({bb}););out tags center;"
     )
 }
 
@@ -119,6 +119,10 @@ pub fn merge_osm_heights(overture_json: &str, osm_json: &str) -> Result<(String,
         if did {
             changed += 1;
         }
+    }
+    // entrances (doors) exist only in OSM: add them as nodes
+    for e in osm_els.iter().filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("node") && e.get("tags").and_then(|t| t.get("entrance")).is_some()) {
+        els.push(e.clone());
     }
     top.insert(0, ("earthsim_osm_heights".into(), Json::Num(changed as f64)));
     Ok((j.dump(), changed))

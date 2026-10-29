@@ -436,6 +436,43 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "buildings".into(), verts: bm.a, polygon_offset: 0.0, casts_shadow: true, colors: bcol });
 
+    // entrances: door in the wall, and for doors people use a porch slab and a canopy (the common Soviet
+    // and modern block layout); sizes are typical, not measured
+    let mut em = Mb::default();
+    for e in &sc.entrances {
+        let (o, t) = (e.out, [-e.out[1], e.out[0]]);
+        let (w, canopy) = match e.kind.as_str() {
+            "garage" => (2.6, false),
+            "service" | "emergency" | "exit" => (1.0, false),
+            "main" => (2.0, true),
+            _ => (1.4, true),
+        };
+        let at = |a: f64, d: f64, z: f64| [e.p[0] + t[0] * a + o[0] * d, e.p[1] + t[1] * a + o[1] * d, z];
+        let porch = if canopy { 0.3 } else { 0.0 };
+        // door leaf just outside the wall
+        em.quad(at(-w / 2.0, 0.04, porch), at(w / 2.0, 0.04, porch), at(w / 2.0, 0.04, porch + 2.2), at(-w / 2.0, 0.04, porch + 2.2), [o[0], o[1], 0.0], mat::GLASS);
+        // frame
+        for (a0, a1, z0, z1) in [(-w / 2.0 - 0.12, -w / 2.0, porch, porch + 2.32), (w / 2.0, w / 2.0 + 0.12, porch, porch + 2.32), (-w / 2.0 - 0.12, w / 2.0 + 0.12, porch + 2.2, porch + 2.32)] {
+            em.quad(at(a0, 0.06, z0), at(a1, 0.06, z0), at(a1, 0.06, z1), at(a0, 0.06, z1), [o[0], o[1], 0.0], mat::RIM);
+        }
+        if canopy {
+            let slab = |mb: &mut Mb, hw: f64, depth: f64, z0: f64, z1: f64, m: f32| {
+                let c = at(0.0, depth / 2.0, (z0 + z1) / 2.0);
+                let pts = |z: f64| [at(-hw, 0.0, z), at(hw, 0.0, z), at(hw, depth, z), at(-hw, depth, z)];
+                let (b, tp) = (pts(z0), pts(z1));
+                mb.face(&tp, c, m);
+                mb.face(&b, c, m);
+                for k in 0..4 {
+                    let k1 = (k + 1) % 4;
+                    mb.face(&[b[k], b[k1], tp[k1], tp[k]], c, m);
+                }
+            };
+            slab(&mut em, w / 2.0 + 0.6, 1.6, 0.0, porch, mat::SIDEWALK);
+            slab(&mut em, w / 2.0 + 0.5, 1.3, porch + 2.55, porch + 2.7, mat::ROOF);
+        }
+    }
+    out.push(MeshData { name: "entrances".into(), verts: em.a, polygon_offset: 0.0, casts_shadow: true, colors: Vec::new() });
+
     // trees
     let mut tm = Mb::default();
     for (i, t) in sc.trees.iter().enumerate() {

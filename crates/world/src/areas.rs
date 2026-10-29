@@ -221,6 +221,11 @@ pub fn triangulate_bridged(ring: &[(f64, f64)]) -> Option<Vec<[usize; 3]>> {
     Some(out)
 }
 
+/// Point in one (lat, lon) ring.
+pub fn point_in(p: (f64, f64), r: &[(f64, f64)]) -> bool {
+    point_in_rings(p, std::slice::from_ref(&r.to_vec()))
+}
+
 fn point_in_rings(p: (f64, f64), rings: &[Vec<(f64, f64)>]) -> bool {
     let mut inside = false;
     for r in rings {
