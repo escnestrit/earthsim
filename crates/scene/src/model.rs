@@ -29,6 +29,60 @@ pub struct Building {
     pub kind: String,
     /// stable per-building random seed (window offsets, balconies, rooftop structures)
     pub seed: u64,
+    /// typical design (series/project) the building was matched to, driving its exterior elements
+    pub design: Option<Design>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Balconies {
+    None,
+    /// open slabs with a parapet
+    Open,
+    /// recessed / closed parapet with glass above
+    Glazed,
+    /// French balconies: railings flat on the wall
+    Railing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StairWindows {
+    None,
+    /// one window per landing, half a storey up from the floors
+    Landing,
+    /// a continuous glazed band from the first floor to the roof
+    Band,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Canopy {
+    None,
+    Slab,
+    /// a small gabled roof over the door
+    Gable,
+}
+
+/// Exterior elements of a typical design. Values are typical for the series/project, not measured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Design {
+    /// catalogue id, e.g. "1-464", "P-44", "WBS 70", "haussmann"
+    pub id: String,
+    pub name: String,
+    pub balconies: Balconies,
+    /// balconies every n-th bay (1 = every bay)
+    pub balcony_every: u32,
+    /// fraction of walls (long ones) that carry balconies: 0.5 = one side only
+    pub balcony_sides: f32,
+    pub stair: StairWindows,
+    pub canopy: Canopy,
+    pub plinth_h: f32,
+    pub parapet_h: f32,
+    /// top storey is a low technical floor (small vents instead of windows)
+    pub tech_floor: bool,
+    pub shops: bool,
+    /// distance between entrances along the courtyard wall (m)
+    pub section_len: f32,
+    /// window bay width (m) along the facade
+    pub bay: f32,
 }
 
 /// How a building's walls and roof look, from map attributes (Overture/OSM) or from heuristics.
@@ -83,6 +137,8 @@ pub struct Entrance {
     pub out: [f64; 2],
     /// OSM `entrance` value: main, staircase, service, garage, emergency, yes...
     pub kind: String,
+    /// index into `Scene::buildings` of the building whose wall it is on
+    pub building: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -216,6 +272,7 @@ impl Scene {
                 ring: 0,
                 kind: String::new(),
                 seed: 0,
+                design: None,
                 id: b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 status: b.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 footprint,

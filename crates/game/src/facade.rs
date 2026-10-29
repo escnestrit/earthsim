@@ -97,6 +97,31 @@ fn metal(x: f32, y: f32, _: usize, _: usize) -> Px {
     Px { c: [v, v, v], rough: 0.45, metal: 0.6, lit: 0.0 }
 }
 
+fn tile_panel(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // precast panels faced with small ceramic tiles (P-44, II-49): grout grid, panel seams every bay/storey
+    let seam = x < 0.03 || y < 0.03;
+    let (tx, ty) = ((x / 0.12).fract(), (y / 0.12).fract());
+    let grout = tx < 0.12 || ty < 0.12;
+    let n = hash((x / 0.12) as u32 + bx as u32 * 97, (y / 0.12) as u32 + by as u32 * 89) * 0.08;
+    let v = if seam { 0.5 } else if grout { 0.8 } else { 0.97 - n };
+    Px { c: [v, v, v], rough: if grout { 0.95 } else { 0.35 }, metal: 0.0, lit: 0.0 }
+}
+
+fn silicate(x: f32, y: f32, bx: usize, by: usize) -> Px {
+    // white sand-lime brick: smaller courses, pale mortar, a little colour noise
+    let course = (y / 0.088) as u32;
+    let off = if course % 2 == 0 { 0.0 } else { 0.125 };
+    let fx = ((x + off) / 0.25).fract();
+    let fy = (y / 0.088).fract();
+    let mortar = fx < 0.04 || fy < 0.11;
+    let v = hash(((x + off) / 0.25) as u32 + bx as u32 * 7, course + by as u32 * 31) * 0.07;
+    if mortar {
+        Px { c: [0.8, 0.79, 0.76], rough: 0.95, metal: 0.0, lit: 0.0 }
+    } else {
+        Px { c: [0.97 - v, 0.96 - v, 0.93 - v], rough: 0.85, metal: 0.0, lit: 0.0 }
+    }
+}
+
 fn glass_ribbon(x: f32, y: f32, bx: usize, by: usize) -> Px {
     // ribbon windows: a solid band at each slab, continuous glazing above
     if y < 1.0 {
@@ -125,6 +150,11 @@ fn style(id: f32) -> Style {
         (3, _) => st(glass, vec![], [0.7, 0.7, 0.72]),
         (4, 0) => st(wood, vec![(1.0, 2.0, 1.0, 2.2)], white),
         (4, _) => st(wood, vec![(0.6, 1.4, 0.9, 2.2), (1.8, 2.4, 0.9, 2.2)], white),
+        (6, 0) => st(tile_panel, vec![(0.6, 2.4, 0.9, 2.35)], white),
+        (6, 1) => Style { loggia: Some((0.05, 0.9)), ..st(tile_panel, vec![(0.45, 1.3, 0.9, 2.35), (1.7, 2.55, 0.9, 2.35)], white) },
+        (6, _) => st(tile_panel, vec![(0.75, 2.25, 0.95, 2.3)], [0.88, 0.88, 0.86]),
+        (7, 0) => st(silicate, vec![(0.8, 2.2, 0.9, 2.35)], white),
+        (7, _) => st(silicate, vec![(0.55, 1.3, 0.9, 2.3), (1.7, 2.45, 0.9, 2.3)], white),
         (5, 0) => st(metal, vec![], dark),
         (5, 1) => st(metal, vec![(0.3, 2.7, 2.0, 2.6)], dark),
         (5, _) => st(metal, vec![(0.6, 2.4, 1.6, 2.5)], dark),
@@ -253,9 +283,9 @@ pub fn image(data: Vec<u8>, srgb: bool) -> Image {
     img
 }
 
-/// All facade materials: 6 styles x 3 window layouts.
+/// All facade materials: 8 styles x 3 window layouts.
 pub fn styles() -> Vec<f32> {
-    (0..6).flat_map(|s| (0..3).map(move |v| mat::facade(s, v))).collect()
+    (0..8).flat_map(|s| (0..3).map(move |v| mat::facade(s, v))).collect()
 }
 
 #[cfg(test)]

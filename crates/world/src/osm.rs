@@ -256,7 +256,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
 /// along their longest wall on the side away from the nearest road (the courtyard), other buildings over
 /// 60 m² one door on the wall nearest a road. Doors already mapped near a wall suppress the estimate there.
 pub fn estimate_entrances(sc: &mut Scene) {
-    let mapped: Vec<[f64; 2]> = sc.entrances.iter().map(|e| e.p).collect();
+    let has_door: std::collections::HashSet<u32> = sc.entrances.iter().filter_map(|e| e.building).collect();
     let road_pts: Vec<[f64; 2]> = sc.roads.iter().flat_map(|r| r.pts.iter().copied()).collect();
     let mut grid: HashMap<(i64, i64), Vec<[f64; 2]>> = HashMap::new();
     for p in &road_pts {
@@ -275,9 +275,12 @@ pub fn estimate_entrances(sc: &mut Scene) {
         best
     };
     let mut out = Vec::new();
-    for b in &sc.buildings {
+    for (bi, b) in sc.buildings.iter().enumerate() {
         let f = &b.footprint;
         let n = f.len();
+        if has_door.contains(&(bi as u32)) {
+            continue;
+        }
         if n < 3 || b.kind == "part" || matches!(b.kind.as_str(), "garage" | "garages" | "shed" | "roof" | "hut" | "kiosk" | "transformer_tower" | "service") {
             continue;
         }
@@ -287,13 +290,6 @@ pub fn estimate_entrances(sc: &mut Scene) {
         }
         let area: f64 = (0..n).map(|i| f[i][0] * f[(i + 1) % n][1] - f[(i + 1) % n][0] * f[i][1]).sum::<f64>().abs() / 2.0;
         if area < 60.0 {
-            continue;
-        }
-        let cx = f.iter().map(|p| p[0]).sum::<f64>() / n as f64;
-        let cy = f.iter().map(|p| p[1]).sum::<f64>() / n as f64;
-        // already has a mapped door within the outline's reach
-        let reach = f.iter().map(|p| (p[0] - cx).hypot(p[1] - cy)).fold(0.0, f64::max) + 2.0;
-        if mapped.iter().any(|m| (m[0] - cx).hypot(m[1] - cy) < reach) {
             continue;
         }
         let edges: Vec<([f64; 2], [f64; 2], f64, [f64; 2])> = (0..n)
@@ -317,11 +313,13 @@ pub fn estimate_entrances(sc: &mut Scene) {
                 }
                 None => long,
             };
-            let count = ((side.2 / 18.0).round() as usize).max(1);
+            // one entrance per section: the design's section length, else ~18 m
+            let section = b.design.as_ref().map(|d| d.section_len as f64).filter(|s| *s < 500.0).unwrap_or(18.0);
+            let count = ((side.2 / section).round() as usize).max(1);
             let dir = [(side.1[0] - side.0[0]) / side.2, (side.1[1] - side.0[1]) / side.2];
             for k in 0..count {
                 let s = side.2 * (k as f64 + 0.5) / count as f64;
-                out.push(scene::model::Entrance { p: [side.0[0] + dir[0] * s, side.0[1] + dir[1] * s], out: side.3, kind: "staircase".into() });
+                out.push(scene::model::Entrance { p: [side.0[0] + dir[0] * s, side.0[1] + dir[1] * s], out: side.3, kind: "staircase".into(), building: Some(bi as u32) });
             }
         } else {
             // one door, on the longer of the walls closest to a road
@@ -332,7 +330,7 @@ pub fn estimate_entrances(sc: &mut Scene) {
             if let Some(e) = e {
                 let m = mid(e);
                 let kind = if matches!(b.kind.as_str(), "retail" | "commercial" | "office" | "supermarket") { "main" } else { "yes" };
-                out.push(scene::model::Entrance { p: m, out: e.3, kind: kind.into() });
+                out.push(scene::model::Entrance { p: m, out: e.3, kind: kind.into(), building: Some(bi as u32) });
             }
         }
     }
@@ -407,8 +405,8 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
         })
     };
     // entrances: onto the nearest wall within 3 m, facing out of the building
-    let mut edges: HashMap<(i64, i64), Vec<([f64; 2], [f64; 2])>> = HashMap::new();
-    for b in &sc.buildings {
+    let mut edges: HashMap<(i64, i64), Vec<([f64; 2], [f64; 2], u32)>> = HashMap::new();
+    for (bi, b) in sc.buildings.iter().enumerate() {
         let f = &b.footprint;
         for i in 0..f.len() {
             let (a, c) = (f[i], f[(i + 1) % f.len()]);
@@ -418,7 +416,7 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
             let (ci, cj) = ((m[0] / 20.0).floor() as i64, (m[1] / 20.0).floor() as i64);
             for di in -r..=r {
                 for dj in -r..=r {
-                    edges.entry((ci + di, cj + dj)).or_default().push((a, c));
+                    edges.entry((ci + di, cj + dj)).or_default().push((a, c, bi as u32));
                 }
             }
         }
@@ -426,8 +424,8 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
     for e in &raw.entrances {
         let p = loc(e.lat, e.lon);
         let (ci, cj) = ((p[0] / 20.0).floor() as i64, (p[1] / 20.0).floor() as i64);
-        let mut best: Option<(f64, [f64; 2], [f64; 2])> = None;
-        for (a, c) in edges.get(&(ci, cj)).into_iter().flatten() {
+        let mut best: Option<(f64, [f64; 2], [f64; 2], u32)> = None;
+        for (a, c, bi) in edges.get(&(ci, cj)).into_iter().flatten() {
             let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
             let l2 = dx * dx + dy * dy;
             if l2 < 1.0 {
@@ -439,11 +437,11 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
             let l = l2.sqrt();
             // footprints are counter-clockwise: outside is to the right of the edge
             if d < 3.0 && best.is_none_or(|b| d < b.0) {
-                best = Some((d, q, [dy / l, -dx / l]));
+                best = Some((d, q, [dy / l, -dx / l], *bi));
             }
         }
-        if let Some((_, q, out)) = best {
-            sc.entrances.push(scene::model::Entrance { p: q, out, kind: e.kind.clone() });
+        if let Some((_, q, out, bi)) = best {
+            sc.entrances.push(scene::model::Entrance { p: q, out, kind: e.kind.clone(), building: Some(bi) });
         }
     }
 

@@ -291,6 +291,30 @@ fn apex_roof(tags: &Tags, c: &[(f64, f64)], h: f64, shape: &str) -> Option<RoofP
     Some(RoofPlan { corners: c.to_vec(), top: vec![ctr], long_edge: 0, roof_h, profile })
 }
 
+/// Depth of a building's corpus (m): the short side of the rectangle with the same area and perimeter.
+/// Exact for rectangles, and for L/U-shaped blocks it gives the wing depth, not the whole block's.
+pub fn corpus_depth(ring: &[(f64, f64)]) -> f64 {
+    let n = ring.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let area = signed_area(ring).abs();
+    let per: f64 = (0..n).map(|i| (ring[(i + 1) % n].0 - ring[i].0).hypot(ring[(i + 1) % n].1 - ring[i].1)).sum();
+    let q = per / 4.0;
+    q - (q * q - area).max(0.0).sqrt()
+}
+
+#[cfg(test)]
+mod depth_tests {
+    #[test]
+    fn corpus_depth_of_bars_and_l_shapes() {
+        let rect = [(0.0, 0.0), (60.0, 0.0), (60.0, 12.0), (0.0, 12.0)];
+        assert!((super::corpus_depth(&rect) - 12.0).abs() < 1e-6);
+        let l = [(0.0, 0.0), (60.0, 0.0), (60.0, 12.0), (12.0, 12.0), (12.0, 40.0), (0.0, 40.0)];
+        assert!((super::corpus_depth(&l) - 12.0).abs() < 0.5, "{}", super::corpus_depth(&l));
+    }
+}
+
 pub fn signed_area(r: &[(f64, f64)]) -> f64 {
     let n = r.len();
     0.5 * (0..n).map(|i| {
@@ -387,7 +411,25 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
     if area < 0.0 {
         ring.reverse();
     }
-    let (h, origin) = estimate_height(tags);
+    let (mut h, mut origin) = estimate_height(tags);
+    // typical design (series / project) from the data and the outline
+    let seed = seed_of(id).max(1);
+    let design = {
+        let (la, lo) = latlon_ring[0];
+        let levels = tag(tags, "building:levels").and_then(|l| l.trim().parse::<f64>().ok()).filter(|l| *l >= 1.0).map(|l| l.round() as u32);
+        let year = tag(tags, "start_date").and_then(|d| d.trim().get(..4)).and_then(|y| y.parse::<i32>().ok());
+        let class = tag(tags, "building").unwrap_or(if tag(tags, "building:part").is_some() { "part" } else { "yes" });
+        let depth = corpus_depth(&ring);
+        let lv = levels.or_else(|| (origin != "default").then(|| (h / LEVEL_H).round().max(1.0) as u32));
+        crate::series::match_design(tag(tags, "building:series"), class, la, lo, lv, depth, year, seed)
+    };
+    if let Some(d) = design {
+        // no height in the data: the design's typical storeys
+        if origin == "default" {
+            h = d.typical_levels(seed) as f64 * d.floor_h as f64 + d.parapet_h as f64 * 0.0;
+            origin = "series";
+        }
+    }
     // parts that start above the ground (overhangs, upper storeys, arches): min_height or building:min_level
     let base = tag(tags, "min_height")
         .and_then(|v| v.split_whitespace().next().and_then(|x| x.replace(',', ".").parse::<f64>().ok()))
@@ -487,9 +529,25 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
             height_origin: origin.to_string(),
             verts,
             indices,
-            facade: facade_for(tags, h, seed_of(id).max(1)),
+            facade: {
+                let mut f = facade_for(tags, h, seed);
+                if let Some(d) = design {
+                    // the design sets material, window layout, colour and storey height unless the data does
+                    if tag(tags, "building:material").is_none() {
+                        f.style = scene::mesh::mat::facade(d.style, d.variant);
+                    }
+                    if tag(tags, "building:colour").is_none() {
+                        f.colour = d.palette[(seed >> 8) as usize % d.palette.len()];
+                    }
+                    if tag(tags, "building:levels").is_none() {
+                        f.floor_height = d.floor_h;
+                    }
+                }
+                f
+            },
+            design: design.map(|d| d.design()),
             kind: if tag(tags, "building:part").is_some() && tag(tags, "building").is_none() { "part".into() } else { tag(tags, "building").unwrap_or("yes").to_string() },
-            seed: seed_of(id).max(1),
+            seed,
             ring: n as u32,
         },
         ok_roof,

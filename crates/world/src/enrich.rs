@@ -15,7 +15,7 @@ pub const HEIGHTS_FAILED: &str = "\"earthsim_osm_heights\":\"failed\"";
 /// Tags taken from OSM even when Overture has its own value.
 const OVERRIDE: &[&str] = &["height", "building:levels", "min_height", "building:min_level", "roof:levels"];
 /// Tags taken from OSM only when Overture has none.
-const FILL: &[&str] = &["roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material"];
+const FILL: &[&str] = &["roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material", "building:series", "start_date", "building:architecture"];
 
 pub fn heights_query(b: &Bounds) -> String {
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);

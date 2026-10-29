@@ -10,6 +10,7 @@ pub mod geo;
 pub mod log;
 pub mod mvt;
 pub mod pmtiles;
+pub mod series;
 pub mod osm;
 pub mod overture;
 pub mod stage_a;
