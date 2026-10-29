@@ -266,8 +266,25 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
         let p = frame.to_local(la, lo, 0.0);
         [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0]
     };
+    // roads: points at most 12 m apart so they follow the terrain between map vertices
     for r in &raw.roads {
-        sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts: r.pts.iter().map(|p| loc(p.0, p.1)).collect(), junction: r.junction.clone() });
+        let (mut pts, mut jn): (Vec<[f64; 2]>, Vec<bool>) = (Vec::new(), Vec::new());
+        let src: Vec<[f64; 2]> = r.pts.iter().map(|p| loc(p.0, p.1)).collect();
+        for (i, p) in src.iter().enumerate() {
+            if i > 0 {
+                let q = src[i - 1];
+                let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+                let k = (d / 12.0).floor() as usize;
+                for s in 1..=k {
+                    let t = s as f64 / (k + 1) as f64;
+                    pts.push([q[0] + (p[0] - q[0]) * t, q[1] + (p[1] - q[1]) * t]);
+                    jn.push(false);
+                }
+            }
+            pts.push(*p);
+            jn.push(r.junction.get(i).copied().unwrap_or(false));
+        }
+        sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts, junction: jn });
     }
     let mut status: HashMap<String, usize> = HashMap::new();
     let mut origins: HashMap<String, usize> = HashMap::new();

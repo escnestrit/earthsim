@@ -37,7 +37,7 @@ pub fn zup(v: [f32; 3]) -> Vec3 {
 #[derive(Component)]
 pub struct WorldRoot;
 #[derive(Component)]
-struct GroundPlane;
+pub struct GroundPlane;
 #[derive(Component)]
 pub struct CarBody;
 #[derive(Component)]
@@ -59,7 +59,7 @@ pub struct Tiles {
 }
 
 /// PBR parameters per material id of the shared mesh format (colour, roughness, metallic, depth bias).
-fn material_for(id: u32) -> StandardMaterial {
+pub fn material_for(id: u32) -> StandardMaterial {
     let (c, rough, metal, bias, emissive) = match id as f32 {
         x if x == mat::GROUND => ([0.30, 0.36, 0.24], 0.95, 0.0, 0.0, false),
         x if x == mat::SIDEWALK => ([0.55, 0.54, 0.52], 0.9, 0.0, 1.0, false),
@@ -328,7 +328,7 @@ pub fn sync_car(
     }
 }
 
-fn sync_camera_and_light(
+pub fn sync_camera_and_light(
     sim: Res<Sim>,
     mut cam: Query<(&mut Transform, &mut Projection, &mut DistanceFog), (With<MainCamera>, Without<Sun>, Without<GroundPlane>)>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), (With<Sun>, Without<MainCamera>, Without<GroundPlane>)>,

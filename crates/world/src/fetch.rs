@@ -188,7 +188,7 @@ impl Fetcher for ChainFetcher {
 
 // ------------------------------------------------------------------------------------------------------
 #[cfg(any(windows, earthsim_check_win))]
-pub use winhttp::{default_live_fetcher, http_get, live_map_source, overture_release, HttpRange, WinHttpFetcher};
+pub use winhttp::{default_live_fetcher, http_get, live_dem, live_map_source, overture_release, HttpRange, WinHttpFetcher};
 
 #[cfg(any(windows, earthsim_check_win))]
 mod winhttp {
@@ -406,6 +406,18 @@ mod winhttp {
             }).unwrap_or_else(|| FALLBACK_RELEASE.to_string())
         })
         .clone()
+    }
+
+    /// Elevation tiles (terrarium PNG) from AWS Terrain Tiles, kept in `cache` so a place seen once works offline.
+    pub struct HttpDem;
+    impl crate::dem::DemSource for HttpDem {
+        fn tile(&self, z: u8, x: u32, y: u32) -> Result<Vec<u8>, String> {
+            http_get(&format!("{}/{z}/{x}/{y}.png", crate::dem::TERRARIUM_URL), None).map_err(|e| e.to_string())
+        }
+    }
+
+    pub fn live_dem(cache: &std::path::Path) -> std::sync::Arc<dyn crate::dem::DemSource> {
+        std::sync::Arc::new(crate::dem::DirDem { dir: cache.to_path_buf(), inner: Some(HttpDem) })
     }
 
     /// Map tiles straight from Overture's archives (base, transportation, buildings), byte ranges cached in `cache`.

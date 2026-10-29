@@ -1,7 +1,7 @@
 //! Game state: fixed-step physics, camera, input mapping and HUD data. Platform independent.
 use crate::m4::{self, V3f};
 use crate::render::{FrameParams, HudData};
-use phys::{Driver, FlatGround, Keys, SoftVehicle, StaticWorld, Vehicle, VehicleParams};
+use phys::{Driver, Keys, SoftVehicle, StaticWorld, Vehicle, VehicleParams};
 use scene::{car_meshes, scene_meshes, MeshData, Scene};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,23 +39,61 @@ struct Stream {
 
 pub const PHYS_DT: f64 = 0.001;
 
+/// Terrain field: half-size and cell (m).
+const TERRAIN_HALF: f64 = 2500.0;
+const TERRAIN_CELL: f64 = 10.0;
+
+#[derive(Default)]
+struct Terrain {
+    src: Option<Arc<dyn world::dem::DemSource>>,
+    datum: Option<f64>,
+    center: (f64, f64),
+    job: Option<std::sync::mpsc::Receiver<(phys::HeightField, f64, Vec<String>)>>,
+    generation: u64,
+    /// flat meshes of the loaded tiles (re-draped when the field changes)
+    flat: HashMap<u64, Arc<Vec<MeshData>>>,
+    redrape: Vec<u64>,
+}
+
+/// Put a tile's flat meshes on the terrain: every vertex rises by the ground height under it; building
+/// feet go a little into the ground so slopes leave no gaps under walls.
+pub fn drape(ms: &[MeshData], f: &phys::HeightField) -> Vec<MeshData> {
+    if f.is_empty() {
+        return ms.to_vec();
+    }
+    ms.iter()
+        .map(|m| {
+            let sink = matches!(m.name.as_str(), "buildings" | "building_details" | "entrances");
+            let mut m = m.clone();
+            for v in m.verts.chunks_exact_mut(scene::mesh::FLOATS_PER_VERTEX) {
+                let h = f.height(v[0] as f64, v[1] as f64) as f32;
+                v[2] += h - if sink && v[2] < 0.05 { 1.0 } else { 0.0 };
+            }
+            m
+        })
+        .collect()
+}
+
 /// State shared between the game and the physics thread of a JBeam car.
 pub struct JShared {
     pub v: jbeam::vehicle::JbeamVehicle,
     pub keys: Keys,
     pub driver: Driver,
     pub world: Arc<StaticWorld>,
+    /// terrain under the car (flat where no elevation data)
+    pub ground: phys::TerrainGround,
     /// held still (map not loaded yet)
     pub frozen: bool,
     pub steps: u64,
 }
 
 impl JShared {
-    fn step_n(&mut self, n: usize, ground: &FlatGround) {
+    fn step_n(&mut self, n: usize) {
         if self.frozen {
             return;
         }
-        let JShared { v, keys, driver, world, steps, .. } = self;
+        let JShared { v, keys, driver, world, steps, ground, .. } = self;
+        let ground = &*ground;
         for _ in 0..n {
             let fwd_speed = v.vel.dot(v.forward());
             let inp = driver.update(PHYS_DT, keys, fwd_speed);
@@ -75,7 +113,7 @@ pub struct JCar {
 
 impl JCar {
     pub fn new(v: jbeam::vehicle::JbeamVehicle, driver: Driver, world: Arc<StaticWorld>, threaded: bool) -> JCar {
-        let shared = Arc::new(std::sync::Mutex::new(JShared { v, keys: Keys::default(), driver, world, frozen: false, steps: 0 }));
+        let shared = Arc::new(std::sync::Mutex::new(JShared { v, keys: Keys::default(), driver, world, ground: phys::TerrainGround::default(), frozen: false, steps: 0 }));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut c = JCar { shared, stop, thread: None };
         if threaded {
@@ -96,7 +134,6 @@ impl JCar {
             std::thread::Builder::new()
                 .name("physics".into())
                 .spawn(move || {
-                    let ground = FlatGround { grip: 1.0 };
                     let mut last = std::time::Instant::now();
                     let mut acc = 0.0;
                     while !st.load(std::sync::atomic::Ordering::Relaxed) {
@@ -111,7 +148,7 @@ impl JCar {
                         }
                         acc -= n as f64 * PHYS_DT;
                         // short critical sections so the renderer can read the state between them
-                        sh.lock().unwrap_or_else(|e| e.into_inner()).step_n(n, &ground);
+                        sh.lock().unwrap_or_else(|e| e.into_inner()).step_n(n);
                     }
                 })
                 .expect("physics thread")
@@ -168,7 +205,8 @@ pub struct Game {
     pub car: Vehicle,
     pub driver: Driver,
     pub keys: Keys,
-    ground: FlatGround,
+    ground: phys::TerrainGround,
+    terrain: Terrain,
     spawn: scene::model::Spawn,
     acc: f64,
     pub hour: f32,
@@ -201,8 +239,6 @@ pub struct Game {
     pub jcar_visual: Option<jbeam::visual::CarVisual>,
     /// the mod car came with meshes (stays true after the front end takes `jcar_visual`)
     pub jcar_has_visual: bool,
-    world_dirty: bool,
-    world_published: std::time::Instant,
     /// street lamp heads per tile (u64::MAX: the static scene)
     lamps: HashMap<u64, Vec<[f64; 3]>>,
     pub deformed: Vec<f32>,
@@ -213,7 +249,7 @@ pub struct Game {
 
 impl Game {
     pub fn new(scene: Scene) -> Game {
-        let ground = FlatGround { grip: 1.0 };
+        let ground = phys::TerrainGround::default();
         let spawn = scene.spawn();
         let car = Vehicle::new(VehicleParams::sedan(), spawn.x, spawn.y, spawn.yaw, &ground);
         let driver = Driver::new(car.p.steer_max);
@@ -231,6 +267,7 @@ impl Game {
             driver,
             keys: Keys::default(),
             ground,
+            terrain: Terrain::default(),
             spawn,
             acc: 0.0,
             hour: 15.0,
@@ -257,8 +294,6 @@ impl Game {
             jcar_map: [None; 4],
             jcar_visual: None,
             jcar_has_visual: false,
-            world_dirty: false,
-            world_published: std::time::Instant::now(),
             lamps: HashMap::new(),
             deformed: Vec::new(),
             cam_override: None,
@@ -366,7 +401,95 @@ impl Game {
     /// Give the physics thread the current static world (after tiles were added or removed).
     fn publish_world(&mut self) {
         if let Some(j) = self.jcar.as_ref() {
-            j.lock().world = Arc::new(self.world.clone());
+            let mut s = j.lock();
+            s.world = Arc::new(self.world.clone());
+            s.ground = self.ground.clone();
+        }
+    }
+
+    /// Elevation data for terrain (none: flat world).
+    pub fn set_terrain_source(&mut self, src: Arc<dyn world::dem::DemSource>) {
+        self.terrain.src = Some(src);
+        self.terrain.datum = None;
+        self.request_terrain(0.0, 0.0);
+    }
+
+    /// Terrain heights (for the renderer's ground mesh) and a counter that changes with them.
+    pub fn terrain_field(&self) -> (Arc<phys::HeightField>, u64) {
+        (self.ground.field.clone(), self.terrain.generation)
+    }
+
+    pub fn ground_height(&self, x: f64, y: f64) -> f64 {
+        self.ground.field.height(x, y)
+    }
+
+    fn request_terrain(&mut self, cx: f64, cy: f64) {
+        let (Some(src), Some(st)) = (self.terrain.src.clone(), self.stream.as_ref()) else { return };
+        let frame = st.streamer.frame();
+        let datum = self.terrain.datum;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.terrain.job = Some(rx);
+        self.terrain.center = (cx, cy);
+        std::thread::Builder::new()
+            .name("terrain".into())
+            .spawn(move || {
+                // the datum is the ground at the first place: local heights stay near zero
+                let datum = datum.unwrap_or_else(|| {
+                    let (la, lo, _) = frame.from_local(0.0, 0.0, 0.0);
+                    world::dem::DemCache::new(&*src).height(la, lo).unwrap_or(0.0)
+                });
+                let (f, errs) = world::dem::build_field(&*src, &frame, cx, cy, TERRAIN_HALF, TERRAIN_CELL, datum);
+                let _ = tx.send((f, datum, errs));
+            })
+            .ok();
+    }
+
+    /// Pick up a finished terrain field; re-drape the loaded tiles; keep the car on the new ground.
+    fn terrain_tick(&mut self) {
+        if let Some(rx) = &self.terrain.job {
+            if let Ok((f, datum, errs)) = rx.try_recv() {
+                self.terrain.job = None;
+                for e in &errs {
+                    world::log::log(&format!("terrain: {e}"));
+                }
+                let (x, y) = (self.car.pos.x, self.car.pos.y);
+                let before = self.ground.field.height(x, y);
+                self.terrain.datum = Some(datum);
+                self.ground = phys::TerrainGround { field: Arc::new(f) };
+                self.terrain.generation += 1;
+                let dz = self.ground.field.height(x, y) - before;
+                if dz.abs() > 1e-3 {
+                    self.shift_car(phys::v3(0.0, 0.0, dz));
+                }
+                world::log::log(&format!("terrain: {}x{} heights around ({x:.0}, {y:.0}), datum {datum:.1} m", self.ground.field.nx, self.ground.field.ny));
+                self.publish_world();
+                self.terrain.redrape = self.terrain.flat.keys().copied().collect();
+                self.scene.meta.terrain = if errs.is_empty() { "ELEVATION: TERRAIN TILES (SRTM ETC., MAPZEN/AWS)".into() } else { "ELEVATION: PARTLY MISSING (SEE LOG)".into() };
+            }
+        }
+        // the car drove far from the field's centre: a new field around it
+        if self.terrain.src.is_some() && self.terrain.job.is_none() {
+            let (cx, cy) = self.terrain.center;
+            if (self.car.pos.x - cx).hypot(self.car.pos.y - cy) > TERRAIN_HALF * 0.6 {
+                self.request_terrain(self.car.pos.x, self.car.pos.y);
+            }
+        }
+        // one tile per frame onto the new ground
+        if let Some(k) = self.terrain.redrape.pop() {
+            if let Some(ms) = self.terrain.flat.get(&k).cloned() {
+                self.render_ops.push(RenderOp::AddTile(k, Arc::new(drape(&ms, &self.ground.field))));
+            }
+        }
+    }
+
+    fn shift_car(&mut self, d: phys::V3) {
+        self.car.pos += d;
+        self.soft.pos += d;
+        for n in self.soft.body.nodes.iter_mut() {
+            n.p += d;
+        }
+        if let Some(j) = self.jcar.as_ref() {
+            j.lock().v.shift(d);
         }
     }
 
@@ -446,7 +569,8 @@ impl Game {
         }
         let mut all: Vec<(f64, [f64; 3])> = self.lamps.values().flatten().map(|p| ((p[0] - x).hypot(p[1] - y), *p)).filter(|(d, _)| *d < 250.0).collect();
         all.sort_by(|a, b| a.0.total_cmp(&b.0));
-        all.into_iter().take(n).map(|x| x.1).collect()
+        let f = &self.ground.field;
+        all.into_iter().take(n).map(|(_, p)| [p[0], p[1], p[2] + f.height(p[0], p[1])]).collect()
     }
 
     /// Radius of the loaded world around the car (m).
@@ -479,6 +603,13 @@ impl Game {
         st.wait_since = std::time::Instant::now();
         st.origin_latlon = (lat, lon);
         self.apply_stream_events(ev, false);
+        // new place, new ground: flat until its elevation arrives
+        self.ground = phys::TerrainGround::default();
+        self.terrain.generation += 1;
+        self.terrain.datum = None;
+        if self.terrain.src.is_some() {
+            self.request_terrain(0.0, 0.0);
+        }
         self.place_car(0.0, 0.0, 0.0, 0.0);
         self.driver = Driver::new(self.car.p.steer_max);
         self.cam_yaw = 0.0;
@@ -487,6 +618,7 @@ impl Game {
     fn apply_stream_events(&mut self, events: Vec<StreamEvent>, shift_car: bool) {
         let Some(st) = self.stream.as_mut() else { return };
         let mut changed = false;
+        let mut rebased = false;
         for e in events {
             match e {
                 StreamEvent::Add { tile, scene, meshes } => {
@@ -499,7 +631,9 @@ impl Game {
                     }
                     self.lamps.insert(key, scene::mesh::street_lamps(&scene));
                     st.scenes.insert(key, scene);
-                    self.render_ops.push(RenderOp::AddTile(key, meshes));
+                    let draped = if self.ground.field.is_empty() { meshes.clone() } else { Arc::new(drape(&meshes, &self.ground.field)) };
+                    self.terrain.flat.insert(key, meshes);
+                    self.render_ops.push(RenderOp::AddTile(key, draped));
                     changed = true;
                 }
                 StreamEvent::Remove { tile } => {
@@ -507,10 +641,21 @@ impl Game {
                     self.world.remove_tag(key);
                     st.scenes.remove(&key);
                     self.lamps.remove(&key);
+                    self.terrain.flat.remove(&key);
                     self.render_ops.push(RenderOp::RemoveTile(key));
                     changed = true;
                 }
                 StreamEvent::Rebased { old, new } => {
+                    // the terrain moves with the frame until a new field is computed
+                    {
+                        let (la, lo, _) = old.from_local(0.0, 0.0, 0.0);
+                        let p = new.to_local(la, lo, 0.0);
+                        if !self.ground.field.is_empty() {
+                            self.ground = phys::TerrainGround { field: Arc::new(self.ground.field.shifted(p[0], p[1])) };
+                            self.terrain.generation += 1;
+                        }
+                        rebased = true;
+                    }
                     if shift_car {
                         let (la, lo, _) = old.from_local(self.car.pos.x, self.car.pos.y, 0.0);
                         let p = new.to_local(la, lo, 0.0);
@@ -530,9 +675,16 @@ impl Game {
                 }
             }
         }
-        if changed {
+        if rebased && self.terrain.src.is_some() {
+            let (x, y) = (self.car.pos.x, self.car.pos.y);
+            self.request_terrain(x, y);
+        }
+        let Some(st) = self.stream.as_mut() else { return };
+        if changed || rebased {
             if let Some(j) = self.jcar.as_ref() {
-                j.lock().world = Arc::new(self.world.clone());
+                let mut s = j.lock();
+                s.world = Arc::new(self.world.clone());
+                s.ground = self.ground.clone();
             }
             let mut meta = std::mem::take(&mut self.scene.meta);
             meta.n_roads = st.scenes.values().map(|s| s.roads.len()).sum();
@@ -570,17 +722,8 @@ impl Game {
         let (cx, cy) = (self.car.pos.x, self.car.pos.y);
         let Some(st) = self.stream.as_mut() else { return };
         let ev = st.streamer.update(cx, cy);
-        let changed = !ev.is_empty();
         self.apply_stream_events(ev, true);
-        // the mod car's physics thread works on its own copy of the collision world
-        if changed {
-            self.world_dirty = true;
-        }
-        if self.world_dirty && self.world_published.elapsed().as_secs_f64() > 0.5 {
-            self.world_dirty = false;
-            self.world_published = std::time::Instant::now();
-            self.publish_world();
-        }
+        self.terrain_tick();
         let st = self.stream.as_mut().unwrap();
         if st.waiting {
             let center = TileId::from_lat_lon(st.origin_latlon.0, st.origin_latlon.1, ZOOM).key();
@@ -699,7 +842,7 @@ impl Game {
             s.frozen = frozen;
             if !j.is_threaded() {
                 let steps = (self.acc / PHYS_DT) as usize;
-                s.step_n(steps, &self.ground);
+                s.step_n(steps);
                 self.acc -= steps as f64 * PHYS_DT;
                 n = steps as u32;
             } else {
@@ -752,22 +895,24 @@ impl Game {
         let f = car.forward();
         let yaw = f.y.atan2(f.x);
         let (cy, sy) = (yaw.cos(), yaw.sin());
+        // camera heights are above the ground under the car
+        let gz = self.ground.field.height(cp.x, cp.y);
         let (eye, target, fov): (V3f, V3f, f32) = match self.cam_mode {
             0 => {
                 let d = 7.5 + spd * 0.06;
                 (
-                    [(cp.x - self.cam_yaw.cos() * d) as f32, (cp.y - self.cam_yaw.sin() * d) as f32, (2.6 + spd * 0.012) as f32],
-                    [(cp.x + cy * 3.0) as f32, (cp.y + sy * 3.0) as f32, 1.2],
+                    [(cp.x - self.cam_yaw.cos() * d) as f32, (cp.y - self.cam_yaw.sin() * d) as f32, (gz + 2.6 + spd * 0.012) as f32],
+                    [(cp.x + cy * 3.0) as f32, (cp.y + sy * 3.0) as f32, (gz + 1.2) as f32],
                     (62.0 + spd * 0.25) as f32,
                 )
             }
             1 => {
-                let e = [(cp.x + cy * 0.25 - sy * 0.37) as f32, (cp.y + sy * 0.25 + cy * 0.37) as f32, 1.2];
-                ([e[0], e[1], e[2]], [e[0] + cy as f32 * 20.0, e[1] + sy as f32 * 20.0, 1.1], 75.0)
+                let e = [(cp.x + cy * 0.25 - sy * 0.37) as f32, (cp.y + sy * 0.25 + cy * 0.37) as f32, (gz + 1.2) as f32];
+                ([e[0], e[1], e[2]], [e[0] + cy as f32 * 20.0, e[1] + sy as f32 * 20.0, e[2] - 0.1], 75.0)
             }
             _ => (
-                [(cp.x - self.cam_yaw.cos() * 25.0) as f32, (cp.y - self.cam_yaw.sin() * 25.0) as f32, 60.0],
-                [cp.x as f32, cp.y as f32, 0.0],
+                [(cp.x - self.cam_yaw.cos() * 25.0) as f32, (cp.y - self.cam_yaw.sin() * 25.0) as f32, (gz + 60.0) as f32],
+                [cp.x as f32, cp.y as f32, gz as f32],
                 55.0,
             ),
         };
@@ -826,7 +971,7 @@ impl Game {
             wheels,
             // first person: the textured mod car is drawn (dashboard, pillars); the plain car is hidden
             draw_car: self.cam_mode != 1 || (interior && self.jcar_has_visual),
-            car_pos: [cp.x as f32, cp.y as f32, 0.0],
+            car_pos: [cp.x as f32, cp.y as f32, cp.z as f32],
             head_pos: [(cp.x + f.x * 2.3) as f32, (cp.y + f.y * 2.3) as f32, (cp.z + f.z * 2.3 + 0.2) as f32],
             head_dir: [f.x as f32, f.y as f32, f.z as f32 - 0.05],
             headlights: self.headlights_on(lg.day),
@@ -940,11 +1085,25 @@ pub fn build_game(o: &crate::cli::Options, live: Option<Arc<dyn world::fetch::Fe
             let v = Arc::new(VirtualOsm::from_overpass_json(text.as_deref().unwrap_or(DEMO_OVERPASS))?);
             let mut cfg = StreamConfig::default();
             cfg.min_request_interval = std::time::Duration::ZERO;
-            Ok(Game::new_streaming(Streamer::new(cfg, v, None, o.lat, o.lon), name, o.lat, o.lon))
+            let mut g = Game::new_streaming(Streamer::new(cfg, v, None, o.lat, o.lon), name, o.lat, o.lon);
+            // EARTHSIM_DEM_DIR=<folder of z/x/y.png terrarium tiles>, or EARTHSIM_DEM_SLOPE=<m per pixel> (synthetic)
+            if let Ok(d) = std::env::var("EARTHSIM_DEM_DIR") {
+                g.set_terrain_source(Arc::new(world::dem::DirDem::<world::dem::NoDem> { dir: d.into(), inner: None }));
+            } else if let Some(sl) = std::env::var("EARTHSIM_DEM_SLOPE").ok().and_then(|v| v.parse().ok()) {
+                g.set_terrain_source(Arc::new(world::dem::SyntheticDem { base: 200.0, slope: sl }));
+            }
+            Ok(g)
         }
         Mode::Live => {
             let f = live.ok_or("live streaming needs the Windows network client; use --offline or --demo here")?;
-            Ok(Game::new_streaming(Streamer::new(StreamConfig::default(), f, cache(), o.lat, o.lon), name, o.lat, o.lon))
+            #[allow(unused_mut)]
+            let mut g = Game::new_streaming(Streamer::new(StreamConfig::default(), f, cache(), o.lat, o.lon), name, o.lat, o.lon);
+            // terrain: EARTHSIM_TERRAIN=0 keeps the world flat
+            #[cfg(any(windows, earthsim_check_win))]
+            if std::env::var("EARTHSIM_TERRAIN").map_or(true, |v| v != "0") {
+                g.set_terrain_source(world::fetch::live_dem(&cache_dir.join("dem")));
+            }
+            Ok(g)
         }
     }
     .map(|mut g| {
@@ -1207,6 +1366,37 @@ mod tests {
         let (la, lo, _) = g.car_geo().unwrap();
         assert!((la - 53.95).abs() < 1e-4 && (lo - 27.70).abs() < 1e-4, "car at {la},{lo} after teleport");
         assert_eq!(g.place_name(), Some("53.95000, 27.70000"));
+    }
+
+    #[test]
+    fn terrain_lifts_ground_car_and_tiles() {
+        let mut g = offline_game();
+        g.set_terrain_source(Arc::new(world::dem::SyntheticDem { base: 200.0, slope: 0.5 }));
+        assert!(run_until(&mut g, 20.0, |g| g.terrain.generation > 0 && !g.hud().lines.iter().any(|l| l.contains("LOADING"))), "terrain never arrived");
+        let f = g.ground.field.clone();
+        assert!(!f.is_empty());
+        // datum = ground at the origin; the synthetic slope rises eastwards
+        assert!(f.height(0.0, 0.0).abs() < 1.0 && f.height(500.0, 0.0) > f.height(-500.0, 0.0) + 5.0);
+        // the car stands on the terrain
+        for _ in 0..120 {
+            g.update(1.0 / 60.0);
+        }
+        let ground = f.height(g.car.pos.x, g.car.pos.y);
+        assert!((g.car.pos.z - ground) > 0.1 && (g.car.pos.z - ground) < 1.5, "car z {} over ground {}", g.car.pos.z, ground);
+        // tiles are re-draped onto it: a road vertex sits at the ground height under it
+        let mut ok = false;
+        for _ in 0..200 {
+            g.update(1.0 / 60.0);
+            for op in g.take_render_ops() {
+                if let RenderOp::AddTile(_, ms) = op {
+                    if let Some(m) = ms.iter().find(|m| m.name.starts_with("road") && !m.verts.is_empty()) {
+                        let v = &m.verts[..3];
+                        ok |= (v[2] as f64 - f.height(v[0] as f64, v[1] as f64) - 0.02).abs() < 0.05;
+                    }
+                }
+            }
+        }
+        assert!(ok, "no draped road seen");
     }
 
     #[test]

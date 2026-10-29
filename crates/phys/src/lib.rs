@@ -14,4 +14,4 @@ pub use math::{v3, Quat, V3};
 pub use softbody::SoftBody;
 pub use softcar::SoftVehicle;
 pub use vehicle::{Input, Telemetry, Vehicle, VehicleParams, Wheel};
-pub use world::{Contact, FlatGround, FnGround, Ground, GroundSample, Obstacles, SlopeGround, StaticWorld};
+pub use world::{Contact, FlatGround, FnGround, Ground, GroundSample, HeightField, Obstacles, SlopeGround, StaticWorld, TerrainGround};

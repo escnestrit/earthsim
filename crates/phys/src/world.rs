@@ -14,6 +14,67 @@ pub trait Ground {
     fn sample(&self, x: f64, y: f64) -> GroundSample;
 }
 
+/// A regular grid of heights in local metres (x east, y north), sampled bilinearly. Outside the grid the
+/// nearest edge value holds.
+#[derive(Clone, Debug, Default)]
+pub struct HeightField {
+    pub x0: f64,
+    pub y0: f64,
+    pub cell: f64,
+    pub nx: usize,
+    pub ny: usize,
+    pub h: Vec<f32>,
+}
+
+impl HeightField {
+    pub fn is_empty(&self) -> bool {
+        self.h.is_empty()
+    }
+    fn at(&self, i: isize, j: isize) -> f64 {
+        let i = i.clamp(0, self.nx as isize - 1) as usize;
+        let j = j.clamp(0, self.ny as isize - 1) as usize;
+        self.h[j * self.nx + i] as f64
+    }
+    pub fn height(&self, x: f64, y: f64) -> f64 {
+        if self.h.is_empty() {
+            return 0.0;
+        }
+        let fx = (x - self.x0) / self.cell;
+        let fy = (y - self.y0) / self.cell;
+        let (i, j) = (fx.floor(), fy.floor());
+        let (tx, ty) = ((fx - i).clamp(0.0, 1.0), (fy - j).clamp(0.0, 1.0));
+        let (i, j) = (i as isize, j as isize);
+        let a = self.at(i, j) * (1.0 - tx) + self.at(i + 1, j) * tx;
+        let b = self.at(i, j + 1) * (1.0 - tx) + self.at(i + 1, j + 1) * tx;
+        a * (1.0 - ty) + b * ty
+    }
+    pub fn normal(&self, x: f64, y: f64) -> V3 {
+        if self.h.is_empty() {
+            return V3::Z;
+        }
+        let e = self.cell * 0.5;
+        let dx = (self.height(x + e, y) - self.height(x - e, y)) / (2.0 * e);
+        let dy = (self.height(x, y + e) - self.height(x, y - e)) / (2.0 * e);
+        v3(-dx, -dy, 1.0).norm()
+    }
+    /// The same field moved by (dx, dy) (local frame re-based).
+    pub fn shifted(&self, dx: f64, dy: f64) -> HeightField {
+        HeightField { x0: self.x0 + dx, y0: self.y0 + dy, ..self.clone() }
+    }
+}
+
+/// Ground following a height field (flat where there is none).
+#[derive(Clone, Default)]
+pub struct TerrainGround {
+    pub field: std::sync::Arc<HeightField>,
+}
+
+impl Ground for TerrainGround {
+    fn sample(&self, x: f64, y: f64) -> GroundSample {
+        GroundSample { height: self.field.height(x, y), normal: self.field.normal(x, y), grip: 1.0 }
+    }
+}
+
 pub struct FlatGround {
     pub grip: f64,
 }
@@ -265,6 +326,19 @@ fn poly_contact(poly: &Poly, x: f64, y: f64, r: f64) -> Option<Contact> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn height_field_bilinear_edges_and_normal() {
+        let f = HeightField { x0: 0.0, y0: 0.0, cell: 10.0, nx: 3, ny: 2, h: vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0] };
+        assert!((f.height(5.0, 5.0) - 0.5).abs() < 1e-9);
+        assert!((f.height(20.0, 0.0) - 2.0).abs() < 1e-9);
+        assert!((f.height(100.0, -50.0) - 2.0).abs() < 1e-9, "edge value outside");
+        let n = f.normal(10.0, 5.0);
+        assert!(n.x < -0.09 && n.x > -0.11 && n.z > 0.99, "{n:?}");
+        let g = TerrainGround { field: std::sync::Arc::new(f.shifted(100.0, 0.0)) };
+        assert!((g.sample(105.0, 5.0).height - 0.5).abs() < 1e-9);
+        assert_eq!(HeightField::default().height(3.0, 4.0), 0.0);
+    }
 
     fn square() -> Vec<(f64, f64)> {
         vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
