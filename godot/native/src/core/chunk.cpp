@@ -666,6 +666,28 @@ ChunkOut build_chunk(int cx, int cy, const std::vector<std::shared_ptr<const Raw
     buildings(c, tiles, all);
     objects(c, tiles);
     splat_images(c);
+    out.layer = c.layer;
+    // collision of placed objects: poles, trunks, parked cars (vertical prisms)
+    for (auto &in : out.inst) {
+        auto prism = [&](V2 ctr, double yaw, double l, double w, double z0, double z1, int sides) {
+            std::vector<V2> pts;
+            if (sides == 4) {
+                double cs = std::cos(yaw), sn = std::sin(yaw);
+                for (auto [a, b] : {std::pair{-l / 2, -w / 2}, {l / 2, -w / 2}, {l / 2, w / 2}, {-l / 2, w / 2}}) pts.push_back({ctr.x + a * cs - b * sn, ctr.y + a * sn + b * cs});
+            } else
+                for (int k = 0; k < sides; k++) pts.push_back({ctr.x + std::cos(2 * PI * k / sides) * l, ctr.y + std::sin(2 * PI * k / sides) * l});
+            for (size_t k = 0; k < pts.size(); k++) {
+                V2 a = pts[k], b = pts[(k + 1) % pts.size()];
+                c.tri_coll({a.x, a.y, z0}, {b.x, b.y, z0}, {b.x, b.y, z1});
+                c.tri_coll({a.x, a.y, z0}, {b.x, b.y, z1}, {a.x, a.y, z1});
+            }
+            for (size_t k = 1; k + 1 < pts.size(); k++) c.tri_coll({pts[0].x, pts[0].y, z1}, {pts[k].x, pts[k].y, z1}, {pts[k + 1].x, pts[k + 1].y, z1});
+        };
+        V2 p(in.p.x, in.p.y);
+        if (in.kind == I_LAMP) prism(p, 0, 0.12, 0, in.p.z - 0.5, in.p.z + 8, 6);
+        else if (in.kind == I_TREE || in.kind == I_CONIFER) prism(p, 0, 0.22 * in.scale, 0, in.p.z - 0.5, in.p.z + 4, 6);
+        else if (in.kind == I_CAR) prism(p, in.yaw, 4.4, 1.78, in.p.z + 0.15, in.p.z + 1.35, 4);
+    }
 
     // terrain meshes from the extended grid, then crop it to the chunk
     auto H = [&](int i, int j) { return (double)g.at(i + 1, j + 1); };  // chunk sample coordinates

@@ -105,29 +105,8 @@ func _add_chunk(d: Dictionary) -> void:
 		var lo2 := _mesh_instance(d["terrain_lo"], tmat, "terrain_lo")
 		lo2.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(lo2)
-	# collision: height map for the ground, triangles for everything built
-	var body := StaticBody3D.new()
-	body.name = "collision"
-	var hs := HeightMapShape3D.new()
-	var n: int = d["grid_n"]
-	hs.map_width = n
-	hs.map_depth = n
-	hs.map_data = d["heights"]
-	var cs := CollisionShape3D.new()
-	cs.shape = hs
-	var cell: float = d["grid_cell"]
-	cs.scale = Vector3(cell, 1, cell)
-	cs.position = Vector3(x0 + size * 0.5, 0, -(y0 + size * 0.5))
-	body.add_child(cs)
-	var coll: PackedVector3Array = d["collision"]
-	if coll.size() >= 3:
-		var cp := ConcavePolygonShape3D.new()
-		cp.set_faces(coll)
-		cp.backface_collision = true
-		var cs2 := CollisionShape3D.new()
-		cs2.shape = cp
-		body.add_child(cs2)
-	root.add_child(body)
+	# collision lives in the native streamer (soft-body contacts); no engine physics bodies needed
+	var body: StaticBody3D = null
 	# built surfaces: one mesh, a surface per material
 	var surf: Dictionary = d["surfaces"]
 	if not surf.is_empty():
@@ -182,7 +161,6 @@ func _place(root: Node3D, body: StaticBody3D, kind: int, a: PackedFloat32Array, 
 			mm.set_instance_transform(j, Transform3D(b, pos))
 			if mm.use_colors:
 				mm.set_instance_color(j, Color(a[o + 5], a[o + 6], a[o + 7]))
-			_collider(body, kind, pos, yaw, sc)
 			if kind == I_LAMP:
 				var lp: PackedVector3Array = lamp_points.get(key, PackedVector3Array())
 				lp.append(pos + Basis(Vector3.UP, yaw) * Vector3(1.75, 7.6, 0))

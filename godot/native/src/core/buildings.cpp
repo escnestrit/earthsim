@@ -82,7 +82,14 @@ bool pitched_roof(const Ring &outer, const std::string &shape, double wall_top, 
             std::swap(b, d);
             n = n * -1;
         }
-        int i0 = m.v(a, n, a.x / 3, a.y / 3, col), i1 = m.v(b, n, b.x / 3, b.y / 3, col), i2 = m.v(d, n, d.x / 3, d.y / 3, col);
+        // texture rows run along the eaves, columns up the slope
+        V3 t = V3(n.y, -n.x, 0);
+        if (t.len() < 1e-6) t = V3(1, 0, 0);
+        t = t.norm();
+        V3 bt = n.cross(t);
+        auto U = [&](V3 p) { return p.dot(t) / 3; };
+        auto W = [&](V3 p) { return -p.dot(bt) / 3; };
+        int i0 = m.v(a, n, U(a), W(a), col), i1 = m.v(b, n, U(b), W(b), col), i2 = m.v(d, n, U(d), W(d), col);
         m.tri(i0, i1, i2);
         push_tri(coll, a, b, d);
     };

@@ -80,6 +80,7 @@ func _orm(kind: int, triplanar_m := 0.0, tint_by_vertex := true) -> ORMMaterial3
 	m.orm_texture = t["orm"]
 	m.vertex_color_use_as_albedo = tint_by_vertex
 	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	m.metallic_specular = 0.3
 	if triplanar_m > 0.0:
 		m.uv1_triplanar = true
 		m.uv1_world_triplanar = true

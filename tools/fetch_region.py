@@ -71,16 +71,17 @@ def fetch_map(rel, tiles, out, sess, lat, lon, dlat, dlon):
                 time.sleep(2 * (k + 1))
             raise RuntimeError("range request failed")
         rd = Reader(get_bytes)
-        for (x, y) in tiles:
-            data = rd.get(14, x, y)
+        z = min(14, rd.header()["max_zoom"])  # the base theme stops below 14: take parent tiles
+        for (x, y) in sorted(set((x >> (14 - z), y >> (14 - z)) for (x, y) in tiles)):
+            data = rd.get(z, x, y)
             if data is None:
                 continue
             if data[:2] == b"\x1f\x8b":
                 data = gzip.decompress(data)
-            p = f"{out}/overture/{rel}/{theme}/14/{x}"
+            p = f"{out}/overture/{rel}/{theme}/{z}/{x}"
             os.makedirs(p, exist_ok=True)
             open(f"{p}/{y}.mvt", "wb").write(data)
-        print(theme, "done")
+        print(theme, "done at zoom", z)
     # elevation
     xs0, ys1 = tile_of(lat - dlat, lon - dlon, 13)
     xs1, ys0 = tile_of(lat + dlat, lon + dlon, 13)

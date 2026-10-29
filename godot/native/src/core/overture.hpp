@@ -15,7 +15,7 @@ std::string overture_newest_release(const std::string &list_xml);
 // tile holding their centre; roads and paths are kept up to `margin_m` beyond the tile; areas are clipped to
 // the tile.
 void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &buildings, const std::vector<mvt::Layer> &transport,
-                       const std::vector<mvt::Layer> &base, double margin_m, RawTile &out);
+                       const std::vector<mvt::Layer> &base, double margin_m, RawTile &out, const TileId *base_src = nullptr);
 
 // helpers shared with the OSM reader
 std::vector<LL> clip_ring_ll(const std::vector<LL> &ring, const Bounds &b);

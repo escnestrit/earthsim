@@ -26,6 +26,10 @@ public:
     String status();
     Vector2 latlon(Vector3 pos);
     Vector3 to_godot(double lat, double lon);
+    ec::Streamer *core() { return s_.get(); }
+    bool collision_ready(Vector3 pos);
+    // {pos: Vector3, yaw: float} of the nearest road within radius, or empty
+    Dictionary nearest_road(Vector3 pos, double radius);
 
 private:
     std::unique_ptr<ec::Streamer> s_;

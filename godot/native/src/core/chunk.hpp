@@ -28,15 +28,26 @@ struct Instance {
 // ground-cover layers (two RGBA8 images: layers 0-3 and 4-7)
 enum Layer { L_GRASS = 0, L_FOREST = 1, L_SAND = 2, L_ASPHALT = 3, L_PAVERS = 4, L_FARM = 5, L_DIRT = 6, L_PITCH = 7 };
 
+// a piece of drivable road centre line (for spawning, traffic and navigation)
+struct LaneSeg {
+    V3 a, b;          // centre line, road surface height
+    double hw = 3;    // carriageway half width
+    int oneway = 0;   // 1: only a->b, -1: only b->a
+    int prio = 0;     // road class rank (motorway 9 .. service 1)
+    int lanes = 2;
+};
+
 struct ChunkOut {
     int cx = 0, cy = 0;
     double x0 = 0, y0 = 0;
     HeightGrid grid;                 // (GRID_N+1)^2 heights, 1 m
     MeshBuf terrain_hi, terrain_lo;  // 1 m and 4 m terrain meshes
     std::vector<uint8_t> splat0, splat1;  // SPLAT_N^2 RGBA, row 0 = south
+    std::vector<uint8_t> layer;           // SPLAT_N^2 dominant ground-cover layer (grip)
     MeshSet ms;                      // everything else, by material
     std::vector<float> coll;         // static collision triangles (xyz)
     std::vector<Instance> inst;
+    std::vector<LaneSeg> lanes;  // owned road centre-line pieces
     int buildings = 0, roads = 0;
     std::vector<std::string> notes;
 };

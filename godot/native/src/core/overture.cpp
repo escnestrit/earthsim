@@ -248,7 +248,7 @@ bool area_kind(const std::string &layer, const mvt::Feature &f, AreaKind &k) {
 }  // namespace
 
 void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &buildings, const std::vector<mvt::Layer> &transport,
-                       const std::vector<mvt::Layer> &base, double margin_m, RawTile &out) {
+                       const std::vector<mvt::Layer> &base, double margin_m, RawTile &out, const TileId *base_src) {
     out.tile = tile;
     Bounds b = tile_bounds(tile);
     double clat = (b.s + b.n) / 2;
@@ -340,7 +340,7 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
 
     // base: water, land, land use, land cover; rivers given as lines; trees and lamps as points
     for (auto &L : base) {
-        Conv cv{src, L.extent};
+        Conv cv{base_src ? *base_src : src, L.extent};
         for (auto &f : L.features) {
             if (f.kind == mvt::Geom::Polygon) {
                 AreaKind k;

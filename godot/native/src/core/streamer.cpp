@@ -141,17 +141,34 @@ bool Streamer::load_source(int x, int y, std::string &err) {
     std::string rel = release(err);
     std::vector<mvt::Layer> layers[3];
     const char *themes[3] = {"buildings", "transportation", "base"};
+    TileId base_src{14, x, y};
     for (int k = 0; k < 3; k++) {
-        std::string relp = "overture/" + rel + "/" + themes[k] + "/14/" + std::to_string(x) + "/" + std::to_string(y) + ".mvt";
+        // a theme may stop below zoom 14 (the base theme does): read its parent tile then
+        int z = 14;
+        std::shared_ptr<PmTiles> pm;
+        if (cfg_.online) {
+            pm = pmtiles(themes[k], err);
+            if (!pm) return false;
+            z = std::min(14, pm->max_zoom);
+        } else {
+            for (int zz = 14; zz >= 10; zz--) {
+                std::error_code ec;
+                if (stdfs::exists(cfg_.cache_dir + "/overture/" + rel + "/" + themes[k] + "/" + std::to_string(zz), ec)) {
+                    z = zz;
+                    break;
+                }
+            }
+        }
+        int tx = x >> (14 - z), ty = y >> (14 - z);
+        if (k == 2) base_src = TileId{z, tx, ty};
+        std::string relp = "overture/" + rel + "/" + themes[k] + "/" + std::to_string(z) + "/" + std::to_string(tx) + "/" + std::to_string(ty) + ".mvt";
         std::string data;
         if (!read_file(cfg_.cache_dir + "/" + relp, data)) {
-            if (!cfg_.online) {
+            if (!pm) {
                 data.clear();  // offline and not fetched: nothing there
             } else {
-                auto pm = pmtiles(themes[k], err);
-                if (!pm) return false;
                 std::string raw;
-                if (!pm->get(14, x, y, raw, err)) return false;
+                if (!pm->get(z, tx, ty, raw, err)) return false;
                 data = raw;
                 write_file(cfg_.cache_dir + "/" + relp, data);
             }
@@ -166,7 +183,7 @@ bool Streamer::load_source(int x, int y, std::string &err) {
     }
     auto t = std::make_shared<RawTile>();
     TileId id{14, x, y};
-    overture_features(id, id, layers[0], layers[1], layers[2], 0, *t);
+    overture_features(id, id, layers[0], layers[1], layers[2], 0, *t, &base_src);
     // OSM tags already fetched earlier
     std::string js;
     if (read_file(cfg_.cache_dir + "/osm/enrich_14_" + std::to_string(x) + "_" + std::to_string(y) + ".json", js) && !js.empty()) {
@@ -226,6 +243,8 @@ void Streamer::schedule_locked() {
             double d = std::max(0.0, std::hypot(cxm - px_, cym - py_) - CHUNK * 0.7071);
             if (d > cfg_.terrain_radius + 300) {
                 if (it->second.built) drops_.push_back({it->first.x, it->first.y});
+                coll_->remove(it->first.x, it->first.y);
+                lanes_.erase(it->first);
                 if (!it->second.queued) {
                     it = chunks_.erase(it);
                     continue;
@@ -349,6 +368,17 @@ void Streamer::build_worker() {
         }
         auto out = std::make_shared<ChunkOut>(build_chunk(job.first.x, job.first.y, tiles, dem_, frame_));
         {
+            auto cc = std::make_shared<ColChunk>();
+            cc->cx = out->cx, cc->cy = out->cy;
+            cc->grid = out->grid;
+            cc->layer = out->layer;
+            cc->tris = out->coll;
+            cc->index();
+            coll_->add(cc);
+            std::lock_guard<std::mutex> l(mu_);
+            lanes_[job.first] = out->lanes;
+        }
+        {
             std::lock_guard<std::mutex> l(mu_);
             builds_running_--;
             auto it = chunks_.find(job.first);
@@ -457,6 +487,34 @@ bool Streamer::wait_ground(double x, double y, double timeout_s) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     return true;
+}
+
+bool Streamer::nearest_road(double x, double y, double radius, V3 &pos, double &heading) {
+    std::lock_guard<std::mutex> l(mu_);
+    double best = radius;
+    bool found = false;
+    V2 p(x, y);
+    for (auto &[k, v] : lanes_)
+        for (auto &s : v) {
+            if (s.prio < 2) continue;
+            V2 a(s.a.x, s.a.y), b(s.b.x, s.b.y), d = b - a;
+            double l2 = d.dot(d);
+            if (l2 < 1e-6) continue;
+            double t = std::clamp((p - a).dot(d) / l2, 0.0, 1.0);
+            V2 q = a + d * t;
+            double dist = (q - p).len();
+            if (dist < best) {
+                best = dist;
+                found = true;
+                V2 dir = d * (1 / std::sqrt(l2));
+                if (s.oneway < 0) dir = dir * -1;
+                // keep right on two-way roads
+                V2 off = s.oneway == 0 ? V2(dir.y, -dir.x) * (s.hw * 0.5) : V2();
+                pos = V3(q.x + off.x, q.y + off.y, s.a.z + (s.b.z - s.a.z) * t);
+                heading = std::atan2(dir.y, dir.x);
+            }
+        }
+    return found;
 }
 
 std::string Streamer::status() {

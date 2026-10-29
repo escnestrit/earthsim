@@ -4,6 +4,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include "earth_core.h"
 #include "earth_stream.h"
+#include "earth_car.h"
 
 using namespace godot;
 
@@ -11,6 +12,7 @@ void initialize_earthcore(ModuleInitializationLevel p_level) {
     if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
     GDREGISTER_CLASS(EarthCore);
     GDREGISTER_CLASS(EarthStream);
+    GDREGISTER_CLASS(EarthCar);
 }
 
 void uninitialize_earthcore(ModuleInitializationLevel p_level) {}

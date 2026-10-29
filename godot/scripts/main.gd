@@ -4,7 +4,10 @@
 extends Node3D
 
 var world: EarthWorld
-var car: PlayerCar
+var car: EarthCar
+var spawn := Vector3.ZERO
+var spawn_yaw := 0.0
+var cam_grounded := false
 var cam: Camera3D
 var sun: DirectionalLight3D
 var env: Environment
@@ -64,6 +67,14 @@ func _setup_env() -> void:
 	sm.ground_color = Color(0.25, 0.25, 0.22)
 	sm.energy_multiplier = 1.0
 	sky.sky_material = sm
+	if RenderingServer.get_current_rendering_method() == "gl_compatibility" or args.has("procsky"):
+		var ps := ProceduralSkyMaterial.new()
+		ps.sky_top_color = Color(0.25, 0.45, 0.8)
+		ps.sky_horizon_color = Color(0.7, 0.78, 0.88)
+		ps.ground_horizon_color = Color(0.6, 0.65, 0.7)
+		ps.ground_bottom_color = Color(0.2, 0.2, 0.2)
+		ps.sun_angle_max = 20.0
+		sky.sky_material = ps
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
@@ -120,31 +131,25 @@ func _apply_time() -> void:
 		world.mats.set_night(night)
 
 func _setup_car() -> void:
-	car = PlayerCar.new()
+	car = EarthCar.new()
 	car.name = "Car"
-	var body: Mesh = world.models["4:0"]
-	var d: Dictionary = EarthCore.model(4, 1)
-	var am := ArrayMesh.new()
-	for mat in d:
-		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, d[mat])
-		var m: Material = world.mats.get_mat(mat)
-		if mat == EarthMaterials.M_CARPAINT:
-			var p := (m as StandardMaterial3D).duplicate() as StandardMaterial3D
-			p.vertex_color_use_as_albedo = false
-			p.albedo_color = Color(0.55, 0.06, 0.05)
-			m = p
-		am.surface_set_material(am.get_surface_count() - 1, m)
-	body = am
+	add_child(car)
+	var mats := {}
+	for mat in [EarthMaterials.M_CARPAINT, EarthMaterials.M_GLASS, EarthMaterials.M_DARK, EarthMaterials.M_LAMP, EarthMaterials.M_TIRE]:
+		mats[mat] = world.mats.get_mat(mat)
+	var paint := (world.mats.get_mat(EarthMaterials.M_CARPAINT) as StandardMaterial3D).duplicate() as StandardMaterial3D
+	paint.vertex_color_use_as_albedo = false
+	paint.albedo_color = Color(0.55, 0.06, 0.05)
+	mats[EarthMaterials.M_CARPAINT] = paint
 	var wheel := CylinderMesh.new()
-	wheel.top_radius = PlayerCar.WHEEL_R
-	wheel.bottom_radius = PlayerCar.WHEEL_R
+	wheel.top_radius = 0.33
+	wheel.bottom_radius = 0.33
 	wheel.height = 0.22
 	wheel.radial_segments = 24
 	wheel.material = world.mats.get_mat(EarthMaterials.M_TIRE)
-	car.setup(body, wheel)
-	car.freeze = true
-	add_child(car)
-	car.global_position = Vector3(0, 300, 0)
+	car.setup(world.stream, EarthCore.model(4, 1), mats, wheel)
+	spawn = Vector3(float(args.get("x", "0")), 0, float(args.get("z", "0")))
+	spawn_yaw = deg_to_rad(float(args.get("yaw", "0")))
 	cam = Camera3D.new()
 	cam.far = 6000.0
 	cam.near = 0.1
@@ -171,23 +176,14 @@ func _setup_hud() -> void:
 	help.position = Vector2(12, -30)
 	cl.add_child(help)
 
-func _on_chunk(cx: int, cy: int, full: bool) -> void:
-	if spawn_ready:
-		return
-	# the car waits frozen until the chunk under it has its collision
-	var p := car.global_position
-	if full and cx == int(floor(p.x / 256.0)) and cy == int(floor(-p.z / 256.0)):
-		var g := world.ground(p.x, p.z)
-		if not is_nan(g):
-			car.global_position = Vector3(p.x, g + 1.2, p.z)
-			car.freeze = false
-			spawn_ready = true
+func _on_chunk(_cx: int, _cy: int, _full: bool) -> void:
+	pass
 
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
 			KEY_R:
-				car.reset_upright()
+				car.reset()
 			KEY_C:
 				cam_mode = (cam_mode + 1) % 3
 				free_pos = cam.global_position
@@ -209,20 +205,25 @@ func _unhandled_input(e: InputEvent) -> void:
 
 func _process(dt: float) -> void:
 	t_since += dt
-	if not spawn_ready:
-		# hold the spawn point on the ground once the terrain there is known
-		var g := world.ground(car.global_position.x, car.global_position.z)
-		if not is_nan(g):
-			car.global_position.y = g + 1.2
-	world.focus = car.global_position if cam_mode != 2 else cam.global_position
+	if not spawn_ready and world.stream.collision_ready(spawn):
+		var r: Dictionary = world.stream.nearest_road(spawn, 400.0)
+		if not r.is_empty():
+			spawn_ready = car.place(r["pos"], r["yaw"])
+		elif t_since > 20.0:
+			spawn_ready = car.place(spawn, spawn_yaw)
+		if spawn_ready and args.has("auto"):
+			var a: PackedStringArray = (args["auto"] as String).split(",")
+			car.set_auto_input(float(a[0]), float(a[1]) if a.size() > 1 else 0.0, 0.0)
+	var focus_p: Vector3 = car.global_position if spawn_ready else spawn
+	world.focus = focus_p if cam_mode != 2 else cam.global_position
 	_update_camera(dt)
 	fps_acc = lerpf(fps_acc, 1.0 / maxf(dt, 1e-4), 0.05)
 	var ll := world.stream.latlon(car.global_position)
-	var gear_s: String = "R" if car.gear < 0 else str(car.gear)
+	var gear_s: String = "R" if car.gear() < 0 else str(car.gear())
 	hud.text = "%d км/ч   передача %s   %d об/мин\n%.5f, %.5f   %02d:%02d   FPS %d\n%s" % [
-		roundi(car.speed_kmh()), gear_s, roundi(car.rpm), ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60), roundi(fps_acc), world.stream.status()]
+		roundi(car.speed_kmh()), gear_s, roundi(car.rpm()), ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60), roundi(fps_acc), world.stream.status()]
 	if shot_t > 0.0 and int(t_since / 5.0) != int((t_since - dt) / 5.0):
-		print("t=%.0f fps=%d %s" % [t_since, fps_acc, world.stream.status()])
+		print("t=%.0f fps=%d car %s %.0f km/h dmg %.2f | %s" % [t_since, fps_acc, car.global_position, car.speed_kmh(), car.damage(), world.stream.status()])
 	if shot_t > 0.0 and t_since > shot_t:
 		shot_t = -1.0
 		await RenderingServer.frame_post_draw
@@ -233,6 +234,11 @@ func _process(dt: float) -> void:
 
 func _update_camera(dt: float) -> void:
 	if cam_mode == 2:
+		if args.has("cam") and not cam_grounded:
+			var gh := world.ground(free_pos.x, free_pos.z)
+			if not is_nan(gh):
+				free_pos.y += gh
+				cam_grounded = true
 		var f := Vector3(-sin(cam_yaw) * cos(cam_pitch), -sin(cam_pitch), -cos(cam_yaw) * cos(cam_pitch))
 		var mv := Vector3.ZERO
 		if not args.has("cam"):
@@ -245,17 +251,17 @@ func _update_camera(dt: float) -> void:
 		cam.look_at(free_pos + f, Vector3.UP)
 		return
 	var tr := car.global_transform
-	var fwd := tr.basis.z * car.forward_sign
+	var fwd := car.forward()
 	fwd.y = 0
 	if fwd.length() < 0.1:
 		fwd = Vector3.FORWARD
 	fwd = fwd.normalized()
 	if cam_mode == 1:
-		cam.global_position = tr * Vector3(0, 1.35, 0.3 * car.forward_sign)
-		cam.look_at(cam.global_position + tr.basis.z * car.forward_sign * 10.0 + Vector3(0, -0.6, 0), Vector3.UP)
+		cam.global_position = tr * Vector3(0.1, 1.3, 0)
+		cam.look_at(cam.global_position + car.forward() * 10.0 + Vector3(0, -0.6, 0), Vector3.UP)
 		return
 	var back := fwd.rotated(Vector3.UP, cam_yaw)
-	var target := car.global_position + Vector3(0, 1.3, 0)
+	var target := (car.global_position if spawn_ready else spawn) + Vector3(0, 1.3, 0)
 	var want := target - back * cam_dist * cos(cam_pitch) + Vector3(0, cam_dist * sin(cam_pitch), 0)
 	var g := world.ground(want.x, want.z)
 	if not is_nan(g):

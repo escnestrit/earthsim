@@ -59,7 +59,10 @@ void fragment() {
 	alb /= tot;
 	nrm /= tot;
 	orm /= tot;
-	// large-scale colour variation
+	// large-scale colour variation; dry and lush patches on vegetated layers
+	float veg = w[0] + w[1] * 0.5 + w[7] * 0.3;
+	float patch = smoothstep(0.35, 0.75, vnoise(wpos.xz * 0.045 + 3.0) * 0.7 + vnoise(wpos.xz * 0.2) * 0.3);
+	alb = mix(alb, alb * vec3(1.35, 1.1, 0.75), patch * veg * 0.6);
 	alb *= 0.88 + 0.24 * n2;
 	ALBEDO = alb;
 	NORMAL_MAP = nrm;
@@ -68,5 +71,5 @@ void fragment() {
 	AO_LIGHT_AFFECT = 0.5;
 	ROUGHNESS = orm.g;
 	METALLIC = 0.0;
-	SPECULAR = 0.4;
+	SPECULAR = 0.2;
 }

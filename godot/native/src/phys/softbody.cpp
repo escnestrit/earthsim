@@ -1,0 +1,220 @@
+#include "softbody.hpp"
+#include <algorithm>
+
+namespace ec {
+
+int SoftBody::add_node(V3 p, double m) {
+    SNode n;
+    n.p = p, n.rest = p, n.m = m;
+    nodes.push_back(n);
+    return (int)nodes.size() - 1;
+}
+
+int SoftBody::add_beam(int a, int b, double k, double c) {
+    double len = (nodes[b].p - nodes[a].p).len();
+    SBeam be;
+    be.a = a, be.b = b, be.rest = len, be.rest0 = len, be.k = k, be.c = c, be.c_reb = c;
+    beams.push_back(be);
+    return (int)beams.size() - 1;
+}
+
+double SoftBody::total_mass() const {
+    double m = 0;
+    for (auto &n : nodes) m += n.m;
+    return m;
+}
+V3 SoftBody::centre_of_mass() const {
+    V3 c;
+    for (auto &n : nodes) c = c + n.p * n.m;
+    return c * (1 / total_mass());
+}
+
+void SoftBody::clear_forces() {
+    for (auto &n : nodes) n.f = gravity * n.m;
+}
+
+void SoftBody::beam_forces(double dt) {
+    f_.assign(nodes.size(), V3());
+    double plastic = 0;
+    for (auto &be : beams) {
+        if (be.broken) continue;
+        const SNode &na = nodes[be.a], &nb = nodes[be.b];
+        V3 d = nb.p - na.p;
+        double len2 = d.dot(d);
+        if (len2 < 1e-18) continue;
+        double len = std::sqrt(len2);
+        if (be.support && len >= be.rest) {
+            if ((len - be.rest) / be.rest > be.break_strain) be.broken = true;
+            continue;
+        }
+        V3 dir = d * (1 / len);
+        double vrel = (nb.v - na.v).dot(dir);
+        double f_el = be.k * (len - be.rest);
+        if (std::abs(f_el) > be.break_force) {
+            be.broken = true;
+            continue;
+        }
+        bool yielding = false;
+        if (f_el > be.yield_t) {
+            double nr = len - be.yield_t / be.k;
+            plastic += be.yield_t * std::abs(nr - be.rest);
+            be.rest = nr;
+            f_el = be.yield_t;
+            yielding = true;
+        } else if (f_el < -be.yield_c) {
+            double nr = std::max(len + be.yield_c / be.k, 0.2 * be.rest0);
+            plastic += be.yield_c * std::abs(nr - be.rest);
+            be.rest = nr;
+            f_el = -be.yield_c;
+            yielding = true;
+        }
+        if ((len - be.rest) > be.break_strain * be.rest) {
+            be.broken = true;
+            continue;
+        }
+        double fsum = f_el;
+        if (!yielding) {
+            double red = na.m * nb.m / (na.m + nb.m);
+            double lim = red * std::abs(vrel) / dt;
+            double c = vrel > 0 ? be.c_reb : be.c;
+            fsum += std::clamp(c * vrel, -lim, lim);
+        }
+        if (be.has_stops) {
+            const Stops &st = be.stops;
+            if (len < st.min_len) fsum -= st.k * (st.min_len - len) + st.c * std::max(-vrel, 0.0);
+            else if (len > st.max_len) fsum += st.k * (len - st.max_len) + st.c * std::max(vrel, 0.0);
+        }
+        V3 fv = dir * fsum;
+        f_[be.a] = f_[be.a] + fv;
+        f_[be.b] = f_[be.b] - fv;
+    }
+    for (size_t i = 0; i < nodes.size(); i++) nodes[i].f = nodes[i].f + f_[i];
+    plastic_work += plastic;
+}
+
+void SoftBody::slide_forces() {
+    for (auto &pn : pins) {
+        if (pn.broken) continue;
+        SNode &na = nodes[pn.a], &nb = nodes[pn.b];
+        V3 f = (nb.p - na.p) * pn.k + (nb.v - na.v) * pn.c;
+        if (f.len() > pn.strength) {
+            pn.broken = true;
+            continue;
+        }
+        na.f = na.f + f;
+        nb.f = nb.f - f;
+    }
+    for (auto &sl : slides) {
+        V3 p = nodes[sl.node].p;
+        double best = 1e300;
+        int bw = -1;
+        double bt = 0;
+        V3 bq;
+        for (size_t w = 0; w + 1 < sl.rail.size(); w++) {
+            V3 a = nodes[sl.rail[w]].p, b = nodes[sl.rail[w + 1]].p, d = b - a;
+            double dd = d.dot(d);
+            if (dd < 1e-12) continue;
+            double t = (p - a).dot(d) / dd;
+            bool last = w + 2 == sl.rail.size();
+            if ((sl.capped || w > 0) && t < 0) t = 0;
+            if ((sl.capped || !last) && t > 1) t = 1;
+            V3 q = a + d * t;
+            double dist = (p - q).dot(p - q);
+            if (dist < best) best = dist, bw = (int)w, bt = t, bq = q;
+        }
+        if (bw < 0) continue;
+        int ia = sl.rail[bw], ib = sl.rail[bw + 1];
+        V3 e = p - bq;
+        V3 vq = nodes[ia].v * (1 - bt) + nodes[ib].v * bt;
+        V3 vrel = nodes[sl.node].v - vq;
+        double el = e.len();
+        V3 vn = el > 1e-9 ? e * (vrel.dot(e) / (el * el)) : V3();
+        V3 f = e * -sl.k - vn * sl.c;
+        nodes[sl.node].f = nodes[sl.node].f + f;
+        nodes[ia].f = nodes[ia].f - f * (1 - bt);
+        nodes[ib].f = nodes[ib].f - f * bt;
+    }
+}
+
+static V3 friction(V3 vt, double fn, double mu, double m, double dt) {
+    double s = vt.len();
+    if (s < 1e-9) return V3();
+    double max_stop = m * s / dt;
+    double mag = std::min(mu * fn, max_stop) * std::max(std::min(s / (s + 0.02), 1.0), std::min(s, 0.2) / 0.2);
+    return vt * (-mag / s);
+}
+
+void SoftBody::contacts(const CollisionWorld &w, double dt) {
+    double peak = 0;
+    for (auto &n : nodes) {
+        if (!n.hit_ground) continue;
+        Surface s = w.surface(n.p.x, n.p.y, n.p.z - n.radius, 0.35);
+        if (!s.found) continue;
+        double depth = n.radius - (n.p - V3(n.p.x, n.p.y, s.height)).dot(s.normal);
+        if (depth <= 0) continue;
+        double vn = n.v.dot(s.normal);
+        double fnm = std::max(0.0, ground.k * depth - ground.c * vn);
+        V3 vt = n.v - s.normal * vn;
+        n.f = n.f + s.normal * fnm + friction(vt, fnm, ground.mu * s.grip, n.m, dt);
+        peak = std::max(peak, fnm);
+    }
+    peak_contact = peak;
+    peak_world = 0;
+}
+
+void SoftBody::integrate(double dt) {
+    for (auto &n : nodes) {
+        n.v = n.v + n.f * (dt / n.m);
+        n.p = n.p + n.v * dt;
+        if (!(std::isfinite(n.p.x) && std::isfinite(n.p.y) && std::isfinite(n.p.z) && std::isfinite(n.v.x))) diverged = true;
+    }
+}
+
+void SoftBody::resolve_world(const CollisionWorld &w, double dt) {
+    V3 lo(1e300, 1e300, 1e300), hi(-1e300, -1e300, -1e300);
+    double rmax = 0;
+    for (auto &n : nodes)
+        if (n.hit_world) {
+            lo = V3(std::min(lo.x, n.p.x), std::min(lo.y, n.p.y), std::min(lo.z, n.p.z));
+            hi = V3(std::max(hi.x, n.p.x), std::max(hi.y, n.p.y), std::max(hi.z, n.p.z));
+            rmax = std::max(rmax, n.radius);
+        }
+    if (lo.x > hi.x) return;
+    V3 m(rmax + 0.1, rmax + 0.1, rmax + 0.1);
+    if (!w.any_near(lo - m, hi + m)) return;
+    double mu = world.mu, peak = 0;
+    for (auto &n : nodes) {
+        if (!n.hit_world) continue;
+        for (int it = 0; it < 2; it++) {
+            w.sphere(n.p, n.radius, hits_, false);
+            bool any = false;
+            for (auto &h : hits_) {
+                // upward faces are the ground's job (contacts()); walls, kerb faces and edges are handled here
+                if (h.n.z > 0.7) continue;
+                any = true;
+                n.p = n.p + h.n * h.depth;
+                double vn = n.v.dot(h.n);
+                if (vn < 0) {
+                    n.v = n.v - h.n * vn;
+                    peak = std::max(peak, n.m * -vn / dt);
+                    V3 vt = n.v - h.n * n.v.dot(h.n);
+                    double s = vt.len();
+                    if (s > 1e-9) n.v = n.v - vt * (std::min(mu * -vn, s) / s);
+                }
+            }
+            if (!any) break;
+        }
+    }
+    peak_world = std::max(peak_world, peak);
+}
+
+void SoftBody::step(double dt, const CollisionWorld &w) {
+    clear_forces();
+    beam_forces(dt);
+    slide_forces();
+    contacts(w, dt);
+    integrate(dt);
+    resolve_world(w, dt);
+}
+
+}  // namespace ec

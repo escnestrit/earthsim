@@ -156,13 +156,14 @@ MatTex material_texture(int kind) {
             float u = (x + 0.5f) / S, v = (y + 0.5f) / S;
             switch (kind) {
                 case T_GRASS: {
-                    float big = fbm(u, v, 4, 3, 11), mid = fbm(u, v, 16, 3, 12), fine = vnoise(u * 1.0f, v * 4.0f, 128, 13);
-                    float dry = smooth(0.55f, 0.75f, big);
-                    float shade = 0.75f + 0.35f * mid + 0.2f * (fine - 0.5f);
-                    set(f, i, mixf(0.17f, 0.36f, dry) * shade, mixf(0.33f, 0.36f, dry) * shade, mixf(0.1f, 0.14f, dry) * shade);
-                    f.h[i] = fine * 0.6f + mid * 0.4f;
+                    // uniform at the texture's scale (the shader adds large patches): blades and clumps
+                    float mid = fbm(u, v, 16, 3, 12), blades = vnoise(u * 1.0f, v * 6.0f, 160, 13), clump = cells(u, v, 48, 14);
+                    float shade = 0.78f + 0.25f * mid + 0.22f * (blades - 0.5f) - 0.12f * clump;
+                    float yellow = h01(x / 3, y / 9, 15) > 0.93f ? 0.35f : 0.0f;
+                    set(f, i, mixf(0.2f, 0.42f, yellow) * shade, mixf(0.36f, 0.4f, yellow) * shade, mixf(0.11f, 0.15f, yellow) * shade);
+                    f.h[i] = blades * 0.6f + (1 - clump) * 0.4f;
                     f.rough[i] = 0.92f;
-                    f.ao[i] = 0.8f + 0.2f * fine;
+                    f.ao[i] = 0.75f + 0.25f * blades;
                     strength = 3;
                     break;
                 }
@@ -194,7 +195,7 @@ MatTex material_texture(int kind) {
                     float stone = sp > 0.93f ? 0.12f : sp < 0.06f ? -0.05f : 0;
                     uint32_t id;
                     float c2 = 0, c = cells(u, v, 6, 43, &id, &c2);
-                    float crack = (c2 - c) < 0.02f && fbm(u, v, 3, 2, 44) > 0.62f ? 1.0f : 0.0f;
+                    float crack = (c2 - c) < 0.012f && fbm(u, v, 3, 2, 44) > 0.7f ? 1.0f : 0.0f;
                     float g = 0.15f + 0.05f * n + stone - crack * 0.06f;
                     set(f, i, g, g, g * 1.02f);
                     f.h[i] = (sp > 0.9f ? 0.6f : 0.3f) + n * 0.3f - crack * 0.6f;
@@ -263,7 +264,7 @@ MatTex material_texture(int kind) {
                 case T_CURB: {
                     float n = fbm(u, v, 6, 5, 91), pore = h01(x, y, 92) > 0.985f ? 1.0f : 0.0f;
                     float stain = smooth(0.55f, 0.8f, fbm(u, v, 3, 3, 93));
-                    float g = (kind == T_CURB ? 0.72f : 0.66f) + 0.08f * n - 0.12f * stain - pore * 0.2f;
+                    float g = (kind == T_CURB ? 0.72f : 0.66f) + 0.08f * n - 0.05f * stain - pore * 0.2f;
                     set(f, i, g, g * 0.99f, g * 0.97f);
                     f.h[i] = n * 0.4f - pore * 0.5f;
                     f.rough[i] = 0.88f;

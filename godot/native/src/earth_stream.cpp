@@ -212,7 +212,25 @@ Vector3 EarthStream::to_godot(double lat, double lon) {
     return Vector3((real_t)v.x, 0, (real_t)-v.y);
 }
 
+bool EarthStream::collision_ready(Vector3 p) {
+    if (!s_) return false;
+    return s_->collision()->has((int)std::floor(p.x / ec::CHUNK), (int)std::floor(-p.z / ec::CHUNK));
+}
+
+Dictionary EarthStream::nearest_road(Vector3 p, double radius) {
+    Dictionary d;
+    ec::V3 q;
+    double h;
+    if (s_ && s_->nearest_road(p.x, -p.z, radius, q, h)) {
+        d["pos"] = Vector3((real_t)q.x, (real_t)q.z, (real_t)-q.y);
+        d["yaw"] = h;
+    }
+    return d;
+}
+
 void EarthStream::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("nearest_road", "pos", "radius"), &EarthStream::nearest_road);
+    ClassDB::bind_method(D_METHOD("collision_ready", "pos"), &EarthStream::collision_ready);
     ClassDB::bind_method(D_METHOD("start", "lat", "lon", "cache_dir", "online", "detail_radius", "terrain_radius", "enrich"), &EarthStream::start);
     ClassDB::bind_method(D_METHOD("stop"), &EarthStream::stop);
     ClassDB::bind_method(D_METHOD("update", "pos"), &EarthStream::update);

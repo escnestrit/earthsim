@@ -431,6 +431,11 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
         std::vector<RPt> P = cut(r0.pts, r0.trim[0], L - r0.trim[1]);
         if (P.size() < 2) continue;
         c.out.roads++;
+        for (size_t i = 0; i + 1 < P.size(); i++) {
+            if (!c.own((P[i].p + P[i + 1].p) * 0.5)) continue;
+            double zo2 = 0.03 + r0.prio * 0.004;
+            c.out.lanes.push_back({V3(P[i].p.x, P[i].p.y, P[i].z + zo2), V3(P[i + 1].p.x, P[i + 1].p.y, P[i + 1].z + zo2), r0.hw, r0.oneway, r0.prio, r0.lanes});
+        }
         std::vector<V2> pp(P.size()), nn;
         std::vector<double> sc, s(P.size(), 0);
         for (size_t i = 0; i < P.size(); i++) pp[i] = P[i].p;

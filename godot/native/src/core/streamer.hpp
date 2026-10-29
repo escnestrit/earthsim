@@ -11,6 +11,7 @@
 #include <thread>
 #include "chunk.hpp"
 #include "pmtiles.hpp"
+#include "../phys/collide.hpp"
 
 namespace ec {
 
@@ -39,6 +40,8 @@ public:
     Streamer(StreamConfig cfg, HttpFn http);
     ~Streamer();
     const LocalFrame &frame() const { return frame_; }
+    // static collision of the loaded chunks, for the soft-body vehicles
+    std::shared_ptr<CollisionWorld> collision() const { return coll_; }
     // player position in the local frame; cheap, call every frame
     void update(double x, double y);
     // a finished chunk, if any
@@ -48,6 +51,9 @@ public:
     // natural ground height at a local point; NaN until the terrain there is loaded
     double ground(double x, double y);
     std::string status();
+    // nearest drivable road point to (x, y) within `radius`: position on the centre line (right-hand lane
+    // offset applied), heading along the road; false when none is loaded
+    bool nearest_road(double x, double y, double radius, V3 &pos, double &heading);
     // blocks until terrain at (x, y) is loaded or `timeout_s` passes
     bool wait_ground(double x, double y, double timeout_s);
 
@@ -74,6 +80,7 @@ private:
     HttpFn http_;
     LocalFrame frame_;
     Dem dem_;
+    std::shared_ptr<CollisionWorld> coll_ = std::make_shared<CollisionWorld>();
     std::string release_;
     std::mutex pm_mu_;
     std::map<std::string, std::shared_ptr<PmTiles>> pm_;
@@ -84,6 +91,7 @@ private:
     double px_ = 0, py_ = 0;
     std::map<Key, ChunkState> chunks_;
     std::map<uint64_t, std::shared_ptr<const RawTile>> src_;  // z14 tiles
+    std::map<Key, std::vector<LaneSeg>> lanes_;
     std::set<uint64_t> src_pending_, dem_pending_, enrich_pending_, enrich_done_;
     std::set<uint64_t> dem_ok_;
     std::deque<NetJob> net_q_;
