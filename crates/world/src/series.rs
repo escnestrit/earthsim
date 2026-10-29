@@ -235,7 +235,7 @@ pub fn match_design(series_tag: Option<&str>, class: &str, lat: f64, lon: f64, l
     let usage = match class {
         "house" | "detached" | "semidetached_house" | "terrace" | "bungalow" => Use::House,
         "office" | "commercial" => Use::Office,
-        "apartments" | "residential" | "dormitory" | "yes" => Use::Housing,
+        "apartments" | "residential" | "dormitory" => Use::Housing,
         _ => return None,
     };
     let here = regions_at(lat, lon);

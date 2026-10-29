@@ -194,6 +194,10 @@ fn style(id: f32) -> Style {
     let st = |wall, windows: Vec<(f32, f32, f32, f32)>, frame| Style { wall, windows, frame, loggia: None, pilaster: 0.0, arch: false, panes: 2, doors: false, no_sill: false };
     let grey = [0.32, 0.33, 0.35];
     match (si, v) {
+        // blank walls: monuments (stone), towers and chimneys (concrete, brick)
+        (12, 0) => st(stone_slab, vec![], dark),
+        (12, 1) => st(panel, vec![], dark),
+        (12, _) => st(brick, vec![], dark),
         // arched: churches, theatres, old civic buildings
         (8, 0) => Style { pilaster: 0.35, arch: true, ..st(plaster, vec![(1.0, 2.0, 0.6, 2.65)], white) },
         (8, 1) => Style { arch: true, ..st(plaster, vec![(0.55, 1.25, 0.8, 2.55), (1.75, 2.45, 0.8, 2.55)], white) },

@@ -77,6 +77,8 @@ pub fn building_tags(f: &Feature) -> Vec<(String, String)> {
     put("building:colour", s(f.prop("facade_color")));
     put("building:material", s(f.prop("facade_material")));
     put("name", s(f.prop("@name")));
+    // Overture's use category (residential, commercial, education, ...) when the class is not known
+    put("building:use", s(f.prop("subtype")));
     t
 }
 

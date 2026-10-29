@@ -30,7 +30,8 @@ pub fn estimate_height(tags: &Tags) -> (f64, &'static str) {
         }
     }
     let n = match tag(tags, "building") {
-        Some("garage") | Some("garages") | Some("shed") | Some("kiosk") | Some("carport") => 1.0,
+        Some("garage") | Some("garages") | Some("shed") | Some("kiosk") | Some("carport") | Some("toilets") => 1.0,
+        Some("monument") => 4.0,
         Some("house") | Some("detached") | Some("hut") | Some("chapel") => 2.0,
         Some("retail") | Some("supermarket") => 1.5,
         Some("church") | Some("mosque") | Some("synagogue") | Some("temple") => 4.0,
@@ -51,6 +52,10 @@ pub enum Use {
     Garage,
     Industrial,
     Civic,
+    /// monuments, obelisks, memorials: stone, no windows
+    Monument,
+    /// chimneys, towers, silos, tanks: plain walls
+    Structure,
     Other,
 }
 
@@ -59,6 +64,12 @@ pub fn use_of(tags: &Tags) -> Use {
     let amenity = tag(tags, "amenity").unwrap_or("");
     let bu = tag(tags, "building:use").unwrap_or("");
     let any = |v: &[&str]| v.contains(&class) || v.contains(&amenity) || v.contains(&bu);
+    if any(&["monument", "memorial", "obelisk"]) {
+        return Use::Monument;
+    }
+    if any(&["chimney", "tower", "water_tower", "silo", "storage_tank", "transformer_tower", "bunker"]) {
+        return Use::Structure;
+    }
     if any(&["church", "cathedral", "chapel", "mosque", "synagogue", "temple", "shrine", "religious", "place_of_worship", "monastery"]) {
         Use::Religious
     } else if any(&["school", "university", "college", "kindergarten", "education", "library"]) {
@@ -67,7 +78,7 @@ pub fn use_of(tags: &Tags) -> Use {
         Use::Medical
     } else if any(&["garage", "garages", "carport"]) {
         Use::Garage
-    } else if any(&["office", "bank"]) || tag(tags, "office").is_some() {
+    } else if any(&["office", "bank", "hotel"]) || tag(tags, "office").is_some() {
         Use::Office
     } else if any(&["retail", "supermarket", "commercial", "kiosk", "marketplace", "mall"]) || tag(tags, "shop").is_some() {
         Use::Retail
@@ -196,6 +207,9 @@ pub fn facade_for(tags: &Tags, height: f64, seed: u64) -> scene::Facade {
         Use::Retail if material.is_none() && height <= 9.0 => Some(mat::facade(10, 0)),
         Use::Garage if material.is_none() || brick => Some(mat::facade(10, 2)),
         Use::Office if material.is_none() && height <= 24.0 => Some(mat::facade(11, var(3))),
+        Use::Office if material.is_none() => Some(mat::facade(3, var(3))),
+        Use::Monument => Some(mat::facade(12, 0)),
+        Use::Structure => Some(mat::facade(12, if brick { 2 } else { 1 })),
         _ => None,
     };
     if let Some(sp) = special {
@@ -287,7 +301,15 @@ pub fn roof_plan(tags: &Tags, ring: &[(f64, f64)], h: f64) -> Option<RoofPlan> {
         None => {
             let small_house = matches!(class, "house" | "detached" | "semidetached_house" | "bungalow" | "cabin" | "farm" | "hut" | "dacha");
             let church = use_of(tags) == Use::Religious && !matches!(class, "mosque") && tag(tags, "religion") != Some("muslim");
-            if small_house && h <= 12.0 || church && h <= 30.0 { "gabled" } else { return None }
+            // a tall thin monument: an obelisk's pointed top
+            let obelisk = use_of(tags) == Use::Monument && signed_area(ring).abs() < 150.0 && h > 2.5 * signed_area(ring).abs().sqrt();
+            if obelisk {
+                "pyramidal"
+            } else if small_house && h <= 12.0 || church && h <= 30.0 {
+                "gabled"
+            } else {
+                return None;
+            }
         }
     };
     let c = simplify(ring);
@@ -470,6 +492,125 @@ pub fn triangulate(ring: &[(f64, f64)]) -> Option<Vec<[usize; 3]>> {
     Some(out)
 }
 
+/// The building class to work with: the mapped `building=*` when it says something, otherwise a guess from
+/// the other tags (amenity, shop, office, tourism, historic, Overture subtype), the name, and the shape.
+/// Only a slab-shaped block (8.5-14.5 m deep, long, 3+ storeys) with nothing else known is taken for an
+/// apartment block; anything else unknown stays a plain "yes" building (no balconies, no stairwells).
+pub fn infer_class(tags: &Tags, ring: &[(f64, f64)], area: f64) -> String {
+    let class = tag(tags, "building").unwrap_or("yes");
+    if !matches!(class, "yes" | "building" | "true" | "1") {
+        return class.to_string();
+    }
+    let t = |k: &str| tag(tags, k).unwrap_or("");
+    match t("amenity") {
+        "place_of_worship" => return "religious".into(),
+        a @ ("school" | "kindergarten" | "university" | "college") => return a.into(),
+        "hospital" | "clinic" | "doctors" => return "hospital".into(),
+        "bank" | "bureau_de_change" => return "office".into(),
+        "townhall" | "courthouse" | "police" | "fire_station" | "library" | "theatre" | "cinema" | "arts_centre" | "community_centre" | "post_office" => return "civic".into(),
+        "fuel" | "restaurant" | "cafe" | "fast_food" | "bar" | "pub" | "marketplace" | "pharmacy" => return if area < 40.0 { "kiosk".into() } else { "retail".into() },
+        _ => {}
+    }
+    if !t("shop").is_empty() {
+        return if area < 40.0 { "kiosk".into() } else { "retail".into() };
+    }
+    if !t("office").is_empty() {
+        return "office".into();
+    }
+    if matches!(t("tourism"), "hotel" | "hostel" | "motel" | "guest_house") {
+        return "hotel".into();
+    }
+    if matches!(t("tourism"), "museum" | "gallery") {
+        return "civic".into();
+    }
+    if matches!(t("historic"), "memorial" | "monument") || matches!(t("man_made"), "obelisk" | "monument") {
+        return "monument".into();
+    }
+    if matches!(t("man_made"), "tower" | "chimney" | "water_tower" | "silo" | "storage_tank") {
+        return t("man_made").into();
+    }
+    match t("building:use") {
+        "residential" => return "residential".into(),
+        "commercial" => return "commercial".into(),
+        "industrial" => return "industrial".into(),
+        "education" => return "school".into(),
+        "religious" => return "religious".into(),
+        "medical" => return "hospital".into(),
+        "civic" | "entertainment" => return "civic".into(),
+        "transportation" => return "transportation".into(),
+        "outbuilding" | "agricultural" => return "shed".into(),
+        "service" => return "service".into(),
+        _ => {}
+    }
+    // the name usually says what a named building is
+    let name = t("name").to_lowercase();
+    if !name.is_empty() {
+        let has = |ws: &[&str]| ws.iter().any(|w| name.contains(w));
+        if has(&["жк ", "жилой", "residen", "apartment"]) {
+            return "residential".into();
+        }
+        if has(&["бизнес", "офис", "business", "office", "банк", "bank", "tower", "плаза", "plaza"]) {
+            return "office".into();
+        }
+        if has(&["гостиниц", "отель", "hotel", "хостел", "hostel"]) {
+            return "hotel".into();
+        }
+        if has(&["торгов", "трц", "тц ", "универмаг", "универсам", "магазин", "рынок", "mall", "market", "shop", "store", "гипермаркет", "супермаркет"]) {
+            return "retail".into();
+        }
+        if has(&["школ", "гимназ", "лицей", "school"]) {
+            return "school".into();
+        }
+        if has(&["детский сад", "ясли", "kindergarten"]) {
+            return "kindergarten".into();
+        }
+        if has(&["университет", "институт", "академи", "колледж", "university", "college"]) {
+            return "university".into();
+        }
+        if has(&["больниц", "поликлин", "госпитал", "hospital", "clinic", "медицин"]) {
+            return "hospital".into();
+        }
+        if has(&["церк", "храм", "собор", "костёл", "костел", "часовн", "church", "cathedral", "chapel"]) {
+            return "religious".into();
+        }
+        if has(&["театр", "музей", "дворец", "библиотек", "кинотеатр", "вокзал", "филармон", "цирк", "theatre", "museum", "station", "library", "palace"]) {
+            return "civic".into();
+        }
+        if has(&["памятник", "монумент", "обелиск", "мемориал", "monument", "memorial", "obelisk"]) {
+            return "monument".into();
+        }
+        if has(&["завод", "фабрик", "комбинат", "factory", "plant", "склад", "warehouse"]) {
+            return "industrial".into();
+        }
+        if has(&["гараж", "garage"]) {
+            return "garages".into();
+        }
+        if has(&["стадион", "арена", "спорт", "бассейн", "stadium", "arena", "sport"]) {
+            return "civic".into();
+        }
+    }
+    // shapes
+    let height = tag(tags, "height").and_then(|v| v.split_whitespace().next()?.replace(',', ".").parse::<f64>().ok());
+    if let Some(h) = height {
+        if area < 150.0 && h > 3.0 * area.sqrt() {
+            return "monument".into();
+        }
+    }
+    if area < 22.0 {
+        return "kiosk".into();
+    }
+    let depth = corpus_depth(ring);
+    let n = ring.len();
+    let per: f64 = (0..n).map(|i| (ring[(i + 1) % n].0 - ring[i].0).hypot(ring[(i + 1) % n].1 - ring[i].1)).sum();
+    let length = per / 2.0 - depth;
+    let storeys = tag(tags, "building:levels").and_then(|l| l.trim().parse::<f64>().ok()).or(height.map(|h| h / 3.0));
+    let slab = (8.5..=14.5).contains(&depth) && length >= 24.0 && length / depth >= 2.2;
+    if slab && storeys.is_none_or(|s| (3.0..=26.0).contains(&s)) && !matches!(tag(tags, "building:material"), Some("glass") | Some("metal")) {
+        return "residential".into();
+    }
+    "yes".into()
+}
+
 /// Tower, dome or spire for a place of worship: from `religion` / `denomination` when mapped, otherwise the
 /// tradition most common in the region. Detailed OSM churches (domes as building parts, a dome or onion
 /// `roof:shape`) already carry their own shape and get nothing added.
@@ -531,6 +672,15 @@ pub fn build(id: &str, latlon_ring: &[(f64, f64)], tags: &Tags, frame: &LocalFra
     if area < 0.0 {
         ring.reverse();
     }
+    // what the building is: unknown classes are guessed from the other tags, the name and the shape
+    let owned: Vec<(String, String)>;
+    let tags: &Tags = if tag(tags, "building:part").is_some() && tag(tags, "building").is_none() {
+        tags
+    } else {
+        let class = infer_class(tags, &ring, area.abs());
+        owned = tags.iter().filter(|(k, _)| k != "building").cloned().chain(std::iter::once(("building".to_string(), class))).collect();
+        &owned
+    };
     let (mut h, mut origin) = estimate_height(tags);
     // typical design (series / project) from the data and the outline
     let seed = seed_of(id).max(1);
@@ -685,6 +835,30 @@ mod tests {
 
     fn t(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn unknown_buildings_are_not_taken_for_apartment_blocks() {
+        let rect = |w: f64, d: f64| vec![(0.0, 0.0), (w, 0.0), (w, d), (0.0, d)];
+        // a business centre with a name, a deep block, a kiosk, an obelisk, a slab of flats
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("name", "Бизнес-центр Royal Plaza")]), &rect(40.0, 18.0), 720.0), "office");
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("building:levels", "6")]), &rect(40.0, 24.0), 960.0), "yes");
+        assert_eq!(infer_class(&t(&[("building", "yes")]), &rect(4.0, 3.0), 12.0), "kiosk");
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("shop", "tobacco")]), &rect(5.0, 4.0), 20.0), "kiosk");
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("height", "38")]), &rect(8.0, 8.0), 64.0), "monument");
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("historic", "memorial")]), &rect(20.0, 20.0), 400.0), "monument");
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("building:levels", "9")]), &rect(60.0, 12.0), 720.0), "residential");
+        assert_eq!(infer_class(&t(&[("building", "yes"), ("building:use", "commercial")]), &rect(60.0, 12.0), 720.0), "commercial");
+        assert_eq!(infer_class(&t(&[("building", "apartments")]), &rect(40.0, 24.0), 960.0), "apartments");
+        // what they become: no housing series for "yes"; the obelisk is blank stone with a point
+        let fr = crate::geo::LocalFrame::new(53.9, 27.56, 0.0);
+        let ll = |r: Vec<(f64, f64)>| -> Vec<(f64, f64)> { r.iter().map(|&(x, y)| { let (a, b, _) = fr.from_local(x, y, 0.0); (a, b) }).collect() };
+        let b = build("bc", &ll(rect(40.0, 18.0)), &t(&[("building", "yes"), ("building:levels", "9")]), &fr).unwrap().building;
+        assert!(b.design.is_none(), "a deep 9-storey block is not matched to a panel series");
+        let o = build("ob", &ll(rect(8.0, 8.0)), &t(&[("building", "yes"), ("height", "38")]), &fr).unwrap().building;
+        assert_eq!(o.kind, "monument");
+        assert_eq!(scene::mesh::mat::facade_parts(o.facade.style).0, 12);
+        assert!(o.verts.len() / 3 > 8, "pointed top");
     }
 
     #[test]

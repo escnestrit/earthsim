@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Bumped when the data fetched per tile changes (2: ground cover; 3: OSM storey counts; 4: building parts, entrances, car parks; 5: entrance coordinates; 6: building:series and start_date).
-const FORMAT_MARK: &str = "\"earthsim_format\":7";
+const FORMAT_MARK: &str = "\"earthsim_format\":8";
 
 pub struct DiskCache {
     root: PathBuf,

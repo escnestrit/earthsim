@@ -34,8 +34,9 @@ pub mod mat {
     pub const WALL_WOOD: f32 = 24.0;
     pub const WALL_METAL: f32 = 25.0;
     /// Number of facade styles: plaster, brick, panel, glass, wood, metal, tiled panel, silicate brick,
-    /// arched (churches, civic), school (wide glazing), shopfront/garage, office ribbon.
-    pub const FACADE_STYLES: usize = 12;
+    /// arched (churches, civic), school (wide glazing), shopfront/garage, office ribbon, blank (monuments,
+    /// chimneys, towers: no windows).
+    pub const FACADE_STYLES: usize = 13;
     pub fn is_facade(m: f32) -> bool {
         (19.5..25.5).contains(&m) || (29.5..30.5 + (FACADE_STYLES * 3) as f32).contains(&m)
     }
@@ -814,7 +815,7 @@ pub fn building_details(sc: &Scene) -> MeshData {
             }
         }
         // stairwell windows above staircase doors: a landing window half a storey up, or a glazed band
-        let stair = d.map_or(if floors >= 3 && matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory" | "yes") { StairWindows::Landing } else { StairWindows::None }, |d| d.stair);
+        let stair = d.map_or(if floors >= 3 && matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory") { StairWindows::Landing } else { StairWindows::None }, |d| d.stair);
         if stair != StairWindows::None && floors >= 2 {
             for i in 0..n {
                 let (a, c, l, o) = edge(i);
@@ -888,7 +889,7 @@ pub fn building_details(sc: &Scene) -> MeshData {
         // balconies / loggias
         let kind = d.map_or(
             {
-                let residential = matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory" | "yes") && style != 3 && style != 5;
+                let residential = matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory") && style != 3 && style != 5;
                 if residential && hash01(b.seed, 20) < 0.75 {
                     if hash01(b.seed, 23) < 0.4 { Balconies::Glazed } else { Balconies::Open }
                 } else {

@@ -307,7 +307,7 @@ pub fn estimate_entrances(sc: &mut Scene) {
         if has_door.contains(&(bi as u32)) {
             continue;
         }
-        if n < 3 || b.kind == "part" || matches!(b.kind.as_str(), "garage" | "garages" | "shed" | "roof" | "hut" | "kiosk" | "transformer_tower" | "service") {
+        if n < 3 || b.kind == "part" || matches!(b.kind.as_str(), "garage" | "garages" | "shed" | "roof" | "hut" | "transformer_tower" | "service" | "monument" | "chimney" | "tower" | "water_tower" | "silo" | "storage_tank") {
             continue;
         }
         let zmin = b.verts.chunks(3).map(|v| v[2]).fold(f32::MAX, f32::min);
@@ -328,7 +328,7 @@ pub fn estimate_entrances(sc: &mut Scene) {
         let mid = |e: &([f64; 2], [f64; 2], f64, [f64; 2])| [(e.0[0] + e.1[0]) / 2.0, (e.0[1] + e.1[1]) / 2.0];
         let floors = b.height as f64 / b.facade.floor_height.max(2.4) as f64;
         let long = edges.iter().cloned().fold(None::<([f64; 2], [f64; 2], f64, [f64; 2])>, |acc, e| if acc.is_none_or(|a| e.2 > a.2) { Some(e) } else { acc }).unwrap();
-        let apartments = matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory" | "yes") && floors >= 3.0 && long.2 >= 20.0;
+        let apartments = matches!(b.kind.as_str(), "apartments" | "residential" | "dormitory") && floors >= 3.0 && long.2 >= 20.0;
         if apartments {
             // the long walls facing each other: pick the one farther from roads (courtyard side)
             let opposite = edges.iter().filter(|e| e.2 > long.2 * 0.7 && (e.3[0] * long.3[0] + e.3[1] * long.3[1]) < -0.8).cloned().next();

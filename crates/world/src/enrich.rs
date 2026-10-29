@@ -15,14 +15,14 @@ pub const HEIGHTS_FAILED: &str = "\"earthsim_osm_heights\":\"failed\"";
 /// Tags taken from OSM even when Overture has its own value.
 const OVERRIDE: &[&str] = &["height", "building:levels", "min_height", "building:min_level", "roof:levels"];
 /// Tags taken from OSM only when Overture has none.
-const FILL: &[&str] = &["roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material", "building:series", "start_date", "building:architecture", "amenity", "religion", "denomination", "shop", "office", "tower:type"];
+const FILL: &[&str] = &["roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material", "building:series", "start_date", "building:architecture", "amenity", "religion", "denomination", "shop", "office", "tower:type", "tourism", "historic", "man_made", "name", "building:use", "leisure"];
 
 pub fn heights_query(b: &Bounds) -> String {
     let bb = format!("{:.6},{:.6},{:.6},{:.6}", b.south, b.west, b.north, b.east);
     format!(
         "[out:json][timeout:25];(way[\"building\"][\"building:levels\"]({bb});way[\"building\"][\"height\"]({bb});\
          relation[\"building\"][\"building:levels\"]({bb});relation[\"building\"][\"height\"]({bb});\
-         way[\"building\"][\"amenity\"]({bb});way[\"building\"~\"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$\"]({bb}););out tags center;\
+         way[\"building\"][~\"^(amenity|shop|office|tourism|historic|man_made|name|building:use)$\"~\".\"]({bb});way[\"building\"~\"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$\"]({bb}););out tags center;\
          node[\"entrance\"]({bb});out body;"
     )
 }
