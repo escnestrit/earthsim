@@ -53,7 +53,8 @@ impl People {
     }
 
     /// Pavement network from the loaded scenes (streets that have pavements).
-    pub fn rebuild<'a>(&mut self, scenes: impl Iterator<Item = &'a Scene>) {
+    pub fn rebuild<'a>(&mut self, scenes: impl Iterator<Item = &'a Scene> + Clone) {
+        let scenes2 = scenes.clone();
         let mut g = Graph::default();
         for sc in scenes {
             for r in &sc.roads {
@@ -65,6 +66,16 @@ impl People {
                 for w in ids.windows(2) {
                     g.link(w[0], w[1], 1.0, off);
                     g.link(w[1], w[0], 1.0, off);
+                }
+            }
+        }
+        // and on the footpaths, along the middle
+        for sc in scenes2 {
+            for p in &sc.paths {
+                let ids: Vec<u32> = p.pts.iter().map(|q| g.node(*q)).collect();
+                for w in ids.windows(2) {
+                    g.link(w[0], w[1], 1.0, 0.0);
+                    g.link(w[1], w[0], 1.0, 0.0);
                 }
             }
         }

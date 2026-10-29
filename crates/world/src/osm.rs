@@ -60,7 +60,26 @@ pub struct TileRaw {
     /// ground cover clipped to the tile
     pub areas: Vec<crate::areas::RawArea>,
     pub entrances: Vec<RawEntrance>,
+    /// footpaths: (lat/lon points, width m, paved)
+    pub paths: Vec<(Vec<(f64, f64)>, f64, bool)>,
     pub elements: usize,
+}
+
+/// Walkable ways: (highway value, width m, paved by default).
+pub const PATHS: &[(&str, f64, bool)] = &[("footway", 2.0, true), ("pedestrian", 5.0, true), ("path", 1.6, false), ("cycleway", 2.2, true), ("steps", 2.0, true), ("track", 3.0, false), ("bridleway", 2.0, false)];
+
+/// Width (m) a river, canal or stream line is drawn with when it has no water area.
+fn waterway_width(kind: &str, tag: Option<&str>) -> Option<f64> {
+    if let Some(w) = tag.and_then(|w| w.split_whitespace().next()?.replace(',', ".").parse::<f64>().ok()).filter(|w| *w > 0.5 && *w < 500.0) {
+        return Some(w);
+    }
+    Some(match kind {
+        "river" => 22.0,
+        "canal" => 10.0,
+        "stream" => 3.5,
+        "drain" | "ditch" => 2.0,
+        _ => return None,
+    })
 }
 
 pub fn overpass_query(b: &Bounds) -> String {
@@ -70,7 +89,7 @@ pub fn overpass_query(b: &Bounds) -> String {
         "[out:json][timeout:30];(way[\"highway\"~\"^({})$\"]({bb});way[\"building\"]({bb});node[\"natural\"=\"tree\"]({bb});\
          way[\"natural\"~\"^(water|wood|scrub|heath|grassland|wetland|sand|beach)$\"]({bb});\
          way[\"landuse\"~\"^(forest|grass|meadow|village_green|recreation_ground|cemetery|reservoir|basin|allotments|orchard)$\"]({bb});\
-         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb});way[\"amenity\"=\"parking\"]({bb});way[\"building:part\"]({bb});node[\"entrance\"]({bb}););out geom;",
+         way[\"leisure\"~\"^(park|garden|pitch|playground|golf_course|dog_park)$\"]({bb});way[\"waterway\"=\"riverbank\"]({bb});way[\"waterway\"~\"^(river|canal|stream)$\"]({bb});way[\"highway\"~\"^(footway|pedestrian|path|cycleway|steps|track)$\"]({bb});way[\"amenity\"=\"parking\"]({bb});way[\"building:part\"]({bb});node[\"entrance\"]({bb}););out geom;",
         hw.join("|")
     )
 }
@@ -137,7 +156,7 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
     }
     let mut pend: Vec<Pending> = Vec::new();
     let mut node_use: HashMap<i64, u32> = HashMap::new();
-    let mut out = TileRaw { tile, roads: Vec::new(), buildings: Vec::new(), trees: Vec::new(), areas: Vec::new(), entrances: Vec::new(), elements: elements.len() };
+    let mut out = TileRaw { tile, roads: Vec::new(), buildings: Vec::new(), trees: Vec::new(), areas: Vec::new(), entrances: Vec::new(), paths: Vec::new(), elements: elements.len() };
 
     for el in elements {
         let ty = el.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -163,6 +182,34 @@ pub fn parse_overpass(text: &str, tile: TileId) -> Result<TileRaw, String> {
             "way" => {
                 let pts = latlon_list(el);
                 if pts.iter().any(|p| !valid_latlon(*p)) {
+                    continue;
+                }
+                if let Some(w) = tg("waterway").and_then(|k| waterway_width(k, tg("width"))) {
+                    // a river or stream line: a strip of water (the river area, where mapped, covers it)
+                    if tg("tunnel").is_none() && pts.len() >= 2 {
+                        for r in crate::areas::line_strips(&pts, w) {
+                            let r = crate::areas::clip_to_bounds(&r, &b);
+                            if r.len() >= 3 {
+                                out.areas.push(crate::areas::RawArea { kind: scene::model::AreaKind::Water, rings: vec![r] });
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if let Some(&(_, pw, paved)) = tg("highway").and_then(|hw| PATHS.iter().find(|p| p.0 == hw)) {
+                    // pavements drawn along roads already; tunnels and indoor ways are not seen
+                    if tg("footway").is_some_and(|f| f == "sidewalk" || f == "crossing") || tg("tunnel").is_some_and(|t| t != "no") || tg("indoor").is_some() || pts.len() < 2 {
+                        continue;
+                    }
+                    let paved = match tg("surface") {
+                        Some("asphalt" | "paved" | "paving_stones" | "concrete" | "concrete:plates" | "sett" | "bricks") => true,
+                        Some("unpaved" | "gravel" | "dirt" | "ground" | "grass" | "sand" | "compacted" | "fine_gravel" | "earth" | "mud") => false,
+                        _ => paved,
+                    };
+                    let w = tg("width").and_then(|w| w.replace(',', ".").parse::<f64>().ok()).filter(|w| *w > 0.5 && *w < 30.0).unwrap_or(pw);
+                    for (s0, e0) in clip_runs(&pts, &eb) {
+                        out.paths.push((pts[s0..=e0].to_vec(), w, paved));
+                    }
                     continue;
                 }
                 if let Some(hw) = tg("highway") {
@@ -363,6 +410,130 @@ pub fn estimate_entrances(sc: &mut Scene) {
     sc.entrances.extend(out);
 }
 
+/// Trees the map does not have: along town streets (in the verge beyond the pavement, about every 11 m,
+/// most places planted) and in the open ground between buildings (yards), on a jittered 13 m grid, kept
+/// clear of roads, paths, buildings, car parks and water. Only within 70 m of a building (built-up land).
+/// Which spots get a tree follows from their latitude/longitude, so it is the same every time.
+pub fn scatter_trees(sc: &Scene, frame: &LocalFrame) -> Vec<[f64; 2]> {
+    let cap = crate::areas::MAX_TREES_PER_TILE.load(std::sync::atomic::Ordering::Relaxed);
+    if cap == 0 || sc.buildings.is_empty() {
+        return Vec::new();
+    }
+    let hash = |x: f64, y: f64, k: u64| {
+        let (la, lo, _) = frame.from_local(x, y, 0.0);
+        let mut h = ((la * 1e5).round() as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((lo * 1e5).round() as i64 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ k.wrapping_mul(0x1656_67B1_9E37_79F9);
+        h ^= h >> 31;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^ (h >> 29)
+    };
+    let roads = scene::model::RoadIndex::new(sc);
+    // buildings in a grid: inside test and distance to the nearest wall
+    let mut bgrid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, b) in sc.buildings.iter().enumerate() {
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for p in &b.footprint {
+            x0 = x0.min(p[0]);
+            y0 = y0.min(p[1]);
+            x1 = x1.max(p[0]);
+            y1 = y1.max(p[1]);
+        }
+        for ci in ((x0 - 70.0) / 35.0).floor() as i64..=((x1 + 70.0) / 35.0).floor() as i64 {
+            for cj in ((y0 - 70.0) / 35.0).floor() as i64..=((y1 + 70.0) / 35.0).floor() as i64 {
+                bgrid.entry((ci, cj)).or_default().push(i);
+            }
+        }
+    }
+    // distance to the nearest building wall (negative inside), up to 70 m
+    let wall_dist = |x: f64, y: f64| -> f64 {
+        let Some(list) = bgrid.get(&((x / 35.0).floor() as i64, (y / 35.0).floor() as i64)) else { return f64::MAX };
+        let mut best = f64::MAX;
+        for &k in list {
+            let f = &sc.buildings[k].footprint;
+            let mut ins = false;
+            let mut d = f64::MAX;
+            for a in 0..f.len() {
+                let (p, q) = (f[a], f[(a + 1) % f.len()]);
+                if (p[1] > y) != (q[1] > y) && x < p[0] + (y - p[1]) / (q[1] - p[1]) * (q[0] - p[0]) {
+                    ins = !ins;
+                }
+                d = d.min(seg_dist(x, y, p, q));
+            }
+            if ins {
+                return -1.0;
+            }
+            best = best.min(d);
+        }
+        best
+    };
+    let blockers: Vec<Vec<(f64, f64)>> = sc.areas.iter().filter(|a| matches!(a.kind, scene::model::AreaKind::Water | scene::model::AreaKind::Parking)).map(|a| a.ring.iter().map(|p| (p[0], p[1])).collect()).collect();
+    let blocked_area = |x: f64, y: f64| blockers.iter().any(|r| crate::areas::point_in((x, y), r));
+    let on_path = |x: f64, y: f64| sc.paths.iter().any(|p| p.pts.windows(2).any(|w| seg_dist(x, y, w[0], w[1]) < p.width / 2.0 + 1.2));
+    let existing: Vec<[f64; 2]> = sc.trees.clone();
+    let near_tree = |x: f64, y: f64, out: &[[f64; 2]]| existing.iter().chain(out.iter()).rev().take(4000).any(|t| (t[0] - x).hypot(t[1] - y) < 4.0);
+    let mut out: Vec<[f64; 2]> = Vec::new();
+    // street trees
+    for r in sc.roads.iter().filter(|r| matches!(r.cls.as_str(), "residential" | "living_street" | "unclassified" | "tertiary" | "secondary" | "primary") && !r.bridge) {
+        let off = r.width / 2.0 + 3.6;
+        let mut cum = 0.0;
+        for w in r.pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+            if l < 1e-6 {
+                continue;
+            }
+            let (ux, uy) = ((b[0] - a[0]) / l, (b[1] - a[1]) / l);
+            let mut k = (cum / 11.0f64).ceil();
+            while k * 11.0 < cum + l && out.len() < cap {
+                let s = k * 11.0 - cum;
+                k += 1.0;
+                for side in [-1.0, 1.0] {
+                    let (x, y) = (a[0] + ux * s - uy * off * side, a[1] + uy * s + ux * off * side);
+                    let h = hash(x, y, 7);
+                    if h % 100 >= 65 {
+                        continue;
+                    }
+                    let wd = wall_dist(x, y);
+                    if wd < 3.5 || roads.on_road(x, y, 2.6) || on_path(x, y) || blocked_area(x, y) || near_tree(x, y, &out) {
+                        continue;
+                    }
+                    out.push([x, y]);
+                }
+            }
+            cum += l;
+        }
+    }
+    // yards
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for b in &sc.buildings {
+        for p in &b.footprint {
+            x0 = x0.min(p[0]);
+            y0 = y0.min(p[1]);
+            x1 = x1.max(p[0]);
+            y1 = y1.max(p[1]);
+        }
+    }
+    let g = 13.0;
+    let mut gy = (y0 / g).floor() * g;
+    while gy < y1 && out.len() < cap {
+        let mut gx = (x0 / g).floor() * g;
+        while gx < x1 && out.len() < cap {
+            let h = hash(gx, gy, 11);
+            let (x, y) = (gx + ((h >> 8) % 1000) as f64 / 1000.0 * 8.0 - 4.0, gy + ((h >> 20) % 1000) as f64 / 1000.0 * 8.0 - 4.0);
+            gx += g;
+            if h % 100 >= 40 {
+                continue;
+            }
+            let wd = wall_dist(x, y);
+            if !(5.0..70.0).contains(&wd) || roads.on_road(x, y, 4.0) || on_path(x, y) || blocked_area(x, y) || near_tree(x, y, &out) {
+                continue;
+            }
+            out.push([x, y]);
+        }
+        gy += g;
+    }
+    out
+}
+
 /// Parked cars: along the kerbs of residential/minor streets (on the sidewalk edge, as is common in
 /// courtyards), and in rows in surface car parks. About half the places are taken. Which places are taken
 /// and which car stands there follows from the place's latitude/longitude, so it is the same every time.
@@ -523,6 +694,25 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
         }
         sc.roads.push(Road { cls: r.cls.clone(), width: r.width, pts, junction: jn, bridge: r.bridge, oneway: r.oneway });
     }
+    // footpaths, densified like the roads so they follow the terrain
+    for (pl, w, paved) in &raw.paths {
+        let src: Vec<[f64; 2]> = pl.iter().map(|p| loc(p.0, p.1)).collect();
+        let mut pts: Vec<[f64; 2]> = Vec::new();
+        for (i, p) in src.iter().enumerate() {
+            if i > 0 {
+                let q = src[i - 1];
+                let k = ((p[0] - q[0]).hypot(p[1] - q[1]) / 10.0).floor() as usize;
+                for s in 1..=k {
+                    let t = s as f64 / (k + 1) as f64;
+                    pts.push([q[0] + (p[0] - q[0]) * t, q[1] + (p[1] - q[1]) * t]);
+                }
+            }
+            pts.push(*p);
+        }
+        if pts.len() >= 2 {
+            sc.paths.push(scene::model::Path { pts, width: *w, paved: *paved });
+        }
+    }
     let mut status: HashMap<String, usize> = HashMap::new();
     let mut origins: HashMap<String, usize> = HashMap::new();
     for b in &raw.buildings {
@@ -600,6 +790,9 @@ pub fn build_scene(raw: &TileRaw, frame: &LocalFrame) -> Scene {
     let (areas, area_trees) = crate::areas::build_areas(&raw.areas, frame, &on_road);
     sc.areas = areas;
     sc.trees.extend(area_trees);
+    // street trees and trees in the yards between buildings (where the map has none)
+    let more = scatter_trees(&sc, frame);
+    sc.trees.extend(more);
     // buildings without mapped entrances get typical ones (estimated, see README)
     estimate_entrances(&mut sc);
     sc.parked = park_cars(&sc, frame);
@@ -663,7 +856,9 @@ mod tests {
                 sample_h.get_or_insert(b.height);
             }
         }
-        assert_eq!((total.0, total.1), (363, 1215));
+        assert_eq!(total.0, 363);
+        // mapped trees plus street and yard trees
+        assert!(total.1 > 1215, "trees {}", total.1);
         assert!(sample_h.is_some());
     }
 
@@ -795,5 +990,43 @@ mod tests {
         for (p, _, _) in scene::mesh::lamp_posts(&sc) {
             assert!(!idx.on_road(p[0], p[1], 0.5), "lamp at ({:.1}, {:.1}) on a road", p[0], p[1]);
         }
+    }
+
+    #[test]
+    fn rivers_given_as_lines_footpaths_and_yard_trees() {
+        let t = TileId::from_lat_lon(MINSK.0, MINSK.1, 15);
+        let b = t.bounds();
+        let (la, lo) = ((b.south + b.north) / 2.0, (b.west + b.east) / 2.0);
+        let p = |dn: f64, de: f64| format!("{{\"lat\":{},\"lon\":{}}}", la + dn / 111_320.0, lo + de / (111_320.0 * la.to_radians().cos()));
+        let js = format!(
+            r#"{{"elements":[
+              {{"type":"way","id":1,"tags":{{"waterway":"river","name":"Svislach"}},"geometry":[{},{},{}]}},
+              {{"type":"way","id":2,"tags":{{"highway":"footway"}},"geometry":[{},{}]}},
+              {{"type":"way","id":3,"tags":{{"highway":"footway","footway":"sidewalk"}},"geometry":[{},{}]}},
+              {{"type":"way","id":4,"tags":{{"highway":"residential"}},"geometry":[{},{}]}},
+              {{"type":"way","id":5,"tags":{{"building":"apartments","building:levels":"5"}},"geometry":[{},{},{},{},{}]}}
+            ]}}"#,
+            p(-200.0, -300.0), p(-200.0, 0.0), p(-180.0, 300.0),
+            p(-100.0, -100.0), p(-100.0, 100.0),
+            p(5.0, -100.0), p(5.0, 100.0),
+            p(0.0, -150.0), p(0.0, 150.0),
+            p(40.0, -30.0), p(40.0, 30.0), p(52.0, 30.0), p(52.0, -30.0), p(40.0, -30.0),
+        );
+        let raw = parse_overpass(&js, t).unwrap();
+        assert_eq!(raw.paths.len(), 1, "the sidewalk is drawn with the road");
+        assert!(raw.areas.iter().filter(|a| a.kind == scene::model::AreaKind::Water).count() >= 1, "river strips");
+        let fr = LocalFrame::new(la, lo, 0.0);
+        let sc = build_scene(&raw, &fr);
+        assert_eq!(sc.paths.len(), 1);
+        assert!(sc.areas.iter().any(|a| a.kind == scene::model::AreaKind::Water));
+        let idx = scene::model::RoadIndex::new(&sc);
+        assert!(sc.trees.len() > 5, "street and yard trees: {}", sc.trees.len());
+        for t in &sc.trees {
+            assert!(!idx.on_road(t[0], t[1], 2.0), "tree on the road at {t:?}");
+            let f = &sc.buildings[0].footprint;
+            assert!(!crate::areas::point_in((t[0], t[1]), &f.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>()), "tree in the house");
+        }
+        let ms = scene::mesh::scene_meshes_opts(&sc, false);
+        assert!(ms.iter().any(|m| m.name == "paths" && !m.verts.is_empty()));
     }
 }

@@ -149,6 +149,16 @@ pub struct Scene {
     pub entrances: Vec<Entrance>,
     /// parked cars: (x, y, heading rad, seed)
     pub parked: Vec<ParkedCar>,
+    /// footpaths, pedestrian streets, cycleways and tracks (not for cars)
+    pub paths: Vec<Path>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Path {
+    pub pts: Vec<[f64; 2]>,
+    pub width: f64,
+    /// paved (pavers) or not (gravel / dirt)
+    pub paved: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

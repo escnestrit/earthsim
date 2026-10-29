@@ -333,6 +333,16 @@ pub fn scene_meshes_opts(sc: &Scene, ground: bool) -> Vec<MeshData> {
     }
     out.push(MeshData { name: "sidewalk".into(), verts: sw.a, polygon_offset: -1.0, casts_shadow: false, colors: Vec::new() });
 
+    // footpaths: paved ones like the pavements, unpaved ones as gravel
+    let mut fp = Mb::default();
+    for p in &sc.paths {
+        let (pts, _) = dedup(&p.pts, &vec![false; p.pts.len()]);
+        if pts.len() > 1 {
+            ribbon(&mut fp, &pts, p.width / 2.0, 0.014, if p.paved { mat::SIDEWALK } else { mat::SAND });
+        }
+    }
+    out.push(MeshData { name: "paths".into(), verts: fp.a, polygon_offset: -0.95, casts_shadow: false, colors: Vec::new() });
+
     // roads: one mesh per width so wider roads can be layered over narrower ones at junctions
     let mut widths: Vec<f64> = roads.iter().map(|(r, _, _)| r.width).collect();
     widths.sort_by(|a, b| a.partial_cmp(b).unwrap());

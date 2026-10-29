@@ -12,7 +12,12 @@ static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
 
 /// Start logging to `path` (truncated). Safe to call once; later calls are ignored.
 pub fn init(path: impl AsRef<std::path::Path>) {
-    let file = std::fs::File::create(path.as_ref()).ok();
+    // keep the previous run's log next to it (earthsim.prev.log), so a demo start does not wipe a drive
+    let p = path.as_ref();
+    if p.exists() {
+        let _ = std::fs::rename(p, p.with_extension("prev.log"));
+    }
+    let file = std::fs::File::create(p).ok();
     let _ = LOG.set(Mutex::new(Log { file, t0: Instant::now() }));
     log(&format!("earthsim log started, file {}", path.as_ref().display()));
 }

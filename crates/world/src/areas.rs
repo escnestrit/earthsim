@@ -44,6 +44,40 @@ pub fn area_kind(tags: &Tags) -> Option<AreaKind> {
 }
 
 /// Sutherland-Hodgman clip of a (lat, lon) ring to the tile box. Returns an open ring.
+/// A line (lat, lon) widened to `width` metres, as short overlapping strips (each a simple polygon of up to
+/// 8 segments, so sharp bends never make a self-crossing ring).
+pub fn line_strips(pts: &[(f64, f64)], width: f64) -> Vec<Vec<(f64, f64)>> {
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    let lat0 = pts[0].0;
+    let (mla, mlo) = (111_320.0, 111_320.0 * lat0.to_radians().cos().max(0.05));
+    let hw = width / 2.0;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < pts.len() {
+        let j = (i + 8).min(pts.len() - 1);
+        let run = &pts[i..=j];
+        let n = run.len();
+        let mut left = Vec::with_capacity(n);
+        let mut right = Vec::with_capacity(n);
+        for k in 0..n {
+            let a = run[k.saturating_sub(1)];
+            let c = run[(k + 1).min(n - 1)];
+            let (dy, dx) = ((c.0 - a.0) * mla, (c.1 - a.1) * mlo);
+            let l = dx.hypot(dy).max(1e-9);
+            let (nx, ny) = (-dy / l * hw, dx / l * hw);
+            left.push((run[k].0 + ny / mla, run[k].1 + nx / mlo));
+            right.push((run[k].0 - ny / mla, run[k].1 - nx / mlo));
+        }
+        right.reverse();
+        left.extend(right);
+        out.push(left);
+        i = j;
+    }
+    out
+}
+
 pub fn clip_to_bounds(ring: &[(f64, f64)], b: &Bounds) -> Vec<(f64, f64)> {
     let mut pts: Vec<(f64, f64)> = ring.to_vec();
     if pts.len() > 1 && pts.first() == pts.last() {

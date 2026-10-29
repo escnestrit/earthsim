@@ -154,6 +154,12 @@ pub fn road_tags(f: &Feature) -> Option<Vec<(String, String)>> {
     let link = s(f.prop("subclass")).as_deref() == Some("link");
     let hw = if link && matches!(class.as_str(), "motorway" | "trunk" | "primary" | "secondary" | "tertiary") { format!("{class}_link") } else { class };
     let mut t = vec![("highway".to_string(), hw)];
+    // pavements beside roads and crossings are drawn with the roads
+    match s(f.prop("subclass")).as_deref() {
+        Some("sidewalk") => t.push(("footway".into(), "sidewalk".into())),
+        Some("crosswalk") => t.push(("footway".into(), "crossing".into())),
+        _ => {}
+    }
     let flags = s(f.prop("road_flags")).unwrap_or_default();
     if flags.contains("is_tunnel") {
         t.push(("tunnel".into(), "yes".into()));
@@ -260,6 +266,13 @@ pub fn area_tags(layer: &str, f: &Feature) -> Option<Vec<(String, String)>> {
             "sand" => kv("natural", "sand"),
             _ => None,
         },
+        // satellite land cover (coarse): forests and grass outside the mapped areas
+        "land_cover" => match st.as_str() {
+            "forest" | "mangrove" => kv("natural", "wood"),
+            "grass" | "shrub" | "wetland" | "moss" | "crop" => kv("natural", "grassland"),
+            "barren" => kv("natural", "sand"),
+            _ => None,
+        },
         "land_use" => match (st.as_str(), class.as_str()) {
             (_, "forest" | "wood") => kv("landuse", "forest"),
             (_, "park" | "garden" | "playground" | "dog_park") | ("park", _) => kv("leisure", "park"),
@@ -282,7 +295,35 @@ pub fn to_overpass(z: u8, x: u32, y: u32, buildings: &[Layer], transport: &[Laye
 pub fn to_overpass_with_base(z: u8, x: u32, y: u32, buildings: &[Layer], transport: &[Layer], base: &[Layer]) -> String {
     let mut els: Vec<Json> = Vec::new();
     let mut next_id: i64 = 1;
-    for l in base.iter().filter(|l| matches!(l.name.as_str(), "water" | "land" | "land_use")) {
+    // rivers, canals and streams given only as lines: strips of water
+    for l in base.iter().filter(|l| l.name == "water") {
+        for f in l.features.iter().filter(|f| f.kind == GeomType::Line) {
+            let kind = s(f.prop("class")).or_else(|| s(f.prop("subtype"))).unwrap_or_default();
+            let w = match kind.as_str() {
+                "river" => 22.0,
+                "canal" => 10.0,
+                "stream" => 3.5,
+                "drain" | "ditch" => 2.0,
+                _ => continue,
+            };
+            if s(f.prop("is_tunnel")).is_some_and(|v| v == "true") {
+                continue;
+            }
+            for part in f.parts.iter().filter(|p| p.len() >= 2) {
+                let pts: Vec<(f64, f64)> = part.iter().map(|&(px, py)| tile_to_latlon(z, x, y, l.extent, px, py)).collect();
+                for r in crate::areas::line_strips(&pts, w) {
+                    els.push(Json::Obj(vec![
+                        ("type".into(), Json::Str("earthsim_area".into())),
+                        ("id".into(), Json::Num(next_id as f64)),
+                        ("tags".into(), tags_json(&[("natural".into(), "water".into())])),
+                        ("rings".into(), Json::Arr(vec![geom_json(&r)])),
+                    ]));
+                    next_id += 1;
+                }
+            }
+        }
+    }
+    for l in base.iter().filter(|l| matches!(l.name.as_str(), "water" | "land" | "land_use" | "land_cover")) {
         for f in l.features.iter().filter(|f| f.kind == GeomType::Polygon) {
             let Some(tags) = area_tags(&l.name, f) else { continue };
             // MVT polygons: an outer ring (positive area) followed by its holes
