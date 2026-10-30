@@ -185,12 +185,13 @@ Dictionary EarthStream::poll() {
         inst[in.kind] = a;
     }
     d["instances"] = inst;
-    // text signs: 8 floats each (x, y, z in Godot axes, normal angle, max width, r, g, b) and the strings
+    // text signs: 9 floats each (x, y, z in Godot axes, normal angle, max width, r, g, b, max height) and the strings
     PackedFloat32Array lab;
     PackedStringArray lab_text;
     for (auto &l : c.labels) {
         lab.append((float)l.p.x), lab.append((float)l.p.z), lab.append((float)-l.p.y), lab.append((float)l.ang);
         lab.append((float)l.max_w), lab.append(l.c.r), lab.append(l.c.g), lab.append(l.c.b);
+        lab.append((float)(l.max_h > 0 ? l.max_h : l.max_w * 0.5));
         lab_text.append(String::utf8(l.text.c_str()));
     }
     d["labels"] = lab;

@@ -2,6 +2,12 @@
 // beams that can yield (permanent deformation) and break, with contacts against the ground surface and the
 // static world's triangles. Semi-implicit Euler with small fixed steps (0.25 ms typical).
 #pragma once
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include "collide.hpp"
 
@@ -46,8 +52,31 @@ struct ContactParams {
     double k, c, mu;
 };
 
+// A few worker threads that run one job split in parts, many times a second (every physics step): they spin
+// briefly between jobs and sleep when idle.
+class WorkPool {
+public:
+    explicit WorkPool(int workers);
+    ~WorkPool();
+    int parts() const { return (int)th_.size() + 1; }
+    // runs fn(part) for part 0..parts()-1, the caller doing part 0; returns when all are done
+    void run(const std::function<void(int)> &fn);
+
+private:
+    std::vector<std::thread> th_;
+    const std::function<void(int)> *fn_ = nullptr;
+    std::atomic<uint64_t> gen_{0};
+    std::atomic<int> left_{0};
+    std::atomic<bool> stop_{false};
+    std::mutex m_;
+    std::condition_variable cv_;
+    void loop(int part);
+};
+
 class SoftBody {
 public:
+    // beam forces on several threads (big vehicles); 0 = single-threaded
+    void set_threads(int n);
     std::vector<SNode> nodes;
     std::vector<SBeam> beams;
     std::vector<Slide> slides;
@@ -74,6 +103,10 @@ public:
 
 private:
     std::vector<V3> f_;
+    std::unique_ptr<WorkPool> pool_;
+    std::vector<std::vector<V3>> pf_;   // per-part force accumulators
+    std::vector<double> pplastic_;
+    void beam_range(size_t b0, size_t b1, double dt, V3 *F, double &plastic);
     struct Hot {
         V3 p, v;
         double m;

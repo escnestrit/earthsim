@@ -30,7 +30,7 @@ var traffic_count := 40
 var people_mm: MultiMeshInstance3D
 var people_count := 60
 var lamp_points := {}     # Vector2i -> PackedVector3Array
-var label_data := {}      # Vector2i -> [PackedFloat32Array (8 per label), PackedStringArray]
+var label_data := {}      # Vector2i -> [PackedFloat32Array (9 per label), PackedStringArray]
 var label_pool: Array[Label3D] = []
 var label_t := 0.0
 
@@ -341,8 +341,8 @@ func _update_labels() -> void:
 	for key in label_data:
 		var ld: Array = label_data[key]
 		var f: PackedFloat32Array = ld[0]
-		for i in f.size() / 8:
-			var o := i * 8
+		for i in f.size() / 9:
+			var o := i * 9
 			var dx := f[o] - p.x
 			var dz := f[o + 2] - p.z
 			var d2 := dx * dx + dz * dz
@@ -371,22 +371,22 @@ func _update_labels() -> void:
 		var idx: int = best[i][2]
 		var ld: Array = label_data[key]
 		var f: PackedFloat32Array = ld[0]
-		var o := idx * 8
+		var o := idx * 9
 		var txt: String = (ld[1] as PackedStringArray)[idx]
 		var maxw: float = f[o + 4]
 		var lk := "%d,%d:%d" % [key.x, key.y, idx]
 		if l.text != txt or l.get_meta("lk", "") != lk:
 			l.set_meta("lk", lk)
 			l.text = txt
-			l.pixel_size = 0.0075
-			var ab := l.get_aabb().size
-			# fit the board: no wider than max width, no taller than about half of it
-			var k := 1.0
-			if ab.x > maxw and ab.x > 0.01:
-				k = maxw / ab.x
-			if ab.y * k > maxw * 0.55 and ab.y > 0.01:
-				k = maxw * 0.55 / ab.y
-			l.pixel_size = 0.0075 * k
+			# fit the board from the font's own measure of the text (the label's box updates a frame late)
+			var font: Font = l.font if l.font else ThemeDB.fallback_font
+			var px := font.get_multiline_string_size(txt, HORIZONTAL_ALIGNMENT_CENTER, -1, l.font_size)
+			var k := 0.0075
+			if px.x > 1.0:
+				k = minf(k, maxw * 0.92 / px.x)
+			if px.y > 1.0:
+				k = minf(k, f[o + 8] / px.y)
+			l.pixel_size = k
 		var ang := f[o + 3]
 		var n := Vector3(cos(ang), 0.0, -sin(ang))
 		var xa := Vector3.UP.cross(n).normalized()

@@ -33,14 +33,62 @@ void SoftBody::clear_forces() {
     for (auto &n : nodes) n.f = gravity * n.m;
 }
 
-void SoftBody::beam_forces(double dt) {
-    f_.assign(nodes.size(), V3());
-    hot_.resize(nodes.size());
-    for (size_t i = 0; i < nodes.size(); i++) hot_[i] = {nodes[i].p, nodes[i].v, nodes[i].m};
-    double plastic = 0;
+WorkPool::WorkPool(int workers) {
+    for (int i = 0; i < workers; i++) th_.emplace_back([this, i] { loop(i + 1); });
+}
+
+WorkPool::~WorkPool() {
+    stop_ = true;
+    {
+        std::lock_guard<std::mutex> l(m_);
+        gen_++;
+    }
+    cv_.notify_all();
+    for (auto &t : th_) t.join();
+}
+
+void WorkPool::loop(int part) {
+    uint64_t seen = 0;
+    while (true) {
+        // spin a little (the next physics step comes within microseconds), then sleep
+        int spins = 0;
+        while (gen_.load(std::memory_order_acquire) == seen && !stop_) {
+            if (++spins < 4000) continue;
+            if (spins < 4200) {
+                std::this_thread::yield();
+                continue;
+            }
+            std::unique_lock<std::mutex> l(m_);
+            cv_.wait_for(l, std::chrono::milliseconds(2), [&] { return gen_.load() != seen || stop_; });
+        }
+        if (stop_) return;
+        seen = gen_.load(std::memory_order_acquire);
+        (*fn_)(part);
+        left_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+}
+
+void WorkPool::run(const std::function<void(int)> &fn) {
+    fn_ = &fn;
+    left_.store((int)th_.size(), std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> l(m_);
+        gen_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    cv_.notify_all();
+    fn(0);
+    while (left_.load(std::memory_order_acquire) > 0) {}
+}
+
+void SoftBody::set_threads(int n) {
+    pool_.reset();
+    if (n > 1) pool_ = std::make_unique<WorkPool>(n - 1);
+}
+
+void SoftBody::beam_range(size_t b0, size_t b1, double dt, V3 *F, double &plastic) {
     const Hot *H = hot_.data();
-    V3 *F = f_.data();
-    for (auto &be : beams) {
+    for (size_t bi = b0; bi < b1; bi++) {
+        SBeam &be = beams[bi];
         if (be.broken) continue;
         const Hot &na = H[be.a], &nb = H[be.b];
         V3 d = nb.p - na.p;
@@ -92,7 +140,30 @@ void SoftBody::beam_forces(double dt) {
         F[be.a] = F[be.a] + fv;
         F[be.b] = F[be.b] - fv;
     }
-    for (size_t i = 0; i < nodes.size(); i++) nodes[i].f = nodes[i].f + f_[i];
+}
+
+void SoftBody::beam_forces(double dt) {
+    hot_.resize(nodes.size());
+    for (size_t i = 0; i < nodes.size(); i++) hot_[i] = {nodes[i].p, nodes[i].v, nodes[i].m};
+    double plastic = 0;
+    if (!pool_ || beams.size() < 1500) {
+        f_.assign(nodes.size(), V3());
+        beam_range(0, beams.size(), dt, f_.data(), plastic);
+        for (size_t i = 0; i < nodes.size(); i++) nodes[i].f = nodes[i].f + f_[i];
+    } else {
+        int P = pool_->parts();
+        pf_.resize(P);
+        pplastic_.assign(P, 0.0);
+        for (auto &v : pf_) v.assign(nodes.size(), V3());
+        size_t nb = beams.size();
+        std::function<void(int)> job = [&](int k) { beam_range(nb * k / P, nb * (k + 1) / P, dt, pf_[k].data(), pplastic_[k]); };
+        pool_->run(job);
+        for (int k = 0; k < P; k++) {
+            plastic += pplastic_[k];
+            const V3 *F = pf_[k].data();
+            for (size_t i = 0; i < nodes.size(); i++) nodes[i].f = nodes[i].f + F[i];
+        }
+    }
     plastic_work += plastic;
 }
 

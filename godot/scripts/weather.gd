@@ -16,6 +16,7 @@ var snow_cover := 0.0
 var cam: Camera3D
 var mats  # EarthMaterials: hard surfaces turn glossy when wet
 var _last_wet := -1.0
+var night := 0.0       # 0 day .. 1 night (from main)
 var base_sun := 1.6     # the sun's energy for the time of day (set by main), before clouds
 
 func setup(e: Environment, s: DirectionalLight3D, st: EarthStream, sky: ShaderMaterial, c: Camera3D) -> void:
@@ -77,7 +78,7 @@ func _process(dt: float) -> void:
 	sun.light_energy = base_sun * lerpf(1.0, 0.3, dull)
 	sun.shadow_opacity = lerpf(1.0, 0.45, dull)
 	env.fog_density = [0.0006, 0.0007, 0.0012, 0.0025, 0.0045, 0.012, 0.004][kind]
-	env.fog_light_color = Color(0.7, 0.78, 0.9).lerp(Color(0.62, 0.64, 0.66), dull)
+	env.fog_light_color = Color(0.7, 0.78, 0.9).lerp(Color(0.62, 0.64, 0.66), dull).lerp(Color(0.02, 0.025, 0.04), night)
 	# ground wetness lags the rain: wet in a minute, dry in a few
 	var wt := 1.0 if raining else 0.0
 	wet = move_toward(wet, wt, dt * (0.03 if raining else 0.006))

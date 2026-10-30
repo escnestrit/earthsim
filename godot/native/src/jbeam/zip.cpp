@@ -207,3 +207,43 @@ bool Zip::read(const ZipEntry &e, std::string &out, std::string &err) {
 }
 
 }  // namespace ec
+
+namespace ec {
+
+bool write_zip(const std::string &path, const std::vector<std::pair<std::string, std::string>> &files, std::string &err) {
+    std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
+    if (!f) {
+        err = path + ": cannot write";
+        return false;
+    }
+    auto u16w = [&](std::string &b, uint16_t v) { b += (char)(v & 0xFF), b += (char)(v >> 8); };
+    auto u32w = [&](std::string &b, uint32_t v) {
+        for (int i = 0; i < 4; i++) b += (char)((v >> (8 * i)) & 0xFF);
+    };
+    std::string cd;
+    uint32_t off = 0;
+    for (auto &[name, data] : files) {
+        uint32_t crc = crc32(data), sz = (uint32_t)data.size();
+        std::string h;
+        u32w(h, 0x04034b50), u16w(h, 20), u16w(h, 0), u16w(h, 0), u16w(h, 0), u16w(h, 0x21);
+        u32w(h, crc), u32w(h, sz), u32w(h, sz), u16w(h, (uint16_t)name.size()), u16w(h, 0);
+        h += name;
+        f.write(h.data(), (std::streamsize)h.size());
+        f.write(data.data(), (std::streamsize)data.size());
+        std::string c;
+        u32w(c, 0x02014b50), u16w(c, 20), u16w(c, 20), u16w(c, 0), u16w(c, 0), u16w(c, 0), u16w(c, 0x21);
+        u32w(c, crc), u32w(c, sz), u32w(c, sz), u16w(c, (uint16_t)name.size()), u16w(c, 0), u16w(c, 0), u16w(c, 0), u16w(c, 0);
+        u32w(c, 0), u32w(c, off);
+        c += name;
+        cd += c;
+        off += (uint32_t)(h.size() + data.size());
+    }
+    std::string e;
+    u32w(e, 0x06054b50), u16w(e, 0), u16w(e, 0), u16w(e, (uint16_t)files.size()), u16w(e, (uint16_t)files.size());
+    u32w(e, (uint32_t)cd.size()), u32w(e, off), u16w(e, 0);
+    f.write(cd.data(), (std::streamsize)cd.size());
+    f.write(e.data(), (std::streamsize)e.size());
+    return (bool)f;
+}
+
+}  // namespace ec

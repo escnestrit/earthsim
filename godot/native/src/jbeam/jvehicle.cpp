@@ -1,4 +1,6 @@
 #include "jvehicle.hpp"
+#include <thread>
+#include <cstdlib>
 #include <cstdio>
 #include <algorithm>
 #include <functional>
@@ -101,6 +103,12 @@ DriveParams drivetrain_params(const JModel &m, std::vector<std::string> &notes) 
 
 bool JVehicle::from_model(const JModel &m, JVehicle &v, std::string &err) {
     SoftBody &body = v.body;
+    // big vehicles: beams on several cores (one is the game's, one the streamer's)
+    {
+        int nt = (int)std::clamp<unsigned>(std::thread::hardware_concurrency() / 2, 1u, 4u);
+        if (const char *e = getenv("EARTHSIM_PHYS_THREADS")) nt = std::max(1, atoi(e));
+        if (m.beams.size() >= 1500) body.set_threads(nt);
+    }
     for (auto &n : m.nodes) {
         int i = body.add_node(ours(n.pos), std::max(0.05, n.mass));
         body.nodes[i].radius = 0.03;
@@ -502,12 +510,35 @@ void JVehicle::substep(double dt, const CarInput &in, const CollisionWorld &w) {
         if (in.abs && in.brake > 0.05 && wh.st.contact && -wh.st.kappa > 0.12) tb *= std::clamp(1 - (-wh.st.kappa - 0.12) / 0.1, 0.05, 1.0);
         tb += in.handbrake * wh.parking_torque * (1 - 0.75 * thr);
         double r = wh.radius;
-        Surface s = w.surface(c.x, c.y, c.z - r, 0.12);
-        V3 nrm = s.normal;
-        double pen = s.found ? r - (c - V3(c.x, c.y, s.height)).dot(nrm) : -1;
+        // the tyre as a circle against the ground under it: samples across the contact length find a kerb
+        // or step ahead of or behind the centre, and the contact normal then points from that edge to the
+        // hub, so the wheel rides up a kerb instead of sinking into it
+        V3 head0 = lat.cross(V3(0, 0, 1));
+        head0 = head0.len() > 1e-6 ? head0.norm() : fwd;
+        Surface s;
+        V3 nrm(0, 0, 1);
+        double pen = -1;
+        V3 pc = c - V3(0, 0, r);
+        for (int k = -2; k <= 2; k++) {
+            double dx = k * 0.35 * r;
+            V3 q = c + head0 * dx;
+            Surface si = w.surface(q.x, q.y, c.z - r * 0.55, r * 0.5);
+            if (!si.found) continue;
+            V3 p(q.x, q.y, si.height);
+            if (k == 0) {
+                // under the hub: the plane's own normal (slopes)
+                double pi = r - (c - p).dot(si.normal);
+                if (pi > pen) pen = pi, s = si, nrm = si.normal, pc = c - si.normal * r;
+            } else {
+                V3 d = c - p;
+                double dl = d.len();
+                if (dl < 1e-6 || d.z < 0.2 * dl) continue;
+                double pi = r - dl;
+                if (pi > pen + 0.002) pen = pi, s = si, nrm = d * (1 / dl), pc = p;
+            }
+        }
         double w0 = wh.st.w, wn, fz = 0;
         TireOut out;
-        V3 pc = c - nrm * r;
         if (pen > 0) {
             double vn = cvel.dot(nrm);
             fz = std::max(0.0, TIRE_K * pen - TIRE_C * vn);

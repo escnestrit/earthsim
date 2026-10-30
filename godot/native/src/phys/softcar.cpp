@@ -344,9 +344,23 @@ void SoftCar::substep(double dt, const CarInput &in, const CollisionWorld &w) {
         wheels[i].steer = delta;
         int hub = hubs[i];
         V3 hp = body.nodes[hub].p, hv = body.nodes[hub].v;
-        Surface s = w.surface(hp.x, hp.y, hp.z - rw, 0.12);
-        V3 n = s.normal;
-        double pen = s.found ? rw - (hp - V3(hp.x, hp.y, s.height)).dot(n) : -1;
+        // circle-vs-ground: centre sample plus fore/aft samples so kerbs push the wheel up
+        Surface s; V3 n(0, 0, 1); double pen = -1;
+        for (int k = -2; k <= 2; k++) {
+            V3 q = hp + fwd * (k * 0.35 * rw);
+            Surface si = w.surface(q.x, q.y, hp.z - rw * 0.55, rw * 0.5);
+            if (!si.found) continue;
+            V3 gp(q.x, q.y, si.height);
+            if (k == 0) {
+                double pi = rw - (hp - gp).dot(si.normal);
+                if (pi > pen) pen = pi, s = si, n = si.normal;
+            } else {
+                V3 d = hp - gp; double dl = d.len();
+                if (dl < 1e-6 || d.z < 0.2 * dl) continue;
+                double pi = rw - dl;
+                if (pi > pen + 0.002) pen = pi, s = si, n = d * (1 / dl);
+            }
+        }
         bool contact = pen > 0;
         double t_drive = 0, st = 0;
         if (p.awd) {

@@ -150,6 +150,7 @@ struct Label {
     double ang = 0, max_w = 3;
     std::string text;
     Col c;
+    double max_h = 0;  // the board's height for the text (0: half the width)
 };
 
 struct MeshSet {

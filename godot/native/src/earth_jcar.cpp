@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include "glue.h"
 #include "jbeam/beamng.hpp"
@@ -64,6 +65,12 @@ static bool vehicle_info(const std::string &path, std::string &name, std::string
         };
         type = str("Type");
         std::string brand = str("Brand"), nm = str("Name");
+        // official vehicles name themselves by a translation key ("vehiclesData.pickup.Name"): use the model id
+        if (nm.rfind("vehiclesData.", 0) == 0 || nm.find('.') != std::string::npos) {
+            std::string model = e.name.substr(9, e.name.size() - 9 - 10);
+            if (!model.empty()) model[0] = (char)std::toupper((unsigned char)model[0]);
+            nm = model;
+        }
         if (!nm.empty()) name = brand.empty() ? nm : brand + " " + nm;
         return true;
     }
@@ -167,6 +174,35 @@ void EarthJCar::load(Ref<EarthStream> stream, String path, String config) {
             return;
         }
         notes_.insert(notes_.end(), v->notes.begin(), v->notes.end());
+        // a debug bundle next to the game: the jbeam files this vehicle was built from (its own and BeamNG's
+        // common ones), the configuration and a report, so a problem can be reproduced away from this PC
+        if (!debug_dir_.empty()) {
+            std::error_code ec2;
+            std::filesystem::create_directories(std::filesystem::u8path(debug_dir_), ec2);
+            std::vector<std::pair<std::string, std::string>> files;
+            std::set<std::string> seen;
+            auto add_entry = [&](const std::string &name) {
+                if (!seen.insert(name).second) return;
+                std::string data, e3;
+                if (const ec::ZipEntry *e = z.find(name); e && z.read(*e, data, e3)) files.push_back({name, data});
+                else if (common)
+                    if (const ec::ZipEntry *e2 = common->find(name); e2 && common->read(*e2, data, e3)) files.push_back({name, data});
+            };
+            for (auto &pi : m.asm_.parts)
+                if (auto it = lib.parts.find(pi.name); it != lib.parts.end()) add_entry(it->second.file);
+            for (auto &e : z.entries)
+                if (e.name.size() > 3 && (e.name.compare(e.name.size() - 3, 3, ".pc") == 0 || e.name.find("/info.json") != std::string::npos) && std::count(e.name.begin(), e.name.end(), '/') == 2) add_entry(e.name);
+            std::string man = "vehicle: " + load_path_ + "\nconfig: " + load_config_ + "\nmain: " + main + "\n";
+            for (auto &pi : m.asm_.parts) man += "part " + pi.slot + " = " + pi.name + "\n";
+            for (auto &[a, b] : m.asm_.missing) man += "missing " + a + " = " + b + "\n";
+            for (auto &w : m.asm_.warnings) man += "warning " + w + "\n";
+            for (auto &n : notes_) man += "note " + n + "\n";
+            files.push_back({"earthsim_manifest.txt", man});
+            std::string stem = std::filesystem::u8path(load_path_).stem().u8string();
+            std::string e4;
+            ec::write_zip((std::filesystem::u8path(debug_dir_) / (stem + "_jbeam.zip")).u8string(), files, e4);
+            debug_name_ = stem;
+        }
         if (!m.asm_.missing.empty()) notes_.push_back(std::to_string(m.asm_.missing.size()) + " parts missing (BeamNG common files): defaults or empty slots");
         auto vis = std::make_unique<ec::CarVisual>();
         if (!ec::load_visual(z, common, m, *v, *vis, err)) notes_.push_back("meshes not loaded: " + err);
@@ -268,6 +304,16 @@ void EarthJCar::build_nodes() {
         if (nbr_[be.a].size() < 14) nbr_[be.a].push_back({be.b, d});
         if (nbr_[be.b].size() < 14) nbr_[be.b].push_back({be.a, -d});
     }
+    span_.assign(nbr_.size(), {-1, -1});
+    for (size_t i = 0; i < nbr_.size(); i++) {
+        double best = 0.25;  // sin of the angle: less than ~15 degrees apart is no plane
+        for (size_t a = 0; a < nbr_[i].size(); a++)
+            for (size_t b = a + 1; b < nbr_[i].size(); b++) {
+                Vector3 x = nbr_[i][a].second.normalized(), y = nbr_[i][b].second.normalized();
+                double sn = x.cross(y).length();
+                if (sn > best) best = sn, span_[i] = {(int)a, (int)b};
+            }
+    }
     std::map<std::string, Ref<StandardMaterial3D>> mats;
     std::map<std::string, Ref<Texture2D>> tex;
     Ref<ArrayMesh> body;
@@ -334,6 +380,7 @@ void EarthJCar::build_nodes() {
 }
 
 bool EarthJCar::place(Vector3 pos, double yaw) {
+    report_t_ = 0;
     if (!v_ || !coll_ || load_state_ != 3) return false;
     ec::V3 l(pos.x, -pos.z, pos.y);
     stop_ = true;
@@ -388,6 +435,44 @@ void EarthJCar::sim_loop() {
         }
         if (steps == 8) acc = 0;  // behind real time: drop the backlog rather than lock up
         total_steps_ += steps;
+        // how well the physics keeps up: simulated against real time over ~1 s
+        {
+            static thread_local double sim_acc = 0, wall_acc = 0;
+            static thread_local clk::time_point wall0 = clk::now();
+            sim_acc += steps * DT;
+            double wall = std::chrono::duration<double>(clk::now() - wall0).count();
+            if (wall > 1.0) {
+                sim_speed_ = std::clamp(sim_acc / wall, 0.0, 1.0);
+                sim_acc = 0;
+                wall0 = clk::now();
+            }
+        }
+        // a report a few seconds after the vehicle is put down: does it stand on its wheels?
+        if (report_t_ >= 0) {
+            report_t_ += steps * DT;
+            if (report_t_ > 4.0 && !debug_dir_.empty()) {
+                report_t_ = -1;
+                std::string r = "vehicle " + debug_name_ + "\n";
+                char b[512];
+                ec::Surface sf = coll_->surface(v_->pos.x, v_->pos.y, v_->pos.z + 2, 6);
+                snprintf(b, sizeof b, "sim speed %.2f (1 = real time)\nnodes %zu beams %zu threads\ncentre of mass %.2f m above ground, diverged %d, damage %.3f\n", sim_speed_.load(), v_->body.nodes.size(), v_->body.beams.size(), v_->pos.z - (sf.found ? sf.height : 0), (int)v_->body.diverged, v_->damage());
+                r += b;
+                int broken = 0;
+                for (auto &be : v_->body.beams) broken += be.broken;
+                snprintf(b, sizeof b, "broken beams %d\n", broken);
+                r += b;
+                for (size_t i = 0; i < v_->wheels.size(); i++) {
+                    auto &w = v_->wheels[i];
+                    ec::V3 c = (v_->body.nodes[w.n1].p + v_->body.nodes[w.n2].p) * 0.5;
+                    ec::Surface s2 = coll_->surface(c.x, c.y, c.z + 1, 4);
+                    snprintf(b, sizeof b, "wheel %s r %.3f centre %.3f above ground, contact %d, load %.0f N, comp %.3f, driven %d, front %d\n", w.name.c_str(), w.radius, c.z - (s2.found ? s2.height : 0), (int)w.st.contact, w.st.fz, w.st.comp, (int)w.driven, (int)w.front);
+                    r += b;
+                }
+                std::ofstream f(std::filesystem::u8path(debug_dir_) / (debug_name_ + "_report.txt"));
+                f << r;
+                for (auto &n : notes_) f << "note " << n << "\n";
+            }
+        }
         if (getenv("EARTHSIM_DEBUG_JCAR") && total_steps_ % 400 < (uint64_t)steps)
             printf("jcar: steps %llu speed %.1f thr %.2f gear %d rpm %.0f z %.2f contacts %d%d%d%d\n", (unsigned long long)total_steps_, v_->forward_speed() * 3.6, in.throttle, v_->drive.gear, v_->drive.rpm(), v_->pos.z,
                    v_->wheels.size() > 0 && v_->wheels[0].st.contact, v_->wheels.size() > 1 && v_->wheels[1].st.contact, v_->wheels.size() > 2 && v_->wheels[2].st.contact, v_->wheels.size() > 3 && v_->wheels[3].st.contact);
@@ -463,25 +548,42 @@ void EarthJCar::_process(double dt) {
     for (size_t i = 0; i < s.p.size(); i++) gp[i] = conv(s.p[i]);
     for (size_t i = 0; i < s.p.size(); i++) {
         skel_->set_bone_pose_position((int)i, inv.xform(gp[i]));
-        if (i >= nbr_.size() || nbr_[i].size() < 3) continue;
-        // A = sum current * rest^T
+        if (i >= nbr_.size() || nbr_[i].size() < 2 || span_[i].first < 0) continue;
+        // A = sum current * rest^T over the neighbours, plus the panel normal (so flat sheets are well posed)
         Basis A(0, 0, 0, 0, 0, 0, 0, 0, 0);
-        for (auto &[j, d0] : nbr_[i]) {
-            if (j >= (int)gp.size()) continue;
-            Vector3 d = gp[j] - gp[i];
+        auto acc = [&](const Vector3 &d, const Vector3 &d0) {
             for (int r = 0; r < 3; r++)
                 for (int c = 0; c < 3; c++) A.rows[r][c] += d[r] * d0[c];
+        };
+        for (auto &[j, d0] : nbr_[i])
+            if (j < (int)gp.size()) acc(gp[j] - gp[i], d0);
+        {
+            auto &na = nbr_[i][span_[i].first], &nb = nbr_[i][span_[i].second];
+            if (na.first < (int)gp.size() && nb.first < (int)gp.size()) {
+                Vector3 n0 = na.second.cross(nb.second), n = (gp[na.first] - gp[i]).cross(gp[nb.first] - gp[i]);
+                real_t l0 = n0.length(), l1 = n.length();
+                if (l0 > 1e-6 && l1 > 1e-6) {
+                    real_t s0 = (na.second.length() + nb.second.length()) * 0.5;
+                    acc(n * (s0 / l1), n0 * (s0 / l0));
+                }
+            }
         }
-        real_t det = A.determinant();
-        if (!(std::abs(det) > 1e-9)) continue;
-        // polar decomposition by iteration: R <- (R + R^-T) / 2
+        if (!(std::abs(A.determinant()) > 1e-7)) continue;
+        // polar decomposition by iteration: R <- (R + R^-T) / 2, stopping on anything degenerate
         Basis R = A;
-        for (int it = 0; it < 10; it++) {
+        bool ok = true;
+        for (int it = 0; it < 12; it++) {
+            real_t det = R.determinant();
+            if (!(std::abs(det) > 1e-9)) {
+                ok = false;
+                break;
+            }
             Basis Rit = R.inverse().transposed();
             R = Basis(R.rows[0] + Rit.rows[0], R.rows[1] + Rit.rows[1], R.rows[2] + Rit.rows[2]) * 0.5;
         }
-        if (R.determinant() < 0.5) continue;
+        if (!ok || R.determinant() < 0.5) continue;
         Quaternion q = (inv.basis * R).orthonormalized().get_rotation_quaternion();
+        if (!q.is_finite()) continue;
         skel_->set_bone_pose_rotation((int)i, q);
     }
     for (size_t k = 0; k < wheel_mi_.size(); k++) {
@@ -526,6 +628,8 @@ void EarthJCar::_bind_methods() {
     ClassDB::bind_static_method("EarthJCar", D_METHOD("beamng_vehicles_dir"), &EarthJCar::beamng_vehicles_dir);
     ClassDB::bind_method(D_METHOD("load", "stream", "path", "config"), &EarthJCar::load, DEFVAL(""));
     ClassDB::bind_static_method("EarthJCar", D_METHOD("configs", "path"), &EarthJCar::configs);
+    ClassDB::bind_method(D_METHOD("set_debug_dir", "dir"), &EarthJCar::set_debug_dir);
+    ClassDB::bind_method(D_METHOD("sim_speed"), &EarthJCar::sim_speed);
     ClassDB::bind_method(D_METHOD("poll"), &EarthJCar::poll);
     ClassDB::bind_method(D_METHOD("notes"), &EarthJCar::notes);
     ClassDB::bind_method(D_METHOD("place", "pos", "yaw"), &EarthJCar::place);

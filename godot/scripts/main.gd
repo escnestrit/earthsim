@@ -38,6 +38,9 @@ var fps_acc := 0.0
 const GameMenuScript = preload("res://scripts/game_menu.gd")
 var menu: CanvasLayer
 var settings: ConfigFile
+var gi_wanted := true
+var auto_shot_t := -1.0
+var gi_night_off := false
 const WeatherScript = preload("res://scripts/weather.gd")
 var weather: Node3D
 
@@ -98,6 +101,7 @@ func _ready() -> void:
 		if settings.has_section_key("game", k):
 			apply_setting(k, settings.get_value("game", k))
 	if args.has("nogi"):
+		gi_wanted = false
 		env.sdfgi_enabled = false
 	if args.has("menu"):
 		menu.call_deferred("toggle")
@@ -200,6 +204,12 @@ func _apply_time() -> void:
 	# lit windows must stay windows: at night GI (which would spread their light over whole facades) and
 	# bloom are turned down, and only bright highlights glow
 	env.sdfgi_energy = lerpf(1.0, 0.25, night)
+	# at night GI is off: it spreads the lit windows' light over whole facades (houses "glow"); the sky's
+	# light in fog, aerial perspective and ambient goes dark too, so distant walls don't turn grey-white
+	gi_night_off = night > 0.5
+	env.sdfgi_enabled = gi_wanted and not gi_night_off
+	env.fog_aerial_perspective = lerpf(0.85, 0.0, night)
+	env.ambient_light_sky_contribution = lerpf(0.55, 0.15, night)
 	env.glow_hdr_threshold = lerpf(1.0, 1.6, night)
 	env.glow_bloom = lerpf(0.05, 0.0, night)
 	env.ambient_light_energy = lerpf(1.0, 0.45, night)
@@ -208,6 +218,7 @@ func _apply_time() -> void:
 		world.mats.set_night(night)
 	if weather:
 		weather.base_sun = sun.light_energy
+		weather.night = night
 
 func _setup_car() -> void:
 	car = EarthCar.new()
@@ -282,7 +293,9 @@ func _load_vehicle(i: int, config := "") -> void:
 	jcar = EarthJCar.new()
 	jcar.name = "JCar"
 	add_child(jcar)
+	jcar.set_debug_dir(debug_dir())
 	jcar.load(world.stream, vehicles[i]["path"], config)
+	auto_shot_t = 7.0
 	_say("Загрузка: " + vehicles[i]["name"] + "…")
 
 func _say(t: String) -> void:
@@ -314,6 +327,20 @@ func _poll_vehicle() -> void:
 		_say("Не удалось загрузить " + vehicles[vehicle_i]["name"] + ": " + st)
 		jcar.queue_free()
 		jcar = null
+
+# debug files (vehicle bundles, reports, screenshots) go next to the game, or to user:// when that is read-only
+func debug_dir() -> String:
+	var d := OS.get_executable_path().get_base_dir().path_join("debug")
+	if OS.has_feature("editor"):
+		d = ProjectSettings.globalize_path("user://debug")
+	DirAccess.make_dir_recursive_absolute(d)
+	return d
+
+func save_shot(tag: String) -> void:
+	await RenderingServer.frame_post_draw
+	var img := get_viewport().get_texture().get_image()
+	var t := Time.get_datetime_string_from_system().replace(":", "-")
+	img.save_png(debug_dir().path_join("%s_%s.png" % [tag, t]))
 
 func current_vehicle_path() -> String:
 	if vehicle_i >= 0 and vehicle_i < vehicles.size():
@@ -356,7 +383,8 @@ func apply_setting(key: String, v) -> void:
 		"volume":
 			AudioServer.set_bus_volume_db(0, linear_to_db(maxf(float(v), 0.0001)))
 		"gi":
-			env.sdfgi_enabled = bool(v)
+			gi_wanted = bool(v)
+			env.sdfgi_enabled = gi_wanted and not gi_night_off
 		"ssr":
 			env.ssr_enabled = bool(v)
 		"shadows":
@@ -427,7 +455,11 @@ func _unhandled_input(e: InputEvent) -> void:
 				hour = fmod(hour + 1.5, 24.0)
 				_apply_time()
 			KEY_G:
-				env.sdfgi_enabled = not env.sdfgi_enabled
+				gi_wanted = not gi_wanted
+				env.sdfgi_enabled = gi_wanted and not gi_night_off
+			KEY_F12:
+				save_shot("shot")
+				_say("Скриншот сохранён в папку debug рядом с игрой")
 			KEY_F1:
 				help.visible = not help.visible
 	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
@@ -470,6 +502,12 @@ func _process(dt: float) -> void:
 	var gear_s: String = "R" if car.gear() < 0 else str(car.gear())
 	hud.text = "%d км/ч   передача %s   %d об/мин\n%.5f, %.5f   %02d:%02d   FPS %d\n%s" % [
 		roundi(car.speed_kmh()), gear_s, roundi(car.rpm()), ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60), roundi(fps_acc), world.stream.status()]
+	if car == jcar and jcar and jcar.sim_speed() < 0.9:
+		hud.text += "\nфизика машины не успевает: %d%% скорости (тяжёлая модель для этого ПК)" % roundi(jcar.sim_speed() * 100)
+	if auto_shot_t > 0.0 and car == jcar:
+		auto_shot_t -= dt
+		if auto_shot_t <= 0.0:
+			save_shot("beamng_" + String(vehicles[vehicle_i]["path"]).get_file().get_basename())
 	if car_msg_t > 0.0:
 		hud.text += "\n" + car_msg
 	if shot_t > 0.0 and int(t_since / 5.0) != int((t_since - dt) / 5.0):

@@ -684,7 +684,7 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
             if (labels) {
                 std::string text = poi.name.empty() ? st.word : poi.name;
                 V2 q = a + dir * ((tx0 + s1) / 2) + o * 0.12;
-                labels->push_back({V3(q.x, q.y, (bz0 + bz1) / 2), std::atan2(o.y, o.x), (s1 - tx0) - 0.3, text, st.text});
+                labels->push_back({V3(q.x, q.y, (bz0 + bz1) / 2), std::atan2(o.y, o.x), (s1 - tx0) - 0.3, text, st.text, (bz1 - bz0) - 0.12});
             }
         }
     }
@@ -926,7 +926,7 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
                 V2 q = a + dir * (l * (big_shop && l > 50 ? 0.5 : 0.3)) + o * 0.2;
                 if (l <= 50 && sw >= 3) q = a + dir * std::max(lw / 2 + 0.5, l * 0.75 - sw / 2 - lw / 2 - 1.0) + o * 0.2;
                 Col lc = (sd % 3 == 0) ? Col{0.95f, 0.15f, 0.15f, 1} : (sd % 3 == 1) ? Col{1, 1, 1, 1} : Col{1.0f, 0.75f, 0.1f, 1};
-                labels->push_back({V3(q.x, q.y, lz), std::atan2(o.y, o.x), lw, nm, lc});
+                labels->push_back({V3(q.x, q.y, lz), std::atan2(o.y, o.x), lw, nm, lc, std::max(0.8, lw * 0.22)});
             }
         }
     }

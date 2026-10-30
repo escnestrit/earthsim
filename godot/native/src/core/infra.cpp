@@ -94,7 +94,8 @@ void build_infra(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 } else {
                     za = std::max(c.ground(a), c.Gs(a)) + 0.35, zb = std::max(c.ground(b), c.Gs(b)) + 0.35;
                 }
-                rail_segs.push_back({a, b});
+                // level crossings only where a real railway (not a tram, not on a bridge) meets the road
+                if (!tram && !ln.bridge) rail_segs.push_back({a, b});
                 if (!in_street && !ln.bridge) {
                     // ballast bed: top 3.2 m, slopes down 0.6 m
                     double top = tram ? 1.4 : 1.7, foot = top + 0.9;
@@ -168,7 +169,7 @@ void build_infra(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             for (auto &sg : c.roads.segs) {
                 V2 x;
                 if (!seg_cross(ra, rb, sg.a, sg.b, x) || !c.own(x)) continue;
-                if (sg.hw < 2.4) continue;
+                if (sg.hw < 3.0) continue;  // not parking aisles and yard lanes
                 V2 rd = (rb - ra).norm(), ud = (sg.b - sg.a).norm();
                 if (std::abs(rd.cross(ud)) < 0.4) continue;  // tram running along the street
                 // one crossing per spot
@@ -351,7 +352,7 @@ void build_infra(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 V3 nrm(dv.x, dv.y, 0);
                 V2 side = dv.perp() * 0.4;
                 PM.quad(V3(q.x - side.x, q.y - side.y, z + 2.9), V3(q.x + side.x, q.y + side.y, z + 2.9), V3(q.x + side.x, q.y + side.y, z + 3.7), V3(q.x - side.x, q.y - side.y, z + 3.7), nrm, bc);
-                c.out.labels.push_back({V3(q.x + dv.x * 0.02, q.y + dv.y * 0.02, z + 3.3), a, 0.6, letter, Col{1, 1, 1, 1}});
+                c.out.labels.push_back({V3(q.x + dv.x * 0.02, q.y + dv.y * 0.02, z + 3.3), a, 0.6, letter, Col{1, 1, 1, 1}, 0.62});
             }
             PM.obox(v, 0, 0.84, 0.84, z + 3.7, z + 3.72, bc);
             c.coll_prism(v, 0, 0.2, 0.2, z, z + 3);

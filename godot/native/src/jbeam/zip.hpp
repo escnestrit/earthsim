@@ -32,5 +32,7 @@ private:
 };
 
 uint32_t crc32(const std::string &data);
+// writes a zip archive of stored (uncompressed) files: (name, data)
+bool write_zip(const std::string &path, const std::vector<std::pair<std::string, std::string>> &files, std::string &err);
 
 }  // namespace ec

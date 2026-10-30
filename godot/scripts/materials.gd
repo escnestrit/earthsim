@@ -287,5 +287,5 @@ func set_wet(w: float) -> void:
 func set_night(k: float) -> void:
 	night = k
 	for m in facade_mats:
-		m.emission_energy_multiplier = k * 1.1
+		m.emission_energy_multiplier = k * 0.8
 	mats[M_LAMP].emission_energy_multiplier = k * 8.0

@@ -92,7 +92,7 @@ bool load_config(Zip &z, const std::string &want_pc, VehicleConfig &out, std::st
     out.model = dir.substr(9, dir.size() - 10);
     std::string txt;
     Json j;
-    if (!z.read(*info, txt, err) || !jbeam_parse(txt, j, err)) return false;
+    if (!z.read(*info, txt, err) || !Json::parse(jbeam_normalize(txt), j, &err)) return false;
     std::string pc = want_pc;
     if (const Json *d = j.get("default_pc"); pc.empty() && d && d->kind == Json::Str) pc = d->s;
     if (const Json *n = j.get("Name"); n && n->kind == Json::Str) out.name = n->s;
@@ -113,12 +113,19 @@ bool load_config(Zip &z, const std::string &want_pc, VehicleConfig &out, std::st
         err = dir + pc + ".pc not in the archive";
         return false;
     }
+    // a .pc is plain (lenient) JSON: {"format": 2, "model": ..., "parts": {slot: part}, "vars": {...}}
     Json c;
-    if (!z.read(*pe, txt, err) || !jbeam_parse(txt, c, err)) return false;
+    if (!z.read(*pe, txt, err)) return false;
+    if (!Json::parse(jbeam_normalize(txt), c, &err)) return false;
     if (const Json *m = c.get("mainPartName"); m && m->kind == Json::Str) out.main_part = m->s;
-    if (const Json *p = c.get("parts"); p && p->kind == Json::Obj)
+    if (const Json *p = c.get("parts"); p && p->kind == Json::Obj) {
         for (auto &[k, v] : p->o)
             if (v.kind == Json::Str) out.parts[k] = v.s;
+    } else if (c.kind == Json::Obj) {
+        // format 1: slots at the top level
+        for (auto &[k, v] : c.o)
+            if (v.kind == Json::Str && k != "model" && k != "mainPartName" && k != "licenseName") out.parts[k] = v.s;
+    }
     if (const Json *v = c.get("vars"); v && v->kind == Json::Obj)
         for (auto &[k, x] : v->o) out.vars[k] = x;
     return true;
@@ -141,7 +148,7 @@ std::vector<std::string> list_configs(Zip &z) {
             if (e.name.size() > 10 && e.name.compare(e.name.size() - 10, 10, "/info.json") == 0 && std::count(e.name.begin(), e.name.end(), '/') == 2) {
                 std::string txt;
                 Json j;
-                if (z.read(e, txt, err) && jbeam_parse(txt, j, err))
+                if (z.read(e, txt, err) && Json::parse(jbeam_normalize(txt), j, &err))
                     if (const Json *d = j.get("default_pc"); d && d->kind == Json::Str) first = d->s;
                 break;
             }

@@ -750,10 +750,20 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             for (int side : {1, -1}) {
                 double gap = med[r0i][side > 0 ? 0 : 1];
                 if (gap < 0) continue;
+                if (gap < 2.0) {
+                    // the two carriageways are drawn side by side with nothing between them in reality: a
+                    // solid line at the edge (the other carriageway draws its own: a double line)
+                    double mz = zo + 0.008;
+                    double e0 = side * (r0.hw - 0.08), e1 = side * (r0.hw - 0.2);
+                    strip(MK, std::min(e0, e1), std::max(e0, e1), mz, mz, Col{0.95f, 0.95f, 0.93f, 1}, false, 1);
+                    // and asphalt over the gap so no grass shows between them
+                    if (gap > 0.05) strip(AS, side > 0 ? r0.hw : -r0.hw - gap / 2 - 0.05, side > 0 ? r0.hw + gap / 2 + 0.05 : -r0.hw, zo - 0.002, zo - 0.002, ac, true, 4);
+                    continue;
+                }
                 Col kc{0.78f, 0.78f, 0.76f, 1};
                 double half = std::max(0.25, gap / 2 - 0.02);
                 double o0 = side * r0.hw, o1 = side * (r0.hw + half);
-                if ((r0.prio >= 7 && gap < 3.0) || gap < 1.2) {
+                if (r0.prio >= 8 && gap < 3.5) {
                     // fast roads and tight gaps: a concrete barrier (New Jersey profile, roughly), solid in collision
                     double bw = std::min(half, 0.3);
                     double ob = side * (r0.hw + half - bw);
@@ -1001,6 +1011,21 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             if (f.kind == kind && (f.p - p).len() < r) return true;
         return false;
     };
+    // each mapped traffic light belongs to the one junction nearest to it (OSM puts lights on the stop
+    // points of every approach; a big junction of dual carriageways is many graph nodes)
+    std::vector<char> sig_node(nodes.size(), 0);
+    for (auto &f : fpts) {
+        if (f.kind != "signal") continue;
+        int best = -1;
+        double bd = 25;
+        for (size_t ni = 0; ni < nodes.size(); ni++) {
+            if (nodes[ni].ends.size() < 3) continue;
+            double d = (nodes[ni].p - f.p).len();
+            if (d < bd) bd = d, best = (int)ni;
+        }
+        if (best >= 0) sig_node[best] = 1;
+    }
+    std::vector<V2> signal_poles;
     // junction surfaces with rounded kerbs, sidewalk corners
     for (size_t ni = 0; ni < nodes.size(); ni++) {
         Node &n = nodes[ni];
@@ -1041,7 +1066,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             for (auto &e : n.ends) nmajor += roads[e.road].prio >= top1 && top1 >= 5;
             bool urban_n = false;
             for (auto &e : n.ends) urban_n |= roads[e.road].urban;
-            bool signalised = has_pt(n.p, "signal", 30.0) || (!all_osm && urban_n && top1 >= 6 && top2 >= 5 && k >= 3);
+            bool signalised = sig_node[ni] || (!all_osm && urban_n && top1 >= 6 && top2 >= 5 && k >= 3);
             bool stop_n = has_pt(n.p, "stop", 25.0);
             uint64_t hseed = (uint64_t)std::llround(n.p.x * 7.0) * 73856093ull ^ (uint64_t)std::llround(n.p.y * 7.0) * 19349663ull;
             (void)hseed;
@@ -1056,13 +1081,23 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 double yaw = std::atan2(a.u.y, a.u.x);
                 bool zebra = ar.urban && ar.prio >= 2 && ar.prio <= 7;
                 double zl = at_chainage(ar.pts, ar.trim[n.ends[ai].start ? 0 : 1] + 4.1, n.ends[ai].start).z + 0.03 + ar.prio * 0.004 + 0.008;
+                // traffic coming in on this arm (not one-way away from the junction)
+                bool st = n.ends[ai].start;
+                bool incoming = ar.oneway == 0 || (st && ar.oneway < 0) || (!st && ar.oneway > 0);
                 if (signalised) {
+                    // one head per real approach: not on links inside the junction, not twice in one place
                     V2 pp = on_arm(1.6, edge);
-                    if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGNAL, {pp.x, pp.y, zs}, yaw, 1, {1, 1, 1, 1}});
-                } else if (minor_arm && ar.prio <= top1 - 2 && top1 >= 5) {
+                    bool near_other = false;
+                    for (auto &q : signal_poles)
+                        if ((q - pp).len() < 9) near_other = true;
+                    if (incoming && chain_len(ar.pts) > 18 && !near_other && free_spot(pp, 0.6)) {
+                        c.out.inst.push_back({I_SIGNAL, {pp.x, pp.y, zs}, yaw, 1, {1, 1, 1, 1}});
+                        signal_poles.push_back(pp);
+                    }
+                } else if (incoming && minor_arm && ar.prio <= top1 - 2 && top1 >= 5) {
                     V2 pp = on_arm(4.6, edge);
                     if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGN, {pp.x, pp.y, zs}, yaw, 1, {stop_n ? (float)SG_STOP : (float)SG_YIELD, 0, 0, 1}});
-                } else if (minor_arm && ar.prio >= top1 && top1 >= 5) {
+                } else if (incoming && minor_arm && ar.prio >= top1 && top1 >= 5) {
                     V2 pp = on_arm(2.4, edge);
                     if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGN, {pp.x, pp.y, zs}, yaw, 1, {(float)SG_PRIORITY, 0, 0, 1}});
                 }
@@ -1081,7 +1116,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                         }
                     }
                 }
-                if (zebra && !signalised) {
+                if (zebra && !signalised && incoming && chain_len(ar.pts) > 18) {
                     V2 pp = on_arm(3.4, edge + 0.5);
                     if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGN, {pp.x, pp.y, zs}, yaw, 1, {(float)SG_CROSSING, 0, 0, 1}});
                 }
@@ -1106,7 +1141,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                             if (sd < 0) std::swap(q0, q1), std::swap(q2, q3);
                             PM.quad(q0, q1, q2, q3, nv, Col{0.07f, 0.22f, 0.52f, 1});
                             V3 m = P(w / 2, 0, off * 1.6);
-                            c.out.labels.push_back({m, std::atan2(nside.y * sd, nside.x * sd), w - 0.15, ar.name, Col{1, 1, 1, 1}});
+                            c.out.labels.push_back({m, std::atan2(nside.y * sd, nside.x * sd), w - 0.15, ar.name, Col{1, 1, 1, 1}, 0.26});
                         }
                         c.coll_prism(pp, 0, 0.09, 0.09, zs - 0.1, zs + 2.7);
                     }
@@ -1152,7 +1187,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                                 if (!right.empty()) text += right + " →";
                                 while (!text.empty() && text.back() == '\n') text.pop_back();
                                 V3 m = P(0, H / 2, 0.11);
-                                c.out.labels.push_back({m, std::atan2(nf.y, nf.x), W - 0.3, text, Col{1, 1, 1, 1}});
+                                c.out.labels.push_back({m, std::atan2(nf.y, nf.x), W - 0.3, text, Col{1, 1, 1, 1}, H - 0.25});
                             }
                         }
                     }

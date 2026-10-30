@@ -27,6 +27,10 @@ public:
     // config: a .pc name from configs(), "" for the vehicle's default
     void load(Ref<EarthStream> stream, String path, String config = "");
     static PackedStringArray configs(String path);
+    // where to write debug bundles and reports ("" = none)
+    void set_debug_dir(String d) { debug_dir_ = d.utf8().get_data(); }
+    // how fast the physics keeps up with real time (1 = fully)
+    double sim_speed() const { return sim_speed_; }
     String poll();
     String notes() const;
     bool place(Vector3 pos, double yaw);
@@ -50,7 +54,9 @@ private:
     std::unique_ptr<ec::CarVisual> vis_;
     std::thread loader_, sim_;
     std::atomic<int> load_state_{0};  // 0 idle, 1 loading, 2 loaded (not built), 3 ready, -1 error
-    std::string load_err_, load_path_, load_config_;
+    std::string load_err_, load_path_, load_config_, debug_dir_, debug_name_;
+    std::atomic<double> sim_speed_{1.0};
+    double report_t_ = -1;
     std::vector<std::string> notes_;
     std::atomic<bool> stop_{false}, placed_{false};
     mutable std::mutex mu_;      // guards the vehicle while the sim thread steps it
@@ -72,6 +78,8 @@ private:
     ec::V3 rest_com_;
     // per node: neighbours by beam and their rest offsets (Godot axes), for the bones' rotations
     std::vector<std::vector<std::pair<int, Vector3>>> nbr_;
+    // per node: the two neighbours spanning the widest angle (for a normal that keeps flat panels well posed)
+    std::vector<std::pair<int, int>> span_;
     Skeleton3D *skel_ = nullptr;
     std::vector<MeshInstance3D *> wheel_mi_;
     std::vector<int> wheel_of_mi_;

@@ -704,15 +704,25 @@ int overture_places(TileId tile, const std::vector<mvt::Layer> &places, RawTile 
             double cf;
             if (f.num("confidence", cf) && cf < 0.5) continue;
             std::string name = f.str("@name");
+            if (name.empty()) name = f.str("names.primary");
             if (name.empty()) name = json_primary(f.str("names"), "primary");
             if (name.empty()) continue;
+            // the tiles may carry the category in several shapes depending on the release's tiling profile
             std::string cat = f.str("basic_category");
+            for (const char *k : {"categories.primary", "@category", "category", "taxonomy.primary", "class"})
+                if (cat.empty()) cat = f.str(k);
             if (cat.empty()) cat = json_primary(f.str("categories"), "primary");
-            if (cat.empty()) cat = f.str("category");
+            if (cat.empty()) cat = json_primary(f.str("taxonomy"), "primary");
             auto [k, v] = place_kind(cat);
-            if (k.empty()) continue;
-            std::string brand = json_primary(f.str("brand"), "names", "primary");
-            if (brand.empty()) brand = f.str("brand.names.primary");
+            if (k.empty()) {
+                static const char *NOT_BUSINESS[] = {"park", "bus", "station", "stop", "church", "school", "monument", "landmark", "residential", "street", "river", "lake", "city", "neighborhood", "plaza", "square", "parking", "atm"};
+                bool skip = false;
+                for (auto w : NOT_BUSINESS) skip |= cat.find(w) != std::string::npos;
+                if (skip) continue;
+                k = "shop", v = "yes";
+            }
+            std::string brand = f.str("brand.names.primary");
+            if (brand.empty()) brand = json_primary(f.str("brand"), "names", "primary");
             LL q = cv.ll(f.parts[0][0]);
             if (q.lat < b.s || q.lat >= b.n || q.lon < b.w || q.lon >= b.e) continue;
             bool dup = false;

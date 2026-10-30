@@ -567,7 +567,7 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
                     text = sn + "\n" + *hn;
                 }
                 V2 lq = m + out * 0.03;
-                c.out.labels.push_back({V3(lq.x, lq.y, z), std::atan2(out.y, out.x), w - 0.08, text, Col{1, 1, 1, 1}});
+                c.out.labels.push_back({V3(lq.x, lq.y, z), std::atan2(out.y, out.x), w - 0.08, text, Col{1, 1, 1, 1}, hh - 0.06});
             }
         }
         build_building(g, c.out.ms, c.out.coll, &c.out.labels);
