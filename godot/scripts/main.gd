@@ -55,6 +55,8 @@ func _ready() -> void:
 	_setup_hud()
 	if args.has("shot"):
 		shot_t = float(args.get("shot-after", "20"))
+	if args.has("cammode"):
+		cam_mode = int(args["cammode"])
 	if args.has("cam"):
 		var c: PackedStringArray = (args["cam"] as String).split(",")
 		cam_mode = 2
@@ -143,6 +145,12 @@ func _setup_car() -> void:
 	var mats := {}
 	for mat in [EarthMaterials.M_CARPAINT, EarthMaterials.M_GLASS, EarthMaterials.M_DARK, EarthMaterials.M_LAMP, EarthMaterials.M_TIRE]:
 		mats[mat] = world.mats.get_mat(mat)
+	# the player's windows are see-through from inside
+	var g := (world.mats.get_mat(EarthMaterials.M_GLASS) as StandardMaterial3D).duplicate() as StandardMaterial3D
+	g.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	g.albedo_color = Color(0.1, 0.13, 0.15, 0.35)
+	g.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mats[EarthMaterials.M_GLASS] = g
 	var paint := (world.mats.get_mat(EarthMaterials.M_CARPAINT) as StandardMaterial3D).duplicate() as StandardMaterial3D
 	paint.vertex_color_use_as_albedo = false
 	paint.albedo_color = Color(0.55, 0.06, 0.05)
@@ -267,8 +275,8 @@ func _update_camera(dt: float) -> void:
 		fwd = Vector3.FORWARD
 	fwd = fwd.normalized()
 	if cam_mode == 1:
-		cam.global_position = tr * Vector3(0.1, 1.3, 0)
-		cam.look_at(cam.global_position + car.forward() * 10.0 + Vector3(0, -0.6, 0), Vector3.UP)
+		cam.global_position = tr * car.eye()
+		cam.global_basis = tr.basis * Basis(Vector3.UP, -PI / 2) * Basis(Vector3.RIGHT, -0.08)
 		return
 	var back := fwd.rotated(Vector3.UP, cam_yaw)
 	var target := (car.global_position if spawn_ready else spawn) + Vector3(0, 1.3, 0)

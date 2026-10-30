@@ -1,4 +1,7 @@
 #include "earth_car.h"
+#include "core/models.hpp"
+#include "core/chunk.hpp"
+#include "glue.h"
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/material.hpp>
@@ -81,6 +84,32 @@ void EarthCar::setup(Ref<EarthStream> stream, Dictionary body, Dictionary materi
     skel_->add_child(mi);
     mi->set_skin(skin);
     mi->set_skeleton_path(NodePath(".."));
+    // cabin and steering wheel, rigid with the chassis frame
+    auto make = [&](int kind) {
+        ec::MeshSet m = ec::model_mesh(kind, 0);
+        Ref<ArrayMesh> am2;
+        am2.instantiate();
+        for (auto &[mat, mb] : m.m) {
+            if (!mb.verts()) continue;
+            am2->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, mesh_arrays(mb));
+            Variant mv = materials.get(mat, Variant());
+            if (mv.get_type() == Variant::OBJECT) am2->surface_set_material(am2->get_surface_count() - 1, mv);
+        }
+        MeshInstance3D *mi2 = memnew(MeshInstance3D);
+        mi2->set_mesh(am2);
+        return mi2;
+    };
+    MeshInstance3D *cabin = make(ec::I_CAR_INTERIOR);
+    cabin->set_position(Vector3((real_t)MODEL_DX, 0, 0));
+    add_child(cabin);
+    steering_ = memnew(Node3D);
+    // model (0.42, 0.37, 1.0): Godot (x, z, -y); the column leans back toward the driver
+    steering_->set_position(Vector3((real_t)(0.42 + MODEL_DX), 1.0f, -0.37f));
+    steering_->set_rotation(Vector3(0, 0, -0.42f));
+    add_child(steering_);
+    MeshInstance3D *sw = make(ec::I_STEERING_WHEEL);
+    sw->set_name("Wheel");
+    steering_->add_child(sw);
     for (int i = 0; i < 4; i++) {
         wheels_[i] = memnew(MeshInstance3D);
         wheels_[i]->set_mesh(wheel_mesh);
@@ -139,6 +168,7 @@ void EarthCar::_physics_process(double dt) {
         else
             ci = driver_.update(dt, up, dn, lf, rt, hb, v);
     }
+    last_steer_ = ci.steer;
     car_->step(dt, ci, *coll_);
     if (car_->body.diverged) {
         reset();
@@ -157,6 +187,11 @@ void EarthCar::sync_visual() {
     set_global_transform(t);
     Transform3D inv = t.affine_inverse();
     for (int k = 0; k < (int)bone_node_.size(); k++) skel_->set_bone_pose_position(k, inv.xform(conv(c.body.nodes[bone_node_[k]].p)));
+    if (steering_ && steering_->get_child_count() > 0) {
+        // 15:1 steering ratio; turning left turns the rim anticlockwise as the driver sees it
+        Node3D *sw = Object::cast_to<Node3D>(steering_->get_child(0));
+        if (sw) sw->set_rotation(Vector3((real_t)(-last_steer_ * 15.0), 0, 0));
+    }
     for (int i = 0; i < 4; i++) {
         Vector3 hp = inv.xform(conv(c.body.nodes[c.hubs[i]].p));
         Basis wb = Basis(Vector3(0, 1, 0), (real_t)c.wheels[i].steer) * Basis(Vector3(0, 0, 1), (real_t)-c.wheels[i].spin) * Basis(Vector3(1, 0, 0), (real_t)(Math_PI / 2));
@@ -168,6 +203,7 @@ double EarthCar::speed_kmh() const { return car_ ? car_->vel.len() * 3.6 : 0; }
 double EarthCar::rpm() const { return car_ ? car_->drive.rpm() : 0; }
 int EarthCar::gear() const { return car_ ? car_->drive.gear : 0; }
 double EarthCar::damage() const { return car_ ? car_->damage() : 0; }
+Vector3 EarthCar::eye() const { return Vector3((real_t)(-0.05 + MODEL_DX), 1.28f, -0.37f); }
 Vector3 EarthCar::forward() const { return car_ ? conv(car_->fwd) : Vector3(1, 0, 0); }
 
 Dictionary EarthCar::telemetry() const {
@@ -200,6 +236,7 @@ void EarthCar::_bind_methods() {
     ClassDB::bind_method(D_METHOD("damage"), &EarthCar::damage);
     ClassDB::bind_method(D_METHOD("is_placed"), &EarthCar::is_placed);
     ClassDB::bind_method(D_METHOD("forward"), &EarthCar::forward);
+    ClassDB::bind_method(D_METHOD("eye"), &EarthCar::eye);
     ClassDB::bind_method(D_METHOD("telemetry"), &EarthCar::telemetry);
     ClassDB::bind_method(D_METHOD("set_input_enabled", "enabled"), &EarthCar::set_input_enabled);
     ClassDB::bind_method(D_METHOD("set_auto_input", "throttle", "steer", "brake"), &EarthCar::set_auto_input);

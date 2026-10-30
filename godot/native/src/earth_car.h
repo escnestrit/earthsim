@@ -31,6 +31,8 @@ public:
     double damage() const;
     bool is_placed() const { return placed_; }
     Vector3 forward() const;
+    // driver's eye point in the car's frame (for the cockpit camera)
+    Vector3 eye() const;
     Dictionary telemetry() const;
     void set_input_enabled(bool e) { input_ = e; }
     void set_auto_input(double throttle, double steer, double brake);
@@ -42,6 +44,8 @@ private:
     ec::Driver driver_;
     Skeleton3D *skel_ = nullptr;
     MeshInstance3D *wheels_[4] = {};
+    Node3D *steering_ = nullptr;
+    double last_steer_ = 0;
     std::vector<int> bone_node_;  // softbody node per bone
     bool placed_ = false, input_ = true;
     double auto_t_ = 0, auto_s_ = 0, auto_b_ = 0;

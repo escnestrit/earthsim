@@ -16,7 +16,7 @@ constexpr int GRID_N = 256;     // terrain cells per chunk side (1 m)
 constexpr int SPLAT_N = 256;    // ground-cover texels per side (1 m)
 constexpr double FEATURE_MARGIN = 48;  // features this far outside a chunk still shape it
 
-enum InstKind { I_TREE = 0, I_CONIFER = 1, I_BUSH = 2, I_LAMP = 3, I_CAR = 4, I_BENCH = 5 };
+enum InstKind { I_TREE = 0, I_CONIFER = 1, I_BUSH = 2, I_LAMP = 3, I_CAR = 4, I_BENCH = 5, I_CAR_INTERIOR = 6, I_STEERING_WHEEL = 7 };
 
 struct Instance {
     int kind = 0;

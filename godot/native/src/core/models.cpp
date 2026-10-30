@@ -328,6 +328,73 @@ MeshSet car(bool with_wheels) {
     return ms;
 }
 
+// cabin seen from the driver's seat: dashboard, instrument binnacle, centre console, seats, door cards
+MeshSet car_interior() {
+    MeshSet ms;
+    MeshBuf &D = ms[M_DARK];
+    Col dash{0.16f, 0.16f, 0.17f, 1}, seat{0.12f, 0.12f, 0.13f, 1}, trim{0.35f, 0.33f, 0.31f, 1};
+    // dashboard: a slab under the windscreen, sloping toward the glass
+    D.obox({0.95, 0}, 0, 0.55, 1.62, 0.78, 1.02, dash, true);
+    D.obox({0.62, 0}, 0, 0.2, 1.62, 0.7, 0.98, dash, true);
+    // binnacle over the instruments (driver on the left: +y)
+    D.obox({0.62, 0.37}, 0, 0.22, 0.42, 0.98, 1.06, dash, true);
+    // centre console
+    D.obox({0.15, 0}, 0, 0.9, 0.24, 0.42, 0.72, dash, true);
+    // seats: cushion and back
+    for (double y : {0.37, -0.37}) {
+        D.obox({-0.15, y}, 0, 0.5, 0.5, 0.42, 0.58, seat, true);
+        D.obox({-0.45, y}, 0, 0.12, 0.5, 0.58, 1.25, seat, true);
+        D.obox({-0.47, y}, 0, 0.1, 0.26, 1.25, 1.42, seat, true);
+    }
+    D.obox({-1.05, 0}, 0, 0.5, 1.4, 0.42, 1.05, seat, true);  // rear bench
+    // door cards
+    for (double y : {0.82, -0.82}) D.obox({0.0, y}, 0, 2.1, 0.06, 0.45, 1.0, trim, true);
+    // instrument faces: two dials
+    MeshBuf &L = ms[M_LAMP];
+    for (double dy : {0.27, 0.47}) {
+        V2 c(0.53, dy);
+        int ci = L.v({c.x, c.y, 0.97}, {-1, 0, 0}, 0.5, 0.5, Col{0.3f, 0.35f, 0.4f, 1});
+        for (int k = 0; k < 16; k++) {
+            double a0 = 2 * PI * k / 16, a1 = 2 * PI * (k + 1) / 16;
+            int p = L.v({c.x, c.y + std::cos(a0) * 0.07, 0.97 + std::sin(a0) * 0.07}, {-1, 0, 0}, 0, 0, Col{0.3f, 0.35f, 0.4f, 1});
+            int q = L.v({c.x, c.y + std::cos(a1) * 0.07, 0.97 + std::sin(a1) * 0.07}, {-1, 0, 0}, 0, 0, Col{0.3f, 0.35f, 0.4f, 1});
+            L.tri(ci, q, p);
+        }
+    }
+    return ms;
+}
+
+// steering wheel about its own axis (x along the column toward the driver), centre at the origin
+MeshSet steering_wheel() {
+    MeshSet ms;
+    MeshBuf &D = ms[M_DARK];
+    Col c{0.1f, 0.1f, 0.11f, 1};
+    const double R = 0.19, r = 0.018;
+    int seg = 28, sides = 8;
+    int base = (int)D.verts();
+    for (int i = 0; i <= seg; i++) {
+        double a = 2 * PI * i / seg;
+        V3 ctr(0, std::cos(a) * R, std::sin(a) * R), out(0, std::cos(a), std::sin(a));
+        for (int k = 0; k <= sides; k++) {
+            double b = 2 * PI * k / sides;
+            V3 n = out * std::cos(b) + V3(1, 0, 0) * std::sin(b);
+            D.v(ctr + n * r, n, 0, 0, c);
+        }
+    }
+    for (int i = 0; i < seg; i++)
+        for (int k = 0; k < sides; k++) {
+            int a0 = base + i * (sides + 1) + k, a1 = a0 + 1, b0 = a0 + sides + 1, b1 = b0 + 1;
+            D.tri(a0, b0, b1);
+            D.tri(a0, b1, a1);
+        }
+    // hub and three spokes (the bottom spoke marks the straight-ahead position)
+    D.obox({0.0, 0}, 0, 0.05, 0.12, -0.05, 0.05, c, true);
+    D.obox({0.0, 0.1}, 0, 0.025, 0.18, -0.015, 0.015, c, true);
+    D.obox({0.0, -0.1}, 0, 0.025, 0.18, -0.015, 0.015, c, true);
+    D.obox({0.0, 0}, 0, 0.025, 0.04, -0.19, -0.04, c, true);
+    return ms;
+}
+
 }  // namespace
 
 MeshSet model_mesh(int kind, int v) {
@@ -337,6 +404,8 @@ MeshSet model_mesh(int kind, int v) {
         case I_BUSH: return bush(v % BUSH_VARIANTS);
         case I_LAMP: return lamp();
         case I_CAR: return car(v == 0);
+        case I_CAR_INTERIOR: return car_interior();
+        case I_STEERING_WHEEL: return steering_wheel();
         default: return MeshSet();
     }
 }
