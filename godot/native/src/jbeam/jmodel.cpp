@@ -97,7 +97,7 @@ std::vector<SlotRef> slots_of(const Json &body) {
 }
 }  // namespace
 
-Assembly assemble(const Library &lib, const std::string &root, const std::map<std::string, std::string> &ov) {
+Assembly assemble(const Library &lib, const std::string &root, const std::map<std::string, std::string> &ov, const std::map<std::string, Json> *vars) {
     Assembly a;
     if (!lib.parts.count(root)) {
         a.warnings.push_back("main part '" + root + "' not found");
@@ -114,6 +114,9 @@ Assembly assemble(const Library &lib, const std::string &root, const std::map<st
                 std::string nm = r.str("name");
                 if (!nm.empty() && d && !a.vars.count(nm)) a.vars[nm] = *d;
             }
+    // the configuration's tuning values over the defaults
+    if (vars)
+        for (auto &[k, v] : *vars) a.vars[k] = v;
     struct Pick {
         std::string name, slot;
         std::array<double, 3> off, move;

@@ -22,6 +22,7 @@ struct Road {
     std::string cls;
     double hw = 3;   // carriageway half width
     double sw = 0;   // sidewalk width (0: none)
+    double sws[2] = {0, 0};  // per side (left, right): out to the facades where buildings line the street
     bool bridge = false, urban = false;
     int oneway = 0, layer = 0, prio = 0;
     int lanes = 2;
@@ -392,6 +393,61 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
     }
     auto zoff = [](const Road &r) { return 0.03 + r.prio * 0.004; };
 
+    // ---- sidewalks out to the building line: in town the pavement usually runs from the kerb to the facades
+    {
+        struct RB {
+            const Ring *r;
+            V2 lo, hi;
+        };
+        std::vector<RB> rbs;
+        for (auto &br : c.building_rings) {
+            V2 lo(1e300, 1e300), hi(-1e300, -1e300);
+            for (auto &p : br) lo = V2(std::min(lo.x, p.x), std::min(lo.y, p.y)), hi = V2(std::max(hi.x, p.x), std::max(hi.y, p.y));
+            rbs.push_back({&br, lo, hi});
+        }
+        for (auto &r : roads) {
+            r.sws[0] = r.sws[1] = r.sw;
+            if (r.sw <= 0 || r.bridge || r.pts.size() < 2) continue;
+            for (int sd = 0; sd < 2; sd++) {
+                double side = sd == 0 ? 1 : -1;
+                std::vector<double> fac;
+                int n = 0;
+                for (size_t i = 0; i + 1 < r.pts.size(); i += 2) {
+                    V2 a = r.pts[i].p, b = r.pts[i + 1].p, d = (b - a).norm(), nrm = d.perp() * side;
+                    V2 q = (a + b) * 0.5;
+                    n++;
+                    // walk out along the normal to the first wall within 18 m of the kerb
+                    double best = 1e9;
+                    for (auto &rb : rbs) {
+                        double reach = r.hw + 18;
+                        if (q.x + reach < rb.lo.x && q.x + nrm.x * reach < rb.lo.x) continue;
+                        if (q.x - reach > rb.hi.x && q.x + nrm.x * reach > rb.hi.x) continue;
+                        if (q.y + reach < rb.lo.y && q.y + nrm.y * reach < rb.lo.y) continue;
+                        if (q.y - reach > rb.hi.y && q.y + nrm.y * reach > rb.hi.y) continue;
+                        const Ring &ring = *rb.r;
+                        for (size_t k = 0; k < ring.size(); k++) {
+                            V2 x;
+                            if (line_x(q, nrm, ring[k], ring[(k + 1) % ring.size()] - ring[k], x)) {
+                                double t = (x - q).dot(nrm);
+                                V2 e = ring[(k + 1) % ring.size()] - ring[k];
+                                double u = (x - ring[k]).dot(e) / std::max(1e-9, e.dot(e));
+                                if (t > r.hw && t < best && u >= 0 && u <= 1) best = t;
+                            }
+                        }
+                    }
+                    if (best < r.hw + 18) fac.push_back(best - r.hw);
+                }
+                // the street is lined with buildings on this side: pavement to the median facade line
+                if (n > 0 && (int)fac.size() * 2 >= n) {
+                    std::nth_element(fac.begin(), fac.begin() + fac.size() / 3, fac.end());
+                    double w = fac[fac.size() / 3] - 0.15;  // the nearer third: most facades are reached
+                    if (w > r.sw) r.sws[sd] = std::min(w, 16.0);
+                    else if (w > 1.5) r.sws[sd] = w;  // a narrow street: as wide as there is room
+                }
+            }
+            r.sw = std::max(r.sws[0], r.sws[1]);
+        }
+    }
     // ---- flatten the terrain under carriageways and sidewalks (not under bridges)
     {
         HeightGrid &g = c.out.grid;
@@ -683,7 +739,9 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             Col kc{0.78f, 0.78f, 0.76f, 1}, pc{1, 1, 1, 1};
             for (int side : {1, -1}) {
                 if (med[r0i][side > 0 ? 0 : 1] >= 0) continue;
-                double o0 = side * r0.hw, o1 = side * (r0.hw + 0.18), o2 = side * (r0.hw + r0.sw);
+                double swd = r0.sws[side > 0 ? 0 : 1];
+                if (swd <= 0) continue;
+                double o0 = side * r0.hw, o1 = side * (r0.hw + 0.18), o2 = side * (r0.hw + swd);
                 face(CU, o0, zo - 0.02, 0.15 + zo, side > 0 ? -1 : 1, kc, true);
                 if (side > 0) {
                     strip(CU, o0, o1, 0.15 + zo, 0.15 + zo, kc, true, 1);
@@ -694,7 +752,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 }
                 face(CU, o2, -0.4, 0.15 + zo, side > 0 ? 1 : -1, kc, false);
                 // walking line in the middle of the sidewalk
-                double om = side * (r0.hw + r0.sw * 0.55);
+                double om = side * (r0.hw + std::min(swd * 0.55, 4.0));
                 for (size_t i = 0; i + 1 < P.size(); i++) {
                     if (!c.own((pp[i] + pp[i + 1]) * 0.5)) continue;
                     c.out.walks.push_back({Q(i, om, 0.15 + zo), Q(i + 1, om, 0.15 + zo)});
@@ -769,6 +827,44 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 c.out.inst.push_back({I_SIGN, {q.x, q.y, z}, std::atan2(-dir.y, -dir.x), 1, {(float)sg, 0, 0, 1}});
             }
         }
+        // advertising billboards beside main roads: 6 x 3 m boards on a post (half digital, half posters),
+        // about every 220 m where there is room behind the pavement
+        if (r0.prio >= 5 && !r0.bridge && s.back() > 80) {
+            uint64_t hs = (uint64_t)std::llround(pp[0].x * 3.1) * 2654435761ull ^ (uint64_t)std::llround(pp[0].y * 2.7) * 40503ull;
+            double first = 60 + std::fmod((double)(hs % 1000), 160.0);
+            for (double sp = first; sp < s.back() - 30; sp += 220) {
+                size_t i = 0;
+                while (i + 1 < s.size() && s[i + 1] < sp) i++;
+                double t = (sp - s[i]) / std::max(1e-6, s[i + 1] - s[i]);
+                V2 cp = pp[i] + (pp[i + 1] - pp[i]) * t;
+                V2 nrm = (nn[i] + (nn[i + 1] - nn[i]) * t).norm();
+                int side = ((hs >> 7) + (uint64_t)(sp / 220)) % 2 ? 1 : -1;
+                double off = r0.hw + std::max(r0.sws[side > 0 ? 0 : 1], 1.0) + 2.5;
+                V2 bp = cp + nrm * (side * off);
+                if (!c.own(bp) || !free_spot(bp, 4.0) || c.roads.clearance(bp) < 2.0 || (c.occ_at(bp) & O_WATER)) continue;
+                double z = c.ground(bp);
+                V2 along = (pp[i + 1] - pp[i]).norm();
+                // the board faces the oncoming traffic on its side, angled 25 degrees towards the road
+                V2 face = (along * (side > 0 ? 1.0 : -1.0) + nrm * (-side * 0.45)).norm();
+                V2 bx = face.perp();
+                MeshBuf &MT2 = c.out.ms[M_METAL];
+                MT2.cyl(bp, 0.22, 0.2, z - 0.3, z + 5.0, 10, Col{0.45f, 0.46f, 0.48f, 1});
+                c.coll_prism(bp, 0, 0.5, 0.5, z - 0.3, z + 5.0);
+                double W = 6.0, H = 3.0, z0 = z + 4.6;
+                auto Pt = [&](double u, double v, double o) { V2 q = bp + bx * u + face * o; return V3(q.x, q.y, z0 + v); };
+                V3 nf(face.x, face.y, 0);
+                c.out.ms[M_DARK].quad(Pt(W / 2 + 0.15, -0.15, 0.25), Pt(-W / 2 - 0.15, -0.15, 0.25), Pt(-W / 2 - 0.15, H + 0.15, 0.25), Pt(W / 2 + 0.15, H + 0.15, 0.25), nf, Col{1, 1, 1, 1});
+                c.out.ms[M_DARK].quad(Pt(-W / 2 - 0.15, -0.15, 0.2), Pt(W / 2 + 0.15, -0.15, 0.2), Pt(W / 2 + 0.15, H + 0.15, 0.2), Pt(-W / 2 - 0.15, H + 0.15, 0.2), nf * -1, Col{1, 1, 1, 1});
+                bool digital = (hs >> 13) % 2;
+                MeshBuf &S = c.out.ms[digital ? M_SCREEN : M_POSTER];
+                float seed = (float)((hs >> 17) % 97) / 97.0f;
+                Col sc{seed, (float)(W / H) / 4, 0, 1};
+                int a0 = S.v(Pt(W / 2, 0, 0.27), nf, 0, 1, sc), a1 = S.v(Pt(-W / 2, 0, 0.27), nf, 1, 1, sc), a2 = S.v(Pt(-W / 2, H, 0.27), nf, 1, 0, sc), a3 = S.v(Pt(W / 2, H, 0.27), nf, 0, 0, sc);
+                S.tri(a0, a1, a2);
+                S.tri(a0, a2, a3);
+                hs = hs * 6364136223846793005ull + 1442695040888963407ull;
+            }
+        }
         // street lamps along urban roads with sidewalks, every 32 m, alternate sides on wide roads
         if (r0.sw > 0 && r0.prio >= 2) {
             double first = std::fmod(std::abs(pp[0].x * 0.37 + pp[0].y * 0.61), 32.0);
@@ -780,7 +876,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 V2 cp = pp[i] + (pp[i + 1] - pp[i]) * t;
                 V2 nrm = (nn[i] + (nn[i + 1] - nn[i]) * t).norm();
                 int side = (r0.hw > 5 && k % 2) ? -1 : 1;
-                V2 lp = cp + nrm * (side * (r0.hw + r0.sw - 0.6));
+                V2 lp = cp + nrm * (side * (r0.hw + std::min(r0.sws[side > 0 ? 0 : 1], 3.5) - 0.6));
                 if (!c.own(lp)) continue;
                 if (c.roads.clearance(lp) < r0.sw - 1.0) continue;  // another carriageway
                 bool inside = false;
@@ -804,11 +900,21 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
     std::vector<FPt> fpts;
     bool all_osm = !tiles.empty();
     for (auto &t : tiles) {
-        if (!t->has_osm) all_osm = false;
+        if (!t->has_osm && !t->has_furniture) all_osm = false;
         for (auto &p : t->points) {
             const std::string &k = p.kind;
-            if (k == "signal" || k == "stop" || k == "giveway" || k == "bench" || k == "bin" || k.rfind("crossing:", 0) == 0 || k.rfind("busstop", 0) == 0 || k.rfind("sign:", 0) == 0)
-                fpts.push_back({c.fr.to_local(p.p.lat, p.p.lon), k});
+            if (k == "signal" || k == "stop" || k == "giveway" || k == "bench" || k == "bin" || k.rfind("crossing:", 0) == 0 || k.rfind("busstop", 0) == 0 || k.rfind("sign:", 0) == 0) {
+                // the same node from Overture's infrastructure layer and the OSM answer: keep one
+                V2 v = c.fr.to_local(p.p.lat, p.p.lon);
+                bool dup = false;
+                std::string kb = k.substr(0, k.find_first_of(":|"));
+                for (auto &f : fpts)
+                    if ((f.p - v).len() < 2.0 && f.kind.substr(0, f.kind.find_first_of(":|")) == kb) {
+                        dup = true;
+                        break;
+                    }
+                if (!dup) fpts.push_back({v, k});
+            }
         }
     }
     auto has_pt = [&](V2 p, const char *kind, double r) {

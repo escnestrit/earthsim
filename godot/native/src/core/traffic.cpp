@@ -14,10 +14,10 @@ double speed_for(int prio) {
 }
 const Col COLS[] = {{0.85f, 0.85f, 0.86f, 1}, {0.08f, 0.08f, 0.09f, 1}, {0.45f, 0.47f, 0.5f, 1}, {0.7f, 0.72f, 0.75f, 1}, {0.55f, 0.08f, 0.07f, 1},
                     {0.1f, 0.2f, 0.45f, 1},    {0.95f, 0.95f, 0.95f, 1}, {0.2f, 0.32f, 0.22f, 1}, {0.6f, 0.5f, 0.35f, 1}, {0.3f, 0.3f, 0.32f, 1}};
+const double LAT_ACC = 2.3, BRAKE = 2.6, ACCEL = 1.8, WHEELBASE = 2.7;
 }  // namespace
 
 void Traffic::set_roads(const std::vector<LaneSeg> &segs) {
-    // keep cars where they are: remember positions, rebuild, then snap each car to its old edge by geometry
     std::unordered_map<uint64_t, int> nodes;
     std::vector<Edge> E;
     std::vector<std::vector<int>> NE;
@@ -40,69 +40,78 @@ void Traffic::set_roads(const std::vector<LaneSeg> &segs) {
         NE[e.a].push_back(id);
         NE[e.b].push_back(id);
     }
-    // re-attach cars by their edge endpoints
+    // re-attach routes by edge endpoints; a route is cut at the first edge that no longer exists
     std::unordered_map<uint64_t, int> by_ends;
     for (int i = 0; i < (int)E.size(); i++) by_ends[qk(E[i].pa) * 31 + qk(E[i].pb)] = i;
     std::vector<TrafficCar> keep;
     for (auto &c : cars_) {
-        if (c.edge < 0 || c.edge >= (int)edges_.size()) continue;
-        const Edge &o = edges_[c.edge];
-        auto it = by_ends.find(qk(o.pa) * 31 + qk(o.pb));
-        if (it == by_ends.end()) continue;
-        c.edge = it->second;
-        c.prev_node = -1;
-        keep.push_back(c);
+        std::deque<std::pair<int, bool>> r;
+        for (auto &[id, f] : c.route) {
+            if (id < 0 || id >= (int)edges_.size()) break;
+            auto it = by_ends.find(qk(edges_[id].pa) * 31 + qk(edges_[id].pb));
+            if (it == by_ends.end()) break;
+            r.push_back({it->second, f});
+        }
+        if (r.empty()) continue;
+        c.route = std::move(r);
+        c.edge = c.route.front().first;
+        keep.push_back(std::move(c));
     }
     edges_ = std::move(E);
     node_edges_ = std::move(NE);
     cars_ = std::move(keep);
 }
 
-V3 Traffic::dir_of(const TrafficCar &c) const {
-    const Edge &e = edges_[c.edge];
-    V3 d = e.pb - e.pa;
+double Traffic::lane_for(const Edge &e, int idx, int lanes_dir) const {
+    double lw = e.oneway ? 2 * e.hw / lanes_dir : e.hw / lanes_dir;
+    return e.oneway ? -e.hw + lw * (idx + 0.5) : lw * (idx + 0.5);
+}
+
+bool Traffic::extend(TrafficCar &c) {
+    auto [cur, cf] = c.route.back();
+    const Edge &ce = edges_[cur];
+    int node = cf ? ce.b : ce.a;
+    V3 d = cf ? ce.pb - ce.pa : ce.pa - ce.pb;
     d = d * (1 / std::max(1e-9, d.len()));
-    return c.fwd ? d : d * -1;
-}
-
-void Traffic::place(TrafficCar &c) {
-    const Edge &e = edges_[c.edge];
-    double t = std::clamp(c.s / e.len, 0.0, 1.0);
-    V3 a = c.fwd ? e.pa : e.pb, b = c.fwd ? e.pb : e.pa;
-    V3 p = a + (b - a) * t;
-    V2 d(b.x - a.x, b.y - a.y);
-    d = d.norm();
-    V2 right(d.y, -d.x);
-    c.pos = V3(p.x + right.x * c.lane, p.y + right.y * c.lane, p.z);
-    c.yaw = std::atan2(d.y, d.x);
-    double target_pitch = std::atan2(b.z - a.z, e.len);
-    c.pitch += (target_pitch - c.pitch) * 0.2;
-}
-
-int Traffic::next_edge(const TrafficCar &c, int node) {
-    V3 d = dir_of(c);
-    std::vector<std::pair<double, int>> opts;
+    std::vector<std::pair<double, std::pair<int, bool>>> opts;
     for (int id : node_edges_[node]) {
-        if (id == c.edge) continue;
+        if (id == cur) continue;
         const Edge &e = edges_[id];
         bool fwd = e.a == node;
         if ((fwd && e.oneway < 0) || (!fwd && e.oneway > 0)) continue;
-        if (e.prio < 2 && edges_[c.edge].prio >= 2) continue;  // stay off service roads
-        V3 nd = (fwd ? e.pb - e.pa : e.pa - e.pb);
+        if (e.prio < 2 && ce.prio >= 2) continue;  // stay off service roads
+        V3 nd = fwd ? e.pb - e.pa : e.pa - e.pb;
         nd = nd * (1 / std::max(1e-9, nd.len()));
         double straight = d.x * nd.x + d.y * nd.y;
-        if (straight < -0.3) continue;  // no sharp turn-backs
-        double w = 0.2 + std::max(0.0, straight) * 2 + (e.prio >= edges_[c.edge].prio ? 0.5 : 0);
-        opts.push_back({w, fwd ? id : -id - 1});
+        if (straight < -0.2) continue;
+        double w = 0.15 + std::max(0.0, straight) * 2.5 + (e.prio >= ce.prio ? 0.6 : 0);
+        opts.push_back({w, {id, fwd}});
     }
-    if (opts.empty()) return INT32_MIN;
+    if (opts.empty()) return false;
     double tot = 0;
     for (auto &o : opts) tot += o.first;
     double r = rnd() * tot;
-    for (auto &o : opts) {
-        if ((r -= o.first) <= 0) return o.second;
-    }
-    return opts.back().second;
+    for (auto &o : opts)
+        if ((r -= o.first) <= 0) {
+            c.route.push_back(o.second);
+            return true;
+        }
+    c.route.push_back(opts.back().second);
+    return true;
+}
+
+V3 Traffic::route_point(const TrafficCar &c, double ahead, double lane, V2 *dir) const {
+    double s = c.s + ahead;
+    size_t k = 0;
+    while (k + 1 < c.route.size() && s > edges_[c.route[k].first].len) s -= edges_[c.route[k].first].len, k++;
+    const Edge &e = edges_[c.route[k].first];
+    bool f = c.route[k].second;
+    V3 a = f ? e.pa : e.pb, b = f ? e.pb : e.pa;
+    double t = std::clamp(s / e.len, 0.0, 1.0);
+    V3 p = a + (b - a) * t;
+    V2 d = V2(b.x - a.x, b.y - a.y).norm();
+    if (dir) *dir = d;
+    return V3(p.x + d.y * lane, p.y - d.x * lane, p.z);
 }
 
 bool Traffic::spawn(V3 player) {
@@ -119,18 +128,21 @@ bool Traffic::spawn(V3 player) {
             if (std::hypot(c.pos.x - m.x, c.pos.y - m.y) < 15) crowded = true;
         if (crowded) continue;
         TrafficCar c;
+        bool f = e.oneway > 0 ? true : e.oneway < 0 ? false : rnd() < 0.5;
+        c.route.push_back({id, f});
         c.edge = id;
-        c.fwd = e.oneway > 0 ? true : e.oneway < 0 ? false : rnd() < 0.5;
         c.s = rnd() * e.len;
-        c.vmax = speed_for(e.prio) * (0.85 + 0.3 * rnd());
+        c.aggr = 0.85 + 0.3 * rnd();
+        c.vmax = speed_for(e.prio) * c.aggr;
         c.v = c.vmax * 0.7;
         int lanes_dir = e.oneway ? std::max(1, e.lanes) : std::max(1, e.lanes / 2);
-        double lw = e.oneway ? 2 * e.hw / lanes_dir : e.hw / lanes_dir;
-        int lane = (int)(rnd() * lanes_dir);
-        c.lane = e.oneway ? -e.hw + lw * (lane + 0.5) : lw * (lane + 0.5);
+        c.lane = c.lane_target = lane_for(e, (int)(rnd() * lanes_dir), lanes_dir);
         c.col = COLS[(int)(rnd() * 10) % 10];
-        place(c);
-        c.pitch = 0;
+        while (c.route.size() < 40 && extend(c)) {}
+        V2 dir;
+        c.pos = route_point(c, 0, c.lane, &dir);
+        c.yaw = std::atan2(dir.y, dir.x);
+        c.id = next_id_++;
         cars_.push_back(c);
         return true;
     }
@@ -138,65 +150,108 @@ bool Traffic::spawn(V3 player) {
 }
 
 void Traffic::step(double dt, V3 player, V3 pvel) {
-    // drop far cars, top up
-    cars_.erase(std::remove_if(cars_.begin(), cars_.end(), [&](const TrafficCar &c) { return std::hypot(c.pos.x - player.x, c.pos.y - player.y) > radius + 80 || c.edge < 0; }), cars_.end());
+    (void)pvel;
+    cars_.erase(std::remove_if(cars_.begin(), cars_.end(), [&](const TrafficCar &c) { return std::hypot(c.pos.x - player.x, c.pos.y - player.y) > radius + 80 || c.route.empty(); }), cars_.end());
     for (int k = 0; k < 3 && (int)cars_.size() < target; k++) spawn(player);
     for (size_t i = 0; i < cars_.size(); i++) {
         TrafficCar &c = cars_[i];
-        if (c.edge < 0) continue;
-        V3 d = dir_of(c);
-        // gap to the nearest obstacle ahead in this lane: other cars and the player
+        // keep ~120 m of route committed ahead
+        double ahead_len = -c.s;
+        for (auto &r : c.route) ahead_len += edges_[r.first].len;
+        bool dead_end = false;
+        while (ahead_len < 120 && c.route.size() < 80) {
+            if (!extend(c)) {
+                dead_end = true;
+                break;
+            }
+            ahead_len += edges_[c.route.back().first].len;
+        }
+        const Edge &e = edges_[c.route.front().first];
+        // lane on this road: keep the index from the right, clamped to what this road has
+        int lanes_dir = e.oneway ? std::max(1, e.lanes) : std::max(1, e.lanes / 2);
+        double lt = c.lane_target;
+        lt = std::clamp(lt, lane_for(e, 0, lanes_dir), lane_for(e, lanes_dir - 1, lanes_dir));
+        c.lane_target = lt;
+        c.lane += std::clamp(c.lane_target - c.lane, -0.9 * dt, 0.9 * dt);  // gradual lane change
+
+        // speed plan: bends within the braking distance ahead (heading change over 10 m windows)
+        double vt = speed_for(e.prio) * c.aggr;
+        V2 d0;
+        route_point(c, 0, 0, &d0);
+        double prev_ang = std::atan2(d0.y, d0.x);
+        for (double a = 5; a < std::min(ahead_len, 90.0); a += 5) {
+            V2 d1;
+            route_point(c, a, 0, &d1);
+            V2 d2;
+            route_point(c, a + 10, 0, &d2);
+            double turn = std::abs(std::remainder(std::atan2(d2.y, d2.x) - std::atan2(d1.y, d1.x), 2 * PI));
+            double kappa = turn / 10.0;
+            double vb = kappa > 1e-4 ? std::sqrt(LAT_ACC * c.aggr / kappa) : 1e9;
+            double allowed = std::sqrt(vb * vb + 2 * BRAKE * std::max(0.0, a - 2));
+            vt = std::min(vt, allowed);
+            (void)prev_ang;
+        }
+        if (dead_end) vt = std::min(vt, std::sqrt(2 * BRAKE * std::max(0.0, ahead_len - 4)));
+        // gap to the nearest obstacle ahead along the heading
+        V2 hd(std::cos(c.yaw), std::sin(c.yaw));
         double gap = 1e9;
-        auto check = [&](V3 p) {
+        auto check = [&](V3 p, double their_v) {
             double dx = p.x - c.pos.x, dy = p.y - c.pos.y;
-            double ahead = dx * d.x + dy * d.y, side = std::abs(-dx * d.y + dy * d.x);
-            if (ahead > 0.5 && ahead < 40 && side < 2.2 && std::abs(p.z - c.pos.z) < 4) gap = std::min(gap, ahead - 4.6);
+            double ahead = dx * hd.x + dy * hd.y, side = std::abs(-dx * hd.y + dy * hd.x);
+            if (ahead > 0.5 && ahead < 50 && side < 2.0 && std::abs(p.z - c.pos.z) < 4) gap = std::min(gap, ahead - 4.7 + their_v * 0.6);
         };
         for (size_t j = 0; j < cars_.size(); j++)
-            if (j != i) check(cars_[j].pos);
-        check(player);
-        // turns ahead: slow down near the end of the edge when the road bends
-        const Edge &e = edges_[c.edge];
-        double remain = e.len - c.s;
-        double vt = c.vmax;
-        if (remain < 25) {
-            int node = c.fwd ? e.b : e.a;
-            int sharp = 0;
-            for (int id : node_edges_[node]) sharp += id != c.edge;
-            if (sharp >= 2) vt = std::min(vt, 9.0 + remain * 0.4);  // junction
-        }
-        // keep a time gap
-        double vsafe = std::max(0.0, (gap - 2.0) / 1.4);
+            if (j != i) check(cars_[j].pos, cars_[j].v);
+        check(player, 0);
+        double headway = 1.3 / c.aggr;
+        double vsafe = std::max(0.0, (gap - 2.0) / headway);
         vt = std::min(vt, vsafe);
-        double acc = vt > c.v ? 2.0 : -6.0;
-        c.v = std::max(0.0, c.v + std::clamp(vt - c.v, -6.0 * dt, 2.0 * dt));
-        (void)acc;
-        c.s += c.v * dt;
-        int guard = 0;
-        while (c.edge >= 0 && c.s > edges_[c.edge].len && guard++ < 8) {
-            const Edge &ce = edges_[c.edge];
-            c.s -= ce.len;
-            int node = c.fwd ? ce.b : ce.a;
-            int nx = next_edge(c, node);
-            if (nx == INT32_MIN) {
-                // dead end: turn round
-                c.fwd = !c.fwd;
-                c.s = 0;
-                continue;
-            }
-            bool nf = nx >= 0;
-            int ne = nf ? nx : -nx - 1;
-            const Edge &ee = edges_[ne];
-            // keep the same lane side; adapt to the new road's lanes
-            if (ee.oneway == 0 && c.lane < 0) c.lane = ee.hw * 0.5;
-            if (ee.oneway == 0) c.lane = std::clamp(c.lane, 0.6, std::max(0.6, ee.hw - 0.8));
-            else c.lane = std::clamp(c.lane, -ee.hw + 1.2, ee.hw - 1.2);
-            c.edge = ne;
-            c.fwd = nf;
-            c.prev_node = node;
-            c.vmax = speed_for(ee.prio) * (0.85 + 0.3 * rnd());
+        double dv = vt - c.v;
+        // gentle throttle, firmer braking when something is close
+        double brk = gap < 12 ? 6.0 : BRAKE * 1.4;
+        c.v = std::max(0.0, c.v + std::clamp(dv, -brk * dt, ACCEL * dt));
+
+        // steering: pure pursuit of a point ahead in the lane
+        double look = std::clamp(c.v * 0.9, 4.0, 16.0);
+        V3 tgt = route_point(c, look, c.lane);
+        double want = std::atan2(tgt.y - c.pos.y, tgt.x - c.pos.x);
+        double err = std::remainder(want - c.yaw, 2 * PI);
+        double max_rate = std::min({1.1, std::max(0.4, c.v) / WHEELBASE * std::tan(0.6), 3.8 / std::max(0.5, c.v)});
+        c.yaw += std::clamp(err * 2.5, -max_rate, max_rate) * dt;
+        c.pos.x += std::cos(c.yaw) * c.v * dt;
+        c.pos.y += std::sin(c.yaw) * c.v * dt;
+        // progress along the route: the projection of the motion on the path, so the car and its path
+        // parameter stay together
+        V2 pd;
+        V3 here = route_point(c, 0, c.lane, &pd);
+        double along = (c.pos.x - here.x) * pd.x + (c.pos.y - here.y) * pd.y;
+        c.s += std::max(0.0, along);
+        // a car that drifted far off its path (rebuilt roads, a crash) is put back on it
+        double off = std::hypot(c.pos.x - here.x, c.pos.y - here.y);
+        if (off > 3.5) c.v *= std::pow(0.5, dt);  // off its line: slow down to get back on it
+        if (off > 14) c.pos = here, c.yaw = std::atan2(pd.y, pd.x), c.resets++, total_resets++;
+        // ground height and pitch from the path
+        V3 h2 = route_point(c, 3, c.lane);
+        c.pos.z = here.z;
+        double tp = std::atan2(h2.z - here.z, 3.0);
+        c.pitch += (tp - c.pitch) * std::min(1.0, dt * 5);
+        // next edges
+        while (c.route.size() > 1 && c.s > edges_[c.route.front().first].len) {
+            c.s -= edges_[c.route.front().first].len;
+            int prev_prio = edges_[c.route.front().first].prio;
+            c.route.pop_front();
+            const Edge &ne = edges_[c.route.front().first];
+            if (ne.prio != prev_prio) c.vmax = speed_for(ne.prio) * c.aggr;
         }
-        place(c);
+        if (c.route.size() == 1 && c.s > edges_[c.route.front().first].len - 0.5 && c.v < 0.3) {
+            // stopped at a dead end: turn round
+            auto &f = c.route.front();
+            f.second = !f.second;
+            c.s = 0;
+            c.yaw += PI;
+            c.lane = c.lane_target = std::abs(c.lane);
+        }
+        c.edge = c.route.front().first;
     }
 }
 

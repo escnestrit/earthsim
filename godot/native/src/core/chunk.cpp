@@ -1,4 +1,5 @@
 #include "chunk.hpp"
+#include "infra.hpp"
 #include <algorithm>
 #include <cstring>
 #include "chunk_ctx.hpp"
@@ -785,6 +786,7 @@ ChunkOut build_chunk(int cx, int cy, const std::vector<std::shared_ptr<const Raw
     water(c, tiles);
     build_roads(c, tiles);
     paths(c, tiles);
+    build_infra(c, tiles);
     // footprints: aprons of paving round urban buildings, occupancy
     for (auto &b : all) {
         if (b.b->part) continue;

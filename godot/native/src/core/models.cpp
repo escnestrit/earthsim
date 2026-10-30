@@ -556,6 +556,20 @@ MeshSet sign_post(int kind) {
             rect_x(P, X + 0.002, 0.08, cz - 0.0, 0.14, cz + 0.2, white);
             break;
         }
+        case SG_RAILWAY: {
+            // St Andrew's cross: two red-edged white bars
+            auto bar = [&](MeshBuf &m, double x, double ang, double len, double w, Col c) {
+                double ca = std::cos(ang), sa = std::sin(ang);
+                auto Pt = [&](double u, double v) { return V3(x, u * ca - v * sa, cz + u * sa + v * ca); };
+                m.quad(Pt(-len, -w), Pt(len, -w), Pt(len, w), Pt(-len, w), {1, 0, 0}, c);
+            };
+            for (double ang : {PI / 4, -PI / 4}) {
+                bar(M, X - 0.012, ang, 0.62, 0.11, back);
+                bar(P, X, ang, 0.6, 0.1, red);
+                bar(P, X + 0.001 + (ang > 0 ? 0.001 : 0), ang, 0.56, 0.065, white);
+            }
+            break;
+        }
         case SG_BUS: {
             rect_x(M, X - 0.012, -0.32, cz - 0.32, 0.32, cz + 0.32, back);
             rect_x(P, X, -0.31, cz - 0.31, 0.31, cz + 0.31, white);

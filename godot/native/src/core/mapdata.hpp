@@ -40,6 +40,13 @@ struct RawPath {
     bool bridge = false;
 };
 
+// rails (class: standard_gauge, tram, light_rail, narrow_gauge, subway...), power lines, fences, walls, hedges
+struct RawLine {
+    std::vector<LL> pts;
+    std::string kind;  // "rail:<class>", "power:<class>", "barrier:<class>"
+    bool bridge = false;
+};
+
 struct RawArea {
     AreaKind kind;
     std::vector<std::vector<LL>> rings;  // outer then holes
@@ -57,9 +64,11 @@ struct RawTile {
     std::vector<RawPath> paths;
     std::vector<RawArea> areas;
     std::vector<RawPoint> points;
+    std::vector<RawLine> lines;
     // rivers, canals, streams given as centre lines: (points, width m)
     std::vector<std::pair<std::vector<LL>, double>> waterlines;
-    bool has_osm = false;  // an OSM enrich answer was merged (signals, signs, shops known)
+    bool has_osm = false;
+    bool has_furniture = false;  // Overture's infrastructure layer gave signals, crossings... (mapped, not guessed)  // an OSM enrich answer was merged (signals, signs, shops known)
     std::vector<std::string> notes;
 };
 

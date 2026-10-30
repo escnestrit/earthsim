@@ -18,6 +18,10 @@ std::string overture_newest_release(const std::string &list_xml);
 void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &buildings, const std::vector<mvt::Layer> &transport,
                        const std::vector<mvt::Layer> &base, double margin_m, RawTile &out, const TileId *base_src = nullptr);
 
+// shops, cafes, offices... of Overture Places (points; names, categories, brands) as poi: points, skipping
+// places within 12 m of one already known (OSM)
+int overture_places(TileId tile, const std::vector<mvt::Layer> &places, RawTile &out, TileId src);
+
 // helpers shared with the OSM reader
 std::vector<LL> clip_ring_ll(const std::vector<LL> &ring, const Bounds &b);
 std::vector<std::pair<size_t, size_t>> clip_runs_ll(const std::vector<LL> &pts, const Bounds &b);

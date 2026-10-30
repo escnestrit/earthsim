@@ -27,6 +27,7 @@ const M_CARPAINT := 33
 const M_TIRE := 34
 const M_SIGNAL := 35
 const M_SCREEN := 36
+const M_POSTER := 37
 const M_FACADE := 100
 const FACADE_STYLES := 13
 
@@ -160,6 +161,11 @@ func build() -> void:
 	var scr := ShaderMaterial.new()
 	scr.shader = load("res://shaders/screen.gdshader")
 	mats[M_SCREEN] = scr
+	var pos := ShaderMaterial.new()
+	pos.shader = scr.shader
+	pos.set_shader_parameter("still", 1.0)
+	pos.set_shader_parameter("brightness", 0.9)
+	mats[M_POSTER] = pos
 	# facades: 13 styles x 3 layouts
 	for s in FACADE_STYLES:
 		for v in 3:
@@ -269,5 +275,5 @@ func get_mat(id: int) -> Material:
 func set_night(k: float) -> void:
 	night = k
 	for m in facade_mats:
-		m.emission_energy_multiplier = k * 1.6
+		m.emission_energy_multiplier = k * 1.1
 	mats[M_LAMP].emission_energy_multiplier = k * 8.0

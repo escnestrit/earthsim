@@ -111,11 +111,17 @@ void EarthJCar::load(Ref<EarthStream> stream, String path) {
         }
         ec::Library lib;
         lib.add_zip(z, false);
+        // the default configuration, as BeamNG spawns the vehicle (parts per slot, tuning variables)
+        ec::VehicleConfig cfgv;
+        std::string cerr;
+        bool have_cfg = ec::default_config(z, cfgv, cerr);
+        if (!have_cfg) notes_.push_back("no default configuration (" + cerr + "): default parts");
         // the vehicle's own main part (common.zip, added next, has none worth driving)
         std::string main;
-        if (auto mt = lib.by_type.find("main"); mt != lib.by_type.end() && !mt->second.empty()) {
+        if (have_cfg && !cfgv.main_part.empty() && lib.parts.count(cfgv.main_part)) main = cfgv.main_part;
+        if (auto mt = lib.by_type.find("main"); main.empty() && mt != lib.by_type.end() && !mt->second.empty()) {
             // prefer the part named like the zip (pickup.zip -> "pickup"), else the shortest name
-            std::string stem = std::filesystem::u8path(load_path_).stem().u8string();
+            std::string stem = have_cfg ? cfgv.model : std::filesystem::u8path(load_path_).stem().u8string();
             for (auto &n : mt->second)
                 if (n == stem) main = n;
             if (main.empty()) main = *std::min_element(mt->second.begin(), mt->second.end(), [](const std::string &a, const std::string &b) { return a.size() != b.size() ? a.size() < b.size() : a < b; });
@@ -133,7 +139,7 @@ void EarthJCar::load(Ref<EarthStream> stream, String path) {
             load_err_ = "no part with slotType \"main\" in the mod", load_state_ = -1;
             return;
         }
-        ec::JModel m = ec::build_model(ec::assemble(lib, main, {}));
+        ec::JModel m = ec::build_model(ec::assemble(lib, main, have_cfg ? cfgv.parts : std::map<std::string, std::string>{}, have_cfg ? &cfgv.vars : nullptr));
         auto v = std::make_unique<ec::JVehicle>();
         if (!ec::JVehicle::from_model(m, *v, err)) {
             load_err_ = err, load_state_ = -1;

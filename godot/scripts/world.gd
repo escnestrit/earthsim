@@ -50,7 +50,7 @@ func start(lat: float, lon: float, cache_dir: String, online := true, detail := 
 		lamp_lights.append(l)
 
 func _build_models() -> void:
-	var variants := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_LAMP: 1, I_CAR: 1, I_SIGNAL: 1, I_SIGN: 11, I_BENCH: 1, I_BIN: 1, I_SHELTER: 1}
+	var variants := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_LAMP: 1, I_CAR: 1, I_SIGNAL: 1, I_SIGN: 12, I_BENCH: 1, I_BIN: 1, I_SHELTER: 1}
 	for kind in variants:
 		for v in variants[kind]:
 			var d: Dictionary = EarthCore.model(kind, v)
@@ -231,7 +231,7 @@ func _place(root: Node3D, body: StaticBody3D, kind: int, a: PackedFloat32Array, 
 	var count := a.size() / 8
 	if count == 0:
 		return
-	var nvar := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_SIGN: 11}.get(kind, 1) as int
+	var nvar := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_SIGN: 12}.get(kind, 1) as int
 	var per := []
 	for v in nvar:
 		per.append([])

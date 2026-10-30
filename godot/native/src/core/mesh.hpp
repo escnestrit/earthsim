@@ -37,7 +37,8 @@ enum Mat : int {
     M_CARPAINT = 33,
     M_TIRE = 34,
     M_SIGNAL = 35,
-    M_SCREEN = 36,  // LED advertising screens (animated in the shader, uv 0..1 over the screen)  // traffic light lamps (animated in the shader)
+    M_SCREEN = 36,
+    M_POSTER = 37,  // printed billboard posters (the screen shader, held still)  // LED advertising screens (animated in the shader, uv 0..1 over the screen)  // traffic light lamps (animated in the shader)
     M_FACADE = 100,  // + style * 3 + variant
 };
 

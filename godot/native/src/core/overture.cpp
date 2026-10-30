@@ -434,6 +434,19 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
         Conv cv{src, L.extent};
         for (auto &f : L.features) {
             if (f.kind != mvt::Geom::Line) continue;
+            if (f.str("subtype") == "rail") {
+                std::string cls = f.str("class");
+                if (cls == "subway" || cls == "funicular") continue;  // underground / special
+                std::string rf = f.str("rail_flags");
+                if (whole_flag(rf, "is_tunnel") || whole_flag(rf, "is_underground")) continue;
+                bool br = whole_flag(rf, "is_bridge");
+                for (auto &part : f.parts) {
+                    if (part.size() < 2) continue;
+                    auto pts = cv.line(part);
+                    for (auto [s0, e0] : clip_runs_ll(pts, eb)) out.lines.push_back({std::vector<LL>(pts.begin() + s0, pts.begin() + e0 + 1), "rail:" + (cls.empty() ? std::string("unknown") : cls), br});
+                }
+                continue;
+            }
             if (f.str("subtype") != "road") continue;
             std::string cls = f.str("class"), sub = f.str("subclass");
             std::string flags = f.str("road_flags");
@@ -546,9 +559,15 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
     }
 
     // base: water, land, land use, land cover; rivers given as lines; trees and lamps as points
+    std::vector<std::vector<LL>> bridge_polys;
     for (auto &L : base) {
         Conv cv{base_src ? *base_src : src, L.extent};
         for (auto &f : L.features) {
+            if (f.kind == mvt::Geom::Polygon && L.name == "infrastructure" && f.str("subtype") == "bridge") {
+                for (auto &poly : polygons(f))
+                    if (!poly.empty()) bridge_polys.push_back(cv.line(poly[0]));
+                continue;
+            }
             if (f.kind == mvt::Geom::Polygon) {
                 AreaKind k;
                 if (!area_kind(L.name, f, k)) continue;
@@ -575,19 +594,139 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                 }
             } else if (f.kind == mvt::Geom::Point) {
                 std::string cls = f.str("class"), st = f.str("subtype");
-                const char *kind = nullptr;
+                std::string kind;
                 if (cls == "tree" || st == "tree") kind = "tree";
                 else if (cls == "street_lamp") kind = "lamp";
-                if (!kind) continue;
+                // street furniture of the infrastructure layer, in the same words as the OSM reader
+                else if (cls == "traffic_signals") kind = "signal";
+                else if (cls == "stop" && st == "transportation") kind = "stop";
+                else if (cls == "give_way") kind = "giveway";
+                else if (cls == "crossing") kind = "crossing:yes";
+                else if (cls == "bus_stop" || cls == "tram_stop") kind = "busstop|" + f.str("@name");
+                else if (cls == "bench") kind = "bench";
+                else if (cls == "waste_basket" || cls == "recycling") kind = "bin";
+                else if (cls == "catenary_mast" || cls == "power_pole" || cls == "power_tower" || cls == "pole") kind = "pole:" + cls;
+                else if (cls == "subway_station" || cls == "subway_entrance") kind = "metro|" + f.str("@name");
+                if (kind.empty()) continue;
+                if (kind != "tree" && kind != "lamp") out.has_furniture = true;
                 for (auto &part : f.parts)
                     for (auto &p : part) {
                         LL q = cv.ll(p);
                         if (in_tile(q)) out.points.push_back({q, kind});
                     }
+            } else if (f.kind == mvt::Geom::Line && L.name == "infrastructure") {
+                std::string cls = f.str("class"), st = f.str("subtype");
+                std::string kind;
+                if (cls == "power_line" || cls == "minor_line") kind = "power:" + cls;
+                else if (cls == "fence" || cls == "wall" || cls == "hedge" || cls == "retaining_wall" || cls == "city_wall" || cls == "guard_rail") kind = "barrier:" + cls;
+                else if ((cls == "bridge" || cls == "viaduct") && st == "bridge") kind = "bridge";
+                if (kind.empty()) continue;
+                for (auto &part : f.parts) {
+                    if (part.size() < 2) continue;
+                    auto pts = cv.line(part);
+                    for (auto [s0, e0] : clip_runs_ll(pts, eb)) out.lines.push_back({std::vector<LL>(pts.begin() + s0, pts.begin() + e0 + 1), kind});
+                }
             }
         }
     }
+    // mapped bridge outlines (man_made=bridge areas) and bridge lines: roads on them are bridges there
+    if (!bridge_polys.empty())
+        mark_bridges(out, [&](LL p) {
+            for (auto &r : bridge_polys)
+                if (point_in_ll(p, r)) return true;
+            return false;
+        }, 1, 10);
     bridges_over_water(out);
+}
+
+}  // namespace ec
+
+namespace ec {
+
+// Overture Places category -> the OSM-style key=value the sign styles know
+static std::pair<std::string, std::string> place_kind(const std::string &c) {
+    auto has = [&](const char *w) { return c.find(w) != std::string::npos; };
+    if (c.empty()) return {"", ""};
+    if (has("pharmacy") || has("drugstore")) return {"amenity", "pharmacy"};
+    if (has("coffee") || has("cafe") || has("tea_room")) return {"amenity", "cafe"};
+    if (has("fast_food") || has("burger") || has("pizza") || has("shawarma") || has("sandwich")) return {"amenity", "fast_food"};
+    if (has("restaurant") || has("diner") || has("bistro")) return {"amenity", "restaurant"};
+    if (has("bar") && !has("barber")) return {"amenity", "bar"};
+    if (has("pub")) return {"amenity", "pub"};
+    if (has("bakery") || has("pastry")) return {"shop", "bakery"};
+    if (has("supermarket") || has("grocery") || has("hypermarket")) return {"shop", "supermarket"};
+    if (has("convenience")) return {"shop", "convenience"};
+    if (has("bank") || has("credit_union")) return {"amenity", "bank"};
+    if (has("atm")) return {"amenity", "atm"};
+    if (has("barber") || has("hair") || has("beauty") || has("nail") || has("cosmetic")) return {"shop", "hairdresser"};
+    if (has("florist") || has("flower")) return {"shop", "florist"};
+    if (has("mobile_phone") || has("electronics") || has("computer")) return {"shop", "mobile_phone"};
+    if (has("clothing") || has("fashion") || has("shoe") || has("boutique")) return {"shop", "clothes"};
+    if (has("jewel")) return {"shop", "jewelry"};
+    if (has("optic") || has("eyewear")) return {"shop", "optician"};
+    if (has("book")) return {"shop", "books"};
+    if (has("hotel") || has("hostel") || has("motel")) return {"tourism", "hotel"};
+    if (has("gas_station") || has("fuel")) return {"amenity", "fuel"};
+    if (has("car_wash")) return {"amenity", "car_wash"};
+    if (has("dentist") || has("dental")) return {"amenity", "dentist"};
+    if (has("clinic") || has("doctor") || has("medical")) return {"amenity", "clinic"};
+    if (has("post_office")) return {"amenity", "post_office"};
+    if (has("cinema") || has("movie")) return {"amenity", "cinema"};
+    if (has("store") || has("shop") || has("market") || has("retail")) return {"shop", "yes"};
+    if (has("office") || has("agency") || has("lawyer") || has("notary") || has("insurance") || has("company")) return {"office", "yes"};
+    return {"", ""};
+}
+
+static std::string json_primary(const std::string &txt, const char *a, const char *b = nullptr) {
+    if (txt.empty() || (txt[0] != '{' && txt[0] != '[')) return txt;
+    Json j;
+    if (!Json::parse(txt, j)) return "";
+    const Json *v = j.get(a);
+    if (v && b) v = v->get(b);
+    return v && v->kind == Json::Str ? v->s : "";
+}
+
+int overture_places(TileId tile, const std::vector<mvt::Layer> &places, RawTile &out, TileId src) {
+    Bounds b = tile_bounds(tile);
+    // existing (OSM) places, to skip duplicates
+    std::vector<LL> have;
+    for (auto &p : out.points)
+        if (p.kind.rfind("poi:", 0) == 0) have.push_back(p.p);
+    int added = 0;
+    for (auto &L : places) {
+        Conv cv{src, L.extent};
+        for (auto &f : L.features) {
+            if (f.kind != mvt::Geom::Point || f.parts.empty() || f.parts[0].empty()) continue;
+            double cf;
+            if (f.num("confidence", cf) && cf < 0.5) continue;
+            std::string name = f.str("@name");
+            if (name.empty()) name = json_primary(f.str("names"), "primary");
+            if (name.empty()) continue;
+            std::string cat = f.str("basic_category");
+            if (cat.empty()) cat = json_primary(f.str("categories"), "primary");
+            if (cat.empty()) cat = f.str("category");
+            auto [k, v] = place_kind(cat);
+            if (k.empty()) continue;
+            std::string brand = json_primary(f.str("brand"), "names", "primary");
+            if (brand.empty()) brand = f.str("brand.names.primary");
+            LL q = cv.ll(f.parts[0][0]);
+            if (q.lat < b.s || q.lat >= b.n || q.lon < b.w || q.lon >= b.e) continue;
+            bool dup = false;
+            double kx = 111320 * std::cos(q.lat * PI / 180);
+            for (auto &h : have)
+                if (std::hypot((h.lat - q.lat) * 111320, (h.lon - q.lon) * kx) < 12) {
+                    dup = true;
+                    break;
+                }
+            if (dup) continue;
+            for (char &ch : name)
+                if (ch == '|') ch = '/';
+            out.points.push_back({q, "poi:" + k + "=" + v + "|" + name + "|" + brand});
+            have.push_back(q);
+            added++;
+        }
+    }
+    return added;
 }
 
 }  // namespace ec

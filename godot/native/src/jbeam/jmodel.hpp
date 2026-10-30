@@ -36,7 +36,7 @@ struct Assembly {
     std::vector<std::pair<std::string, std::string>> missing;
 };
 
-Assembly assemble(const Library &lib, const std::string &root, const std::map<std::string, std::string> &overrides);
+Assembly assemble(const Library &lib, const std::string &root, const std::map<std::string, std::string> &overrides, const std::map<std::string, Json> *vars = nullptr);
 
 struct JNode {
     std::string name;

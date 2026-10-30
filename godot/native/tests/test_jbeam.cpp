@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdio>
+#include "../src/jbeam/beamng.hpp"
 #include <cstdlib>
 #include "../src/core/chunk.hpp"
 #include "../src/jbeam/jvisual.hpp"
@@ -22,7 +23,12 @@ int main(int argc, char **argv) {
         main = v[0];
     }
     printf("main part: %s (of %zu)\n", main.c_str(), it == lib.by_type.end() ? 0 : it->second.size());
-    JModel m = build_model(assemble(lib, main, {}));
+    VehicleConfig cfg;
+    std::string cerr;
+    bool hc = default_config(z, cfg, cerr);
+    printf("config: %s (%s) main %s, %zu slots set, %zu vars\n", hc ? cfg.name.c_str() : cerr.c_str(), cfg.model.c_str(), cfg.main_part.c_str(), cfg.parts.size(), cfg.vars.size());
+    if (hc && !cfg.main_part.empty() && lib.parts.count(cfg.main_part)) main = cfg.main_part;
+    JModel m = build_model(assemble(lib, main, hc ? cfg.parts : std::map<std::string, std::string>{}, hc ? &cfg.vars : nullptr));
     printf("nodes %zu beams %zu skipped %d parts %zu missing %zu\n", m.nodes.size(), m.beams.size(), m.skipped_beams, m.asm_.parts.size(), m.asm_.missing.size());
     for (size_t i = 0; i < m.asm_.warnings.size() && i < 5; i++) printf("  w: %s\n", m.asm_.warnings[i].c_str());
     JVehicle v;

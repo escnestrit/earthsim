@@ -1,9 +1,10 @@
 // LED advertising screens on shopping centres: a looping programme of procedural "ads" (colour fields,
 // moving shapes, lines of fake text, a logo disc), with a visible LED pixel grid up close.
 shader_type spatial;
-render_mode unshaded, cull_back;
+render_mode cull_back;
 
 uniform float brightness = 1.6;
+uniform float still = 0.0;  // posters: one ad, no animation, no LED grid, lit only by the scene
 
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 
@@ -16,9 +17,9 @@ void fragment() {
 	float aspect = max(COLOR.g * 4.0, 0.5);
 	vec2 uv = UV;
 	vec2 p = vec2(uv.x * aspect, uv.y);
-	float t = TIME + seed * 13.0;
+	float t = still > 0.5 ? seed * 37.0 + 3.0 : TIME + seed * 13.0;
 	float slot = floor(t / 7.0);
-	float ph = fract(t / 7.0);
+	float ph = still > 0.5 ? 0.5 : fract(t / 7.0);
 	float kind = floor(hash(slot + seed) * 4.0);
 	vec3 c1 = palette(hash(slot * 1.7 + seed));
 	vec3 c2 = palette(hash(slot * 2.3 + seed + 0.5));
@@ -58,6 +59,12 @@ void fragment() {
 	// LED grid
 	vec2 g = fract(vec2(uv.x * aspect, uv.y) * 90.0);
 	float led = smoothstep(0.0, 0.2, g.x) * smoothstep(1.0, 0.8, g.x) * smoothstep(0.0, 0.2, g.y) * smoothstep(1.0, 0.8, g.y);
-	col *= mix(0.55, 1.0, led);
-	ALBEDO = col * brightness;
+	if (still < 0.5) {
+		col *= mix(0.55, 1.0, led);
+		ALBEDO = col * 0.15;
+		EMISSION = col * brightness;
+	} else {
+		ALBEDO = col * brightness;
+		ROUGHNESS = 0.6;
+	}
 }

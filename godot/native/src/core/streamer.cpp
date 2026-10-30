@@ -184,6 +184,21 @@ bool Streamer::load_source(int x, int y, std::string &err) {
     auto t = std::make_shared<RawTile>();
     TileId id{14, x, y};
     overture_features(id, id, layers[0], layers[1], layers[2], 0, *t, &base_src);
+    // places (organisations): optional, a missing archive or tile only means fewer named shop signs
+    std::vector<mvt::Layer> places;
+    {
+        std::string relp = "overture/" + rel + "/places/14/" + std::to_string(x) + "/" + std::to_string(y) + ".mvt", data, e2;
+        if (!read_file(cfg_.cache_dir + "/" + relp, data) && cfg_.online) {
+            if (auto pm = places_failed_ ? nullptr : pmtiles("places", e2)) {
+                int z = std::min(14, pm->max_zoom);
+                // (a lower-zoom parent tile is read whole; overture_places keeps what falls in this tile)
+                if (pm->get(z, x >> (14 - z), y >> (14 - z), data, e2)) write_file(cfg_.cache_dir + "/" + relp, data.empty() ? std::string(" ") : data);
+                places_z_ = z;
+            } else
+                places_failed_ = true;
+        }
+        if (data.size() > 1) mvt::decode(data, places, &e2);
+    }
     // OSM tags already fetched earlier
     std::string js;
     if (read_file(cfg_.cache_dir + "/osm/enrich2_14_" + std::to_string(x) + "_" + std::to_string(y) + ".json", js) && !js.empty()) {
@@ -192,6 +207,7 @@ bool Streamer::load_source(int x, int y, std::string &err) {
         std::lock_guard<std::mutex> l(mu_);
         enrich_done_.insert(k2(x, y));
     }
+    if (!places.empty()) overture_places(id, places, *t, TileId{places_z_, x >> (14 - places_z_), y >> (14 - places_z_)});
     std::lock_guard<std::mutex> l(mu_);
     src_[k2(x, y)] = t;
     return true;

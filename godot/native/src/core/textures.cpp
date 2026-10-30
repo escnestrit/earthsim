@@ -311,7 +311,7 @@ FacadeTex facade_texture(int si, int v) {
             t.orm[i * 4 + 2] = u8(p.metal);
             t.orm[i * 4 + 3] = 255;
             int bx = px / BAY, by = py / BAY;
-            bool on = p.lit > 0 && hsh(bx + 101, by + 211) < 0.35f;
+            bool on = p.lit > 0 && hsh(bx + 101, by + 211) < 0.24f;  // about a quarter of the windows lit
             bool warm = hsh(bx + 7, by + 5) < 0.7f;
             float e[3] = {0, 0, 0};
             if (on) {
