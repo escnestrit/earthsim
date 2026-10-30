@@ -11,6 +11,9 @@ var vehicles := []
 var vehicle_i := -1
 var car_msg := ""
 var car_msg_t := 0.0
+var audio: CarAudio
+var headlights: SpotLight3D
+var lights_on := false
 var spawn := Vector3.ZERO
 var spawn_yaw := 0.0
 var cam_grounded := false
@@ -59,6 +62,17 @@ func _ready() -> void:
 	world.chunk_added.connect(_on_chunk)
 	_setup_car()
 	_setup_hud()
+	audio = CarAudio.new()
+	add_child(audio)
+	headlights = SpotLight3D.new()
+	headlights.spot_range = 70.0
+	headlights.spot_angle = 32.0
+	headlights.spot_attenuation = 0.8
+	headlights.light_energy = 6.0
+	headlights.light_color = Color(1.0, 0.95, 0.85)
+	headlights.shadow_enabled = true
+	headlights.visible = false
+	add_child(headlights)
 	if args.has("shot"):
 		shot_t = float(args.get("shot-after", "20"))
 	if args.has("cammode"):
@@ -146,8 +160,14 @@ func _apply_time() -> void:
 	sun.light_energy = 1.6 * day + 0.02
 	sun.light_color = Color(1.0, lerpf(0.65, 0.96, day), lerpf(0.45, 0.9, day))
 	var night := 1.0 - clampf(sin(t) * 4.0 + 0.6, 0.0, 1.0)
+	if elev < -0.05:
+		# moonlight: the key light swings to a moon high in the sky
+		sun.rotation = Vector3(-deg_to_rad(40.0), az + PI, 0)
+		sun.light_energy = 0.12
+		sun.light_color = Color(0.6, 0.7, 1.0)
 	env.background_energy_multiplier = lerpf(1.0, 0.08, night)
-	env.ambient_light_energy = lerpf(1.0, 0.25, night)
+	env.ambient_light_energy = lerpf(1.0, 0.45, night)
+	env.ambient_light_color = Color(0.62, 0.66, 0.72).lerp(Color(0.25, 0.3, 0.45), night)
 	if world:
 		world.mats.set_night(night)
 
@@ -276,7 +296,7 @@ func _setup_hud() -> void:
 	hud.add_theme_constant_override("outline_size", 4)
 	cl.add_child(hud)
 	help = Label.new()
-	help.text = "WASD / стрелки — ехать, Space — ручник, R — поставить на колёса, C — камера, V — машина BeamNG, T — время суток, G — GI вкл/выкл, F1 — помощь"
+	help.text = "WASD / стрелки — ехать, Space — ручник, R — поставить на колёса, C — камера, V — машина BeamNG, L — фары, T — время суток, G — GI вкл/выкл, F1 — помощь"
 	help.add_theme_font_size_override("font_size", 14)
 	help.add_theme_color_override("font_outline_color", Color.BLACK)
 	help.add_theme_constant_override("outline_size", 4)
@@ -291,6 +311,8 @@ func _on_chunk(_cx: int, _cy: int, _full: bool) -> void:
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
+			KEY_L:
+				lights_on = not lights_on
 			KEY_V:
 				_next_vehicle()
 			KEY_R:
@@ -317,6 +339,11 @@ func _unhandled_input(e: InputEvent) -> void:
 func _process(dt: float) -> void:
 	t_since += dt
 	_poll_vehicle()
+	audio.car = car if spawn_ready else null
+	headlights.visible = spawn_ready and (lights_on or world.mats.night > 0.3)
+	if headlights.visible:
+		var ct := car.global_transform
+		headlights.global_transform = Transform3D(ct.basis * Basis(Vector3.UP, -PI / 2) * Basis(Vector3.RIGHT, -0.06), ct * Vector3(2.0, 0.8, 0.0))
 	car_msg_t -= dt
 	if not spawn_ready and world.stream.collision_ready(spawn):
 		var r: Dictionary = world.stream.nearest_road(spawn, 400.0)
