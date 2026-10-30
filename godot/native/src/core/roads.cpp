@@ -779,8 +779,9 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 if (s[i] < next) continue;
                 next = s[i] + 24;
                 if (!c.own(pp[i])) continue;
-                double gz = c.G(pp[i]);
-                if (P[i].z - gz < 3.5) continue;
+                // the final ground (a road may be cut under the bridge), never the natural one alone
+                double gz = std::min(c.G(pp[i]), c.ground(pp[i]));
+                if (P[i].z - gz < 1.8) continue;
                 double yaw = std::atan2(nn[i].y, nn[i].x);
                 CO.obox(pp[i], yaw, dw * 1.4, 1.2, gz - 3, P[i].z - 1.2, Col{0.66f, 0.65f, 0.63f, 1});
                 V2 ctr = pp[i];

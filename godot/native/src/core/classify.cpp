@@ -115,6 +115,17 @@ std::string infer_class(const Tags &t, const Ring &ring, double area) {
     return "yes";
 }
 
+// Mapped colours are named or picked from a swatch ("#ff0000" for a red roof): real paint and roofing are
+// weathered, never that saturated or bright. Pull toward grey and cap the brightness.
+Col weathered(Col c) {
+    float l = 0.3f * c.r + 0.59f * c.g + 0.11f * c.b;
+    float k = 0.62f;
+    Col o{l + (c.r - l) * k, l + (c.g - l) * k, l + (c.b - l) * k, 1};
+    float mx = std::max({o.r, o.g, o.b});
+    if (mx > 0.88f) o = {o.r * 0.88f / mx, o.g * 0.88f / mx, o.b * 0.88f / mx, 1};
+    return o;
+}
+
 bool parse_colour(const std::string &s0, Col &c) {
     std::string s = lower(s0);
     while (!s.empty() && s[0] == ' ') s.erase(0, 1);
@@ -573,7 +584,7 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
         col = d.colour;
     }
     Col c2;
-    if (auto bc = tag(tags, "building:colour"); bc && parse_colour(*bc, c2)) col = c2;
+    if (auto bc = tag(tags, "building:colour"); bc && parse_colour(*bc, c2)) col = weathered(c2);
     d.style = style;
     d.variant = variant;
     d.colour = col;
@@ -601,7 +612,7 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
     }
     // roof
     Col rc;
-    if (auto r = tag(tags, "roof:colour"); r && parse_colour(*r, rc)) bi.roof_colour = rc;
+    if (auto r = tag(tags, "roof:colour"); r && parse_colour(*r, rc)) bi.roof_colour = weathered(rc);
     else if (use == Use::Religious) bi.roof_colour = pick(std::initializer_list<Col>{{0.3f, 0.48f, 0.38f}, {0.35f, 0.38f, 0.42f}, {0.55f, 0.3f, 0.22f}}, seed);
     else if (use == Use::House || use == Use::Housing) {
         // pitched roofs by region: terracotta in the south, slate and black glazed tiles in the north-west and

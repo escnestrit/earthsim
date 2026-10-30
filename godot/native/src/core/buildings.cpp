@@ -780,6 +780,7 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
                 if (++stacks > 60) break;
                 for (int fl = 1; fl < floors; fl++) {
                     double z = base + fl * floor_h;
+                    if (z + 1.3 > wall_top - 0.2) break;  // never above the walls (the height includes a pitched roof)
                     auto P = [&](double s, double dpt, double zz) { V2 q = a + dir * s + o * dpt; return V3(q.x, q.y, zz); };
                     Col sc = mul(wall, 0.92f);
                     uint64_t hb = seed ^ ((uint64_t)(i * 131 + k) * 2654435761ull) ^ ((uint64_t)fl * 40503ull);
