@@ -1,4 +1,5 @@
-// Zip archives (stored / deflate, zip64) read from disk; BeamNG vehicles come as zips.
+// Zip archives (stored / deflate, zip64) read from disk; BeamNG vehicles come as zips. A folder (an unpacked
+// mod) can be opened the same way.
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +28,7 @@ public:
 
 private:
     FILE *f_ = nullptr;
+    bool dir_ = false;  // a folder read as an archive
 };
 
 uint32_t crc32(const std::string &data);

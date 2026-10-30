@@ -315,9 +315,122 @@ void landmark(const BuildingGeom &b, double base, double h, MeshSet &ms) {
 
 }  // namespace
 
+
+// A standing figure in bronze (or stone), height h, facing `yaw`, feet at z: a sculptor's mannequin rather than
+// a portrait, but read from the street as a statue on its pedestal.
+void statue(MeshSet &ms, V2 c, double yaw, double z, double h, Col col, uint64_t seed) {
+    MeshBuf &M = ms[M_METAL];
+    double k = h / 1.8;
+    double cs = std::cos(yaw), sn = std::sin(yaw);
+    auto L = [&](double fwd, double side) { return V2(c.x + fwd * cs - side * sn, c.y + fwd * sn + side * cs); };
+    double pose = hash01(seed, 91);  // 0..1: arm raised, coat, hands down
+    // legs (or a long coat), torso, shoulders, head
+    if (pose < 0.4) {
+        M.cyl(L(0, 0), 0.26 * k, 0.2 * k, z, z + 1.0 * k, 10, col, false);  // long coat
+    } else {
+        M.obox(L(0, 0.1 * k), yaw, 0.16 * k, 0.13 * k, z, z + 0.92 * k, col, true);
+        M.obox(L(0.05 * k, -0.11 * k), yaw, 0.16 * k, 0.13 * k, z, z + 0.92 * k, col, true);
+    }
+    M.cyl(L(0, 0), 0.2 * k, 0.24 * k, z + 0.9 * k, z + 1.45 * k, 10, col, false);
+    M.obox(L(0, 0), yaw, 0.22 * k, 0.5 * k, z + 1.38 * k, z + 1.5 * k, col, true);
+    M.cyl(L(0, 0), 0.05 * k, 0.05 * k, z + 1.5 * k, z + 1.56 * k, 6, col, false);
+    M.cyl(L(0.01 * k, 0), 0.1 * k, 0.09 * k, z + 1.56 * k, z + 1.8 * k, 10, col, true);
+    // arms: one raised forward in the bigger poses, the other along the body
+    M.obox(L(0, 0.29 * k), yaw, 0.11 * k, 0.1 * k, z + 0.85 * k, z + 1.46 * k, col, true);
+    if (pose > 0.7) {
+        V2 a0 = L(0.05 * k, -0.29 * k), a1 = L(0.45 * k, -0.35 * k);
+        for (int i = 0; i < 4; i++) {
+            double t0 = i / 4.0, t1 = (i + 1) / 4.0;
+            V2 p0 = a0 + (a1 - a0) * t0, p1 = a0 + (a1 - a0) * t1;
+            M.obox((p0 + p1) * 0.5, yaw, 0.12 * k, 0.1 * k, z + (1.42 + 0.35 * t0) * k, z + (1.48 + 0.35 * t1) * k, col, true);
+        }
+    } else
+        M.obox(L(0, -0.29 * k), yaw, 0.11 * k, 0.1 * k, z + 0.85 * k, z + 1.46 * k, col, true);
+}
+
+// Monuments and memorials: stepped granite base following the footprint, a pedestal, and on it a statue, an
+// obelisk or a stele, chosen by shape and height (not a building with windows)
+static void monument(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll) {
+    const BuildingInfo &bi = b.info;
+    const Ring &outer = b.rings[0];
+    double area = std::abs(signed_area(outer));
+    double base = b.base, h = std::max(1.5, bi.height);
+    uint64_t seed = bi.seed;
+    Col granite = hash01(seed, 7) < 0.5 ? Col{0.42f, 0.36f, 0.34f, 1} : Col{0.62f, 0.6f, 0.58f, 1};
+    Col bronze = hash01(seed, 8) < 0.75 ? Col{0.32f, 0.28f, 0.2f, 1} : Col{0.3f, 0.42f, 0.36f, 1};  // or with verdigris
+    V2 ctr = centroid(outer);
+    // the long axis
+    double best = 0, yaw = 0;
+    for (size_t i = 0; i < outer.size(); i++) {
+        V2 d = outer[(i + 1) % outer.size()] - outer[i];
+        if (d.len() > best) best = d.len(), yaw = std::atan2(d.y, d.x);
+    }
+    double rad = std::sqrt(area / PI);
+    bool slender = h > 2.5 * std::sqrt(std::max(area, 1.0));
+    // steps: two rings each 0.25 m in, 0.2 m high
+    std::vector<Ring> steps = {outer};
+    for (int sidx = 0; sidx < 2 && rad > 1.6; sidx++) {
+        Ring r = offset_ring(steps.back(), -0.35);
+        if (r.size() < 3 || std::abs(signed_area(r)) < 1.0) break;
+        steps.push_back(r);
+    }
+    double z = base - 0.3;
+    for (size_t sidx = 0; sidx < steps.size(); sidx++) {
+        double z1 = base + 0.2 * (sidx + 1);
+        walls({steps[sidx]}, z, z1, base, M_CONCRETE, granite, 3, seed, ms, coll);
+        flat_cap({steps[sidx]}, z1, true, M_CONCRETE, granite, ms, &coll);
+        z = z1;
+    }
+    double top_steps = z;
+    if (slender) {
+        // obelisk / column: a tapering shaft with a pyramid tip
+        double r0 = std::max(0.3, std::min(rad * 0.45, 2.0)), r1 = r0 * 0.7;
+        double shaft = h - 0.2 * steps.size() - r1 * 1.2;
+        ms[M_CONCRETE].cyl(ctr, r0, r1, top_steps, top_steps + shaft, 4, granite, false);
+        ms[M_CONCRETE].cyl(ctr, r1, 0.01, top_steps + shaft, top_steps + shaft + r1 * 1.2, 4, granite, false);
+        for (int i = 0; i < 4; i++) {
+            double a = i * PI / 2 + PI / 4;
+            V2 p(ctr.x + std::cos(a) * r0 * 0.7, ctr.y + std::sin(a) * r0 * 0.7);
+            (void)p;
+        }
+        V3 lo(ctr.x - r0 * 0.7, ctr.y - r0 * 0.7, top_steps), hi(ctr.x + r0 * 0.7, ctr.y + r0 * 0.7, top_steps + shaft);
+        push_tri(coll, V3(lo.x, lo.y, lo.z), V3(hi.x, lo.y, lo.z), V3(hi.x, lo.y, hi.z));
+        push_tri(coll, V3(lo.x, lo.y, lo.z), V3(hi.x, lo.y, hi.z), V3(lo.x, lo.y, hi.z));
+        push_tri(coll, V3(hi.x, hi.y, lo.z), V3(lo.x, hi.y, lo.z), V3(lo.x, hi.y, hi.z));
+        push_tri(coll, V3(hi.x, hi.y, lo.z), V3(lo.x, hi.y, hi.z), V3(hi.x, hi.y, hi.z));
+        return;
+    }
+    if (area > 250 && h < 6) {
+        // a memorial site: a long stele and a flame bowl in front
+        double sl = std::min(best * 0.5, 12.0), sh = std::max(2.5, h);
+        ms[M_CONCRETE].obox(ctr, yaw, sl, 0.8, top_steps, top_steps + sh, granite, false);
+        V2 fp(ctr.x - std::sin(yaw) * 3, ctr.y + std::cos(yaw) * 3);
+        ms[M_METAL].cyl(fp, 0.8, 0.5, top_steps, top_steps + 0.35, 12, bronze, true);
+        Col fl{1.0f, 0.55f, 0.15f, 1};
+        ms[M_LAMP].cyl(fp, 0.25, 0.02, top_steps + 0.35, top_steps + 0.9, 8, fl, false);
+        return;
+    }
+    // pedestal and statue
+    double ped_w = std::max(0.8, std::min(rad * 0.9, 3.0));
+    double statue_h = std::clamp((h - (top_steps - base)) * 0.45, 1.8, 9.0);
+    double ped_h = std::max(1.2, h - (top_steps - base) - statue_h);
+    ms[M_CONCRETE].obox(ctr, yaw, ped_w, ped_w * 0.8, top_steps, top_steps + ped_h, granite, false);
+    ms[M_CONCRETE].obox(ctr, yaw, ped_w * 1.12, ped_w * 0.92, top_steps + ped_h - 0.15, top_steps + ped_h, mul(granite, 1.1f), false);
+    statue(ms, ctr, yaw + PI / 2, top_steps + ped_h, statue_h, bronze, seed);
+    V3 a(ctr.x - ped_w / 2, ctr.y - ped_w / 2, top_steps), c(ctr.x + ped_w / 2, ctr.y + ped_w / 2, top_steps + ped_h + statue_h * 0.8);
+    push_tri(coll, V3(a.x, a.y, a.z), V3(c.x, a.y, a.z), V3(c.x, a.y, c.z));
+    push_tri(coll, V3(a.x, a.y, a.z), V3(c.x, a.y, c.z), V3(a.x, a.y, c.z));
+    push_tri(coll, V3(c.x, c.y, a.z), V3(a.x, c.y, a.z), V3(a.x, c.y, c.z));
+    push_tri(coll, V3(c.x, c.y, a.z), V3(a.x, c.y, c.z), V3(c.x, c.y, c.z));
+}
+
 void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll, std::vector<Label> *labels) {
     const BuildingInfo &bi = b.info;
     if (b.rings.empty() || b.rings[0].size() < 3) return;
+    if (bi.use == Use::Monument && !bi.part) {
+        monument(b, ms, coll);
+        return;
+    }
     const Ring &outer = b.rings[0];
     double area = ring_area(outer);
     double base = b.base;

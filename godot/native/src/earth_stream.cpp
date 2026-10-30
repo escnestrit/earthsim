@@ -251,13 +251,14 @@ PackedFloat32Array EarthStream::traffic(double dt, Vector3 p, Vector3 v, int cou
     PackedFloat32Array a;
     if (!s_) return a;
     auto &cars = s_->traffic_step(dt, ec::V3(p.x, -p.z, p.y), ec::V3(v.x, -v.z, v.y), count);
-    a.resize((int64_t)cars.size() * 8);
+    a.resize((int64_t)cars.size() * 9);
     float *f = a.ptrw();
     for (size_t i = 0; i < cars.size(); i++) {
         auto &c = cars[i];
-        f[i * 8] = (float)c.pos.x, f[i * 8 + 1] = (float)c.pos.z, f[i * 8 + 2] = (float)-c.pos.y;
-        f[i * 8 + 3] = (float)c.yaw, f[i * 8 + 4] = (float)c.pitch;
-        f[i * 8 + 5] = c.col.r, f[i * 8 + 6] = c.col.g, f[i * 8 + 7] = c.col.b;
+        float *o = f + i * 9;
+        o[0] = (float)c.pos.x, o[1] = (float)c.pos.z, o[2] = (float)-c.pos.y;
+        o[3] = (float)c.yaw, o[4] = (float)(c.pitch + c.body_pitch), o[5] = (float)c.roll;
+        o[6] = c.col.r, o[7] = c.col.g, o[8] = c.col.b;
     }
     return a;
 }

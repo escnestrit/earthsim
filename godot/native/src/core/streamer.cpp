@@ -551,6 +551,11 @@ const std::vector<TrafficCar> &Streamer::traffic_step(double dt, V3 player, V3 p
         }
     }
     traffic_.target = count;
+    if (!traffic_.ground)
+        traffic_.ground = [this](double x, double y, double z) {
+            Surface sf = coll_->surface(x, y, z, 6.0);
+            return sf.found ? sf.height : z - 1.5;
+        };
     traffic_.step(dt, player, pv);
     std::vector<DynBox> boxes;
     for (auto &c : traffic_.cars())

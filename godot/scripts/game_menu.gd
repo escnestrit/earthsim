@@ -24,6 +24,8 @@ var main: Node
 var root: PanelContainer
 var tabs: TabContainer
 var car_list: ItemList
+var cfg_list: ItemList
+var cfg_names := PackedStringArray()
 var place_list: ItemList
 var coord_edit: LineEdit
 var search_edit: LineEdit
@@ -221,10 +223,22 @@ func _build_cars() -> void:
 	var vb := VBoxContainer.new()
 	vb.name = "Машина"
 	tabs.add_child(vb)
+	var hs := HSplitContainer.new()
+	hs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(hs)
 	car_list = ItemList.new()
-	car_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	car_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	car_list.item_activated.connect(_pick_car)
-	vb.add_child(car_list)
+	car_list.item_selected.connect(_show_configs)
+	hs.add_child(car_list)
+	# the selected vehicle's configurations (BeamNG .pc files), the default first
+	cfg_list = ItemList.new()
+	cfg_list.custom_minimum_size = Vector2(220, 0)
+	cfg_list.item_activated.connect(func(_i):
+		var s := car_list.get_selected_items()
+		if s.size() > 0:
+			_pick_car(s[0]))
+	hs.add_child(cfg_list)
 	var h := HBoxContainer.new()
 	vb.add_child(h)
 	var b := Button.new()
@@ -241,7 +255,7 @@ func _build_cars() -> void:
 		toggle())
 	h.add_child(r)
 	var hint := Label.new()
-	hint.text = "Машины BeamNG.drive находятся сами (установка в Steam) и из папки mods рядом с игрой."
+	hint.text = "Машины BeamNG.drive находятся сами: установка в Steam, ваши моды BeamNG (zip, repo, unpacked) и папка mods рядом с игрой. Справа — комплектации (.pc)."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD
 	hint.add_theme_font_size_override("font_size", 12)
 	vb.add_child(hint)
@@ -254,8 +268,23 @@ func _refresh_cars() -> void:
 		car_list.add_item(String(v["name"]) + ("  [мод]" if v.get("mod", false) else "") + ("" if t == "" else "  · " + t))
 	car_list.select(main.vehicle_i + 1)
 
+func _show_configs(i: int) -> void:
+	cfg_list.clear()
+	cfg_names = PackedStringArray()
+	if i <= 0 or i - 1 >= main.vehicles.size():
+		return
+	cfg_names = EarthJCar.configs(main.vehicles[i - 1]["path"])
+	for k in cfg_names.size():
+		cfg_list.add_item(cfg_names[k] + ("  (по умолчанию)" if k == 0 else ""))
+	if cfg_names.size() > 0:
+		cfg_list.select(0)
+
 func _pick_car(i: int) -> void:
-	main.select_vehicle(i - 1)
+	var cfg := ""
+	var cs := cfg_list.get_selected_items()
+	if i > 0 and cs.size() > 0 and cs[0] < cfg_names.size():
+		cfg = cfg_names[cs[0]]
+	main.select_vehicle(i - 1, cfg)
 	toggle()
 
 # ---------------- settings

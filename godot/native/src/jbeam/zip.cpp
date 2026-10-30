@@ -1,5 +1,6 @@
 #include "zip.hpp"
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include "../core/compress.hpp"
 
@@ -49,6 +50,23 @@ Zip::~Zip() {
 
 bool Zip::open(const std::string &p, std::string &err) {
     path = p;
+    // an unpacked mod (a folder with vehicles/... in it) reads like an archive of its files
+    {
+        std::error_code ec;
+        auto root = std::filesystem::u8path(p);
+        if (std::filesystem::is_directory(root, ec)) {
+            dir_ = true;
+            for (auto it = std::filesystem::recursive_directory_iterator(root, ec); !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                ZipEntry e;
+                e.name = std::filesystem::relative(it->path(), root, ec).generic_u8string();
+                e.method = 0xFFFF;
+                e.size = e.csize = it->file_size(ec);
+                entries.push_back(std::move(e));
+            }
+            return true;
+        }
+    }
 #ifdef _WIN32
     // paths come in as UTF-8 (Godot strings); the narrow fopen would use the ANSI code page
     f_ = _wfopen(std::filesystem::u8path(p).wstring().c_str(), L"rb");
@@ -130,7 +148,7 @@ bool Zip::open(const std::string &p, std::string &err) {
 }
 
 bool Zip::read_prefix(const ZipEntry &e, uint64_t n, std::string &out, std::string &err) {
-    if (e.method != 0) return read(e, out, err);
+    if (e.method != 0) return read(e, out, err);  // (folder entries too)
     unsigned char h[30];
     if (!seek(f_, e.offset) || fread(h, 1, 30, f_) != 30 || !(h[0] == 0x50 && h[1] == 0x4b && h[2] == 3 && h[3] == 4)) {
         err = "zip: bad local header for " + e.name;
@@ -150,6 +168,15 @@ const ZipEntry *Zip::find(const std::string &name) const {
 }
 
 bool Zip::read(const ZipEntry &e, std::string &out, std::string &err) {
+    if (dir_) {
+        std::ifstream f(std::filesystem::u8path(path) / std::filesystem::u8path(e.name), std::ios::binary);
+        if (!f) {
+            err = e.name + ": cannot open";
+            return false;
+        }
+        out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        return true;
+    }
     unsigned char h[30];
     if (!seek(f_, e.offset) || fread(h, 1, 30, f_) != 30 || !(h[0] == 0x50 && h[1] == 0x4b && h[2] == 3 && h[3] == 4)) {
         err = "zip: bad local header for " + e.name;

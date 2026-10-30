@@ -26,7 +26,20 @@ int main() {
     int resets = 0, turnarounds = 0;
     const double dt = 1.0 / 60;
     for (int k = 0; k < 60 * 90; k++) {
-        auto &cars = s.traffic_step(dt, pl, V3(), 40);
+        V3 pv;
+        // at 30 s the player rams the first car from behind at 15 m/s, for half a second
+        static V3 hit;
+        static int victim = -1;
+        if (k == 1800 && !s.traffic_step(0, pl, V3(), 40).empty()) {
+            auto &c0 = s.traffic_step(0, pl, V3(), 40)[0];
+            victim = c0.id;
+            hit = V3(c0.pos.x - std::cos(c0.yaw) * 3.5, c0.pos.y - std::sin(c0.yaw) * 3.5, c0.pos.z);
+        }
+        V3 pp = pl;
+        if (k >= 1800 && k < 1830) pp = hit, pv = V3(15, 0, 0);
+        auto &cars = s.traffic_step(dt, pp, pv, 40);
+        for (auto &c : cars)
+            if (c.id == victim && (k == 1832 || k == 1900 || k == 2400 || k == 3000)) printf("victim t=%.1f loose %d v %.1f slide %.1f pos %.1f %.1f roll %.2f\n", k * dt, c.loose, c.v, std::hypot(c.lvx, c.lvy), c.pos.x, c.pos.y, c.roll);
         std::map<int, std::pair<V3, double>> cur;
         for (auto &c : cars) {
             cur[c.id] = {c.pos, c.yaw};

@@ -24,7 +24,9 @@ public:
     static Array find_vehicles(PackedStringArray dirs);
     static String beamng_vehicles_dir();
     // start loading in the background; poll() until it returns "ready" or "error: ..."
-    void load(Ref<EarthStream> stream, String path);
+    // config: a .pc name from configs(), "" for the vehicle's default
+    void load(Ref<EarthStream> stream, String path, String config = "");
+    static PackedStringArray configs(String path);
     String poll();
     String notes() const;
     bool place(Vector3 pos, double yaw);
@@ -48,7 +50,7 @@ private:
     std::unique_ptr<ec::CarVisual> vis_;
     std::thread loader_, sim_;
     std::atomic<int> load_state_{0};  // 0 idle, 1 loading, 2 loaded (not built), 3 ready, -1 error
-    std::string load_err_, load_path_;
+    std::string load_err_, load_path_, load_config_;
     std::vector<std::string> notes_;
     std::atomic<bool> stop_{false}, placed_{false};
     mutable std::mutex mu_;      // guards the vehicle while the sim thread steps it

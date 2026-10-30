@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include "glue.h"
 #include "jbeam/beamng.hpp"
 
@@ -71,18 +72,27 @@ static bool vehicle_info(const std::string &path, std::string &name, std::string
 
 Array EarthJCar::find_vehicles(PackedStringArray dirs) {
     Array out;
-    std::vector<std::filesystem::path> ds;
-    for (int i = 0; i < dirs.size(); i++) ds.push_back(std::filesystem::u8path(dirs[i].utf8().get_data()));
+    // (folder, is a mod): the game's own mods folder and any given, the player's BeamNG mods, then BeamNG's
+    // own vehicles
+    std::vector<std::pair<std::filesystem::path, bool>> ds;
+    for (int i = 0; i < dirs.size(); i++) ds.push_back({std::filesystem::u8path(dirs[i].utf8().get_data()), true});
+    for (auto &m : ec::find_beamng_mod_dirs()) ds.push_back({std::filesystem::u8path(m), true});
     std::string b = ec::find_beamng_vehicles();
-    if (!b.empty()) ds.push_back(std::filesystem::u8path(b));
+    if (!b.empty()) ds.push_back({std::filesystem::u8path(b), false});
     std::error_code e;
-    for (size_t di = 0; di < ds.size(); di++) {
-        std::vector<std::filesystem::path> files;
-        for (auto &f : std::filesystem::directory_iterator(ds[di], e))
-            if (f.path().extension() == ".zip" && f.path().filename() != "common.zip") files.push_back(f.path());
-        std::sort(files.begin(), files.end());
-        for (auto &fp : files) {
+    std::set<std::string> seen;
+    for (auto &[dir, is_mod] : ds) {
+        std::vector<std::filesystem::path> items;
+        bool unpacked = dir.filename() == "unpacked";
+        for (auto &f : std::filesystem::directory_iterator(dir, e)) {
+            if (f.path().extension() == ".zip" && f.path().filename() != "common.zip") items.push_back(f.path());
+            // unpacked mods: folders holding vehicles/
+            else if (f.is_directory(e) && (unpacked || std::filesystem::is_directory(f.path() / "vehicles", e)) && std::filesystem::is_directory(f.path() / "vehicles", e)) items.push_back(f.path());
+        }
+        std::sort(items.begin(), items.end());
+        for (auto &fp : items) {
             std::string path = fp.u8string();
+            if (!seen.insert(path).second) continue;
             std::string name = fp.stem().u8string(), type;
             if (!vehicle_info(path, name, type)) continue;
             if (!type.empty() && type != "Car" && type != "Truck" && type != "Automation") continue;
@@ -90,15 +100,25 @@ Array EarthJCar::find_vehicles(PackedStringArray dirs) {
             v["path"] = String::utf8(path.c_str());
             v["name"] = String::utf8(name.c_str());
             v["type"] = String::utf8(type.c_str());
-            v["mod"] = di + 1 < ds.size() || b.empty();
+            v["mod"] = is_mod;
             out.push_back(v);
         }
     }
     return out;
 }
 
-void EarthJCar::load(Ref<EarthStream> stream, String path) {
+PackedStringArray EarthJCar::configs(String path) {
+    PackedStringArray out;
+    ec::Zip z;
+    std::string err;
+    if (!z.open(path.utf8().get_data(), err)) return out;
+    for (auto &c : ec::list_configs(z)) out.push_back(String::utf8(c.c_str()));
+    return out;
+}
+
+void EarthJCar::load(Ref<EarthStream> stream, String path, String config) {
     stream_ = stream;
+    load_config_ = config.utf8().get_data();
     coll_ = stream->core() ? stream->core()->collision() : nullptr;
     load_path_ = path.utf8().get_data();
     load_state_ = 1;
@@ -114,7 +134,8 @@ void EarthJCar::load(Ref<EarthStream> stream, String path) {
         // the default configuration, as BeamNG spawns the vehicle (parts per slot, tuning variables)
         ec::VehicleConfig cfgv;
         std::string cerr;
-        bool have_cfg = ec::default_config(z, cfgv, cerr);
+        bool have_cfg = ec::load_config(z, load_config_, cfgv, cerr);
+        if (have_cfg) notes_.push_back("configuration: " + (load_config_.empty() ? std::string("default") : load_config_));
         if (!have_cfg) notes_.push_back("no default configuration (" + cerr + "): default parts");
         // the vehicle's own main part (common.zip, added next, has none worth driving)
         std::string main;
@@ -503,7 +524,8 @@ Vector3 EarthJCar::eye() const {
 void EarthJCar::_bind_methods() {
     ClassDB::bind_static_method("EarthJCar", D_METHOD("find_vehicles", "dirs"), &EarthJCar::find_vehicles);
     ClassDB::bind_static_method("EarthJCar", D_METHOD("beamng_vehicles_dir"), &EarthJCar::beamng_vehicles_dir);
-    ClassDB::bind_method(D_METHOD("load", "stream", "path"), &EarthJCar::load);
+    ClassDB::bind_method(D_METHOD("load", "stream", "path", "config"), &EarthJCar::load, DEFVAL(""));
+    ClassDB::bind_static_method("EarthJCar", D_METHOD("configs", "path"), &EarthJCar::configs);
     ClassDB::bind_method(D_METHOD("poll"), &EarthJCar::poll);
     ClassDB::bind_method(D_METHOD("notes"), &EarthJCar::notes);
     ClassDB::bind_method(D_METHOD("place", "pos", "yaw"), &EarthJCar::place);

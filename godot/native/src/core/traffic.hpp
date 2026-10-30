@@ -4,6 +4,7 @@
 // acceleration), changes lanes gradually and keeps a time gap to whatever is in front, the player included.
 #pragma once
 #include <deque>
+#include <functional>
 #include <random>
 #include <unordered_map>
 #include "chunk.hpp"
@@ -22,6 +23,11 @@ struct TrafficCar {
     int edge = -1;  // = route.front().first (for callers)
     int id = 0;
     int resets = 0;
+    // body motion (visual): roll and pitch from the car's own accelerations, a slow drift within the lane
+    double roll = 0, body_pitch = 0, wander = 0, prev_v = 0;
+    // knocked off its line (a crash): sliding freely until it stops, then it rejoins the nearest road
+    bool loose = false;
+    double lvx = 0, lvy = 0, yaw_rate = 0, loose_t = 0;
 };
 
 class Traffic {
@@ -31,6 +37,8 @@ public:
     double radius = 380;
     void set_roads(const std::vector<LaneSeg> &segs);
     void step(double dt, V3 player, V3 player_vel);
+    // ground height under a point (for cars off the road); set by the streamer
+    std::function<double(double, double, double)> ground;
     const std::vector<TrafficCar> &cars() const { return cars_; }
 
 private:
@@ -51,6 +59,7 @@ private:
     // point on the route `ahead` metres past the car's s, offset `lane` to the right; also its direction
     V3 route_point(const TrafficCar &c, double ahead, double lane, V2 *dir = nullptr) const;
     double lane_for(const Edge &e, int idx, int lanes_dir) const;
+    bool rejoin(TrafficCar &c);  // a route from the nearest drivable edge
 };
 
 }  // namespace ec

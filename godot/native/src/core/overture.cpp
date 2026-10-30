@@ -607,6 +607,8 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                 else if (cls == "waste_basket" || cls == "recycling") kind = "bin";
                 else if (cls == "catenary_mast" || cls == "power_pole" || cls == "power_tower" || cls == "pole") kind = "pole:" + cls;
                 else if (cls == "subway_station" || cls == "subway_entrance") kind = "metro|" + f.str("@name");
+                else if (cls == "artwork" || cls == "statue" || cls == "sculpture") kind = "artwork|" + f.str("artwork_type");
+                else if (cls == "fountain" && st == "water") kind = "fountain";
                 if (kind.empty()) continue;
                 if (kind != "tree" && kind != "lamp") out.has_furniture = true;
                 for (auto &part : f.parts)

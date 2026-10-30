@@ -70,15 +70,16 @@ func update_traffic(dt: float, player: Vector3, vel: Vector3) -> void:
 		traffic_mm.multimesh = mm
 		add_child(traffic_mm)
 	var a: PackedFloat32Array = stream.traffic(dt, player, vel, traffic_count)
-	var n := a.size() / 8
+	var n := a.size() / 9
 	var mm2 := traffic_mm.multimesh
 	if mm2.instance_count != n:
 		mm2.instance_count = n
 	for i in n:
-		var o := i * 8
-		var b := Basis(Vector3.UP, a[o + 3]) * Basis(Vector3(0, 0, 1), a[o + 4])
+		var o := i * 9
+		# yaw about up, pitch about the car's side axis, roll about its length (model x forward)
+		var b := Basis(Vector3.UP, a[o + 3]) * Basis(Vector3(0, 0, 1), a[o + 4]) * Basis(Vector3(1, 0, 0), a[o + 5])
 		mm2.set_instance_transform(i, Transform3D(b, Vector3(a[o], a[o + 1], a[o + 2])))
-		mm2.set_instance_color(i, Color(a[o + 5], a[o + 6], a[o + 7]))
+		mm2.set_instance_color(i, Color(a[o + 6], a[o + 7], a[o + 8]))
 	# the multimesh's bounds must follow the cars
 	traffic_mm.custom_aabb = AABB(player - Vector3(600, 300, 600), Vector3(1200, 600, 1200))
 

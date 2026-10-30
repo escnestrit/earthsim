@@ -5,6 +5,8 @@
 #include "chunk_ctx.hpp"
 #include "infra.hpp"
 #include "signage.hpp"
+#include "buildings.hpp"
+#include "util.hpp"
 
 namespace ec {
 
@@ -286,6 +288,46 @@ void build_infra(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 V2 d = V2(b.x - a.x, b.y - a.y);
                 double l = d.len();
                 c.coll_prism(mid, std::atan2(d.y, d.x), l, std::max(0.15, w), std::min(a.z, b.z), std::max(a.z, b.z) + h + 0.2);
+            }
+        }
+    // public art (statues and sculptures mapped as points) and small fountains
+    for (auto &t : tiles)
+        for (auto &pt : t->points) {
+            bool art = pt.kind.rfind("artwork", 0) == 0, fountain = pt.kind == "fountain";
+            if (!art && !fountain) continue;
+            V2 v = c.fr.to_local(pt.p.lat, pt.p.lon);
+            if (!c.own(v) || c.roads.clearance(v) < 1.0) continue;
+            bool inside = false;
+            for (auto &br : c.building_rings)
+                if (point_in_ring(v, br)) inside = true;
+            if (inside) continue;
+            uint64_t h = hash_ll(pt.p.lat, pt.p.lon, 501);
+            double z = c.ground(v), yaw = hash01(h, 1) * 2 * PI;
+            if (fountain) {
+                Col st{0.66f, 0.64f, 0.6f, 1};
+                CO.cyl(v, 2.2, 2.2, z - 0.2, z + 0.5, 20, st, false);
+                c.out.ms[M_WATER].cyl(v, 2.0, 2.0, z + 0.38, z + 0.4, 20, Col{1, 1, 1, 1}, true);
+                CO.cyl(v, 0.35, 0.25, z, z + 1.6, 10, st, true);
+                c.coll_prism(v, 0, 4.2, 4.2, z - 0.2, z + 0.5);
+                continue;
+            }
+            std::string type = pt.kind.size() > 8 ? pt.kind.substr(8) : "";
+            Col bronze{0.32f, 0.28f, 0.2f, 1};
+            if (type == "statue" || (type.empty() && hash01(h, 2) < 0.5)) {
+                CO.obox(v, yaw, 1.0, 1.0, z - 0.1, z + 1.4, Col{0.45f, 0.4f, 0.38f, 1});
+                statue(c.out.ms, v, yaw, z + 1.4, 2.0, bronze, h);
+                c.coll_prism(v, yaw, 1.0, 1.0, z - 0.1, z + 3.2);
+            } else {
+                // an abstract piece: turned stacked blocks in steel or painted metal
+                Col pc = hash01(h, 3) < 0.5 ? Col{0.7f, 0.72f, 0.75f, 1} : Col{0.75f, 0.2f, 0.12f, 1};
+                CO.obox(v, yaw, 1.4, 1.4, z - 0.1, z + 0.4, Col{0.6f, 0.6f, 0.58f, 1});
+                double zz = z + 0.4;
+                for (int k = 0; k < 4; k++) {
+                    double sz = 1.1 - k * 0.2, hh = 0.5 + hash01(h, 10 + k) * 0.6;
+                    MT.obox(v, yaw + k * 0.35, sz, sz * 0.35, zz, zz + hh, pc, true);
+                    zz += hh;
+                }
+                c.coll_prism(v, yaw, 1.4, 1.4, z - 0.1, zz);
             }
         }
     // metro entrances / stations: a post with the "М" (CIS) / "M" sign

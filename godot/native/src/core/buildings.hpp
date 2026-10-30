@@ -32,6 +32,9 @@ struct BuildingGeom {
     std::string name;         // OSM name (malls, cinemas... get it in big letters)
 };
 
+// a bronze standing figure (statues, sculptures), feet at z, facing yaw
+void statue(MeshSet &ms, V2 c, double yaw, double z, double h, Col col, uint64_t seed);
+
 // Adds the building to `ms`; collision triangles (walls and roof, xyz floats) to `coll`.
 void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll, std::vector<Label> *labels = nullptr);
 

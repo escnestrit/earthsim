@@ -259,7 +259,7 @@ func _setup_car() -> void:
 	add_child(cam)
 	cam.make_current()
 
-func _load_vehicle(i: int) -> void:
+func _load_vehicle(i: int, config := "") -> void:
 	if jcar:
 		jcar.queue_free()
 		jcar = null
@@ -269,7 +269,7 @@ func _load_vehicle(i: int) -> void:
 	jcar = EarthJCar.new()
 	jcar.name = "JCar"
 	add_child(jcar)
-	jcar.load(world.stream, vehicles[i]["path"])
+	jcar.load(world.stream, vehicles[i]["path"], config)
 	_say("Загрузка: " + vehicles[i]["name"] + "…")
 
 func _say(t: String) -> void:
@@ -308,7 +308,7 @@ func current_vehicle_path() -> String:
 	return ""
 
 # -1: the built-in car
-func select_vehicle(i: int) -> void:
+func select_vehicle(i: int, config := "") -> void:
 	if i < 0:
 		if jcar:
 			if car == jcar:
@@ -326,7 +326,7 @@ func select_vehicle(i: int) -> void:
 		car = builtin_car
 		builtin_car.visible = true
 		builtin_car.process_mode = Node.PROCESS_MODE_INHERIT
-	_load_vehicle(i)
+	_load_vehicle(i, config)
 
 func apply_setting(key: String, v) -> void:
 	match key:

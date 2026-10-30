@@ -827,6 +827,31 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 c.out.inst.push_back({I_SIGN, {q.x, q.y, z}, std::atan2(-dir.y, -dir.x), 1, {(float)sg, 0, 0, 1}});
             }
         }
+        // cars parked along the kerb of town streets wide enough for it (not near junctions or crossings)
+        if (r0.urban && !r0.bridge && r0.prio >= 2 && r0.prio <= 5 && r0.hw >= 5.5 && s.back() > 40) {
+            static const Col PC[] = {{0.85f, 0.85f, 0.86f, 1}, {0.08f, 0.08f, 0.09f, 1}, {0.45f, 0.47f, 0.5f, 1}, {0.7f, 0.72f, 0.75f, 1}, {0.55f, 0.08f, 0.07f, 1},
+                                     {0.1f, 0.2f, 0.45f, 1},    {0.95f, 0.95f, 0.95f, 1}, {0.2f, 0.32f, 0.22f, 1}, {0.6f, 0.5f, 0.35f, 1}, {0.3f, 0.3f, 0.32f, 1}};
+            for (int side : {-1, 1}) {
+                if (r0.oneway != 0 && side > 0 && r0.hw < 7) continue;  // one-way: one parking side unless wide
+                for (double sp = 18; sp < s.back() - 18; sp += 6.2) {
+                    size_t i = 0;
+                    while (i + 1 < s.size() && s[i + 1] < sp) i++;
+                    double t = (sp - s[i]) / std::max(1e-6, s[i + 1] - s[i]);
+                    V2 cp = pp[i] + (pp[i + 1] - pp[i]) * t;
+                    uint64_t h = (uint64_t)std::llround(cp.x * 5.3) * 73856093ull ^ (uint64_t)std::llround(cp.y * 4.7) * 19349663ull ^ (uint64_t)(side + 7);
+                    h = h * 6364136223846793005ull + 1442695040888963407ull;
+                    if (((h >> 20) % 100) >= 55) continue;
+                    V2 nrm = (nn[i] + (nn[i + 1] - nn[i]) * t).norm();
+                    V2 dir = (pp[i + 1] - pp[i]).norm();
+                    V2 q = cp + nrm * (side * (r0.hw - 0.95));
+                    if (!c.own(q)) continue;
+                    double z = P[i].z + (P[i + 1].z - P[i].z) * t + zo;
+                    // facing the traffic of that side (right-hand traffic: the right side faces along)
+                    double yaw = std::atan2(dir.y, dir.x) + (side > 0 ? PI : 0) + (((h >> 33) % 100) / 100.0 - 0.5) * 0.06;
+                    c.out.inst.push_back({I_CAR, {q.x, q.y, z}, yaw, 1, PC[(h >> 40) % 10]});
+                }
+            }
+        }
         // advertising billboards beside main roads: 6 x 3 m boards on a post (half digital, half posters),
         // about every 220 m where there is room behind the pavement
         if (r0.prio >= 5 && !r0.bridge && s.back() > 80) {

@@ -1,5 +1,6 @@
 #include "traffic.hpp"
 #include <algorithm>
+#include "geom.hpp"
 
 namespace ec {
 
@@ -149,12 +150,79 @@ bool Traffic::spawn(V3 player) {
     return false;
 }
 
+bool Traffic::rejoin(TrafficCar &c) {
+    int best = -1;
+    double bd = 12;
+    for (int i = 0; i < (int)edges_.size(); i++) {
+        const Edge &e = edges_[i];
+        if (e.prio < 2) continue;
+        V2 a(e.pa.x, e.pa.y), b(e.pb.x, e.pb.y), p(c.pos.x, c.pos.y);
+        double d = seg_dist(p, a, b);
+        if (d < bd) bd = d, best = i;
+    }
+    if (best < 0) return false;
+    const Edge &e = edges_[best];
+    V2 dir = V2(e.pb.x - e.pa.x, e.pb.y - e.pa.y).norm();
+    bool f = e.oneway > 0 ? true : e.oneway < 0 ? false : dir.dot(V2(std::cos(c.yaw), std::sin(c.yaw))) >= 0;
+    c.route.clear();
+    c.route.push_back({best, f});
+    V2 a = f ? V2(e.pa.x, e.pa.y) : V2(e.pb.x, e.pb.y), dd = f ? dir : dir * -1;
+    c.s = std::clamp((V2(c.pos.x, c.pos.y) - a).dot(dd), 0.0, e.len);
+    int lanes_dir = e.oneway ? std::max(1, e.lanes) : std::max(1, e.lanes / 2);
+    c.lane_target = lane_for(e, 0, lanes_dir);
+    V2 here(a + dd * c.s);
+    c.lane = (V2(c.pos.x, c.pos.y) - here).dot(dd.perp() * -1);
+    while (c.route.size() < 40 && extend(c)) {}
+    c.loose = false;
+    c.edge = best;
+    return true;
+}
+
 void Traffic::step(double dt, V3 player, V3 pvel) {
-    (void)pvel;
     cars_.erase(std::remove_if(cars_.begin(), cars_.end(), [&](const TrafficCar &c) { return std::hypot(c.pos.x - player.x, c.pos.y - player.y) > radius + 80 || c.route.empty(); }), cars_.end());
     for (int k = 0; k < 3 && (int)cars_.size() < target; k++) spawn(player);
     for (size_t i = 0; i < cars_.size(); i++) {
         TrafficCar &c = cars_[i];
+        // the player's car hitting this one: an impulse along the contact, the car is loose until it stops
+        {
+            double dx = c.pos.x - player.x, dy = c.pos.y - player.y;
+            V2 f(std::cos(c.yaw), std::sin(c.yaw));
+            double along = dx * f.x + dy * f.y, side = -dx * f.y + dy * f.x;
+            if (std::abs(along) < 2.3 + 1.6 && std::abs(side) < 0.95 + 1.0 && std::abs(c.pos.z - player.z) < 2.5) {
+                V2 cv = c.loose ? V2(c.lvx, c.lvy) : f * c.v;
+                V2 rel = V2(pvel.x, pvel.y) - cv;
+                V2 n = V2(dx, dy).norm();
+                double closing = rel.dot(n);
+                if (closing > 0.8) {
+                    if (!c.loose) c.lvx = cv.x, c.lvy = cv.y, c.yaw_rate = 0;
+                    c.loose = true;
+                    c.loose_t = 0;
+                    // equal masses, partly elastic
+                    double j = closing * 0.8;
+                    c.lvx += n.x * j, c.lvy += n.y * j;
+                    c.yaw_rate += std::clamp((dx * rel.y - dy * rel.x) * 0.08, -2.5, 2.5);
+                }
+            }
+        }
+        if (c.loose) {
+            // sliding: tyre friction scrubs speed and spin, a little rolling along the heading
+            V2 vv(c.lvx, c.lvy);
+            double sp = vv.len();
+            double dec = 6.5 * dt;
+            vv = sp > dec ? vv * ((sp - dec) / sp) : V2();
+            c.lvx = vv.x, c.lvy = vv.y;
+            c.yaw_rate *= std::pow(0.15, dt);
+            c.yaw += c.yaw_rate * dt;
+            c.pos.x += c.lvx * dt, c.pos.y += c.lvy * dt;
+            if (ground) c.pos.z = ground(c.pos.x, c.pos.y, c.pos.z + 1.5);
+            c.v = 0;
+            c.loose_t += dt;
+            V2 f(std::cos(c.yaw), std::sin(c.yaw));
+            double lat = -c.lvx * f.y + c.lvy * f.x;
+            c.roll += (std::clamp(-lat * 0.03, -0.12, 0.12) - c.roll) * std::min(1.0, dt * 6);
+            if (sp < 0.2 && c.loose_t > 4) rejoin(c);
+            continue;
+        }
         // keep ~120 m of route committed ahead
         double ahead_len = -c.s;
         for (auto &r : c.route) ahead_len += edges_[r.first].len;
@@ -213,7 +281,9 @@ void Traffic::step(double dt, V3 player, V3 pvel) {
 
         // steering: pure pursuit of a point ahead in the lane
         double look = std::clamp(c.v * 0.9, 4.0, 16.0);
-        V3 tgt = route_point(c, look, c.lane);
+        c.wander += dt * (0.15 + 0.1 * c.aggr);
+        double drift = 0.18 * std::sin(c.wander + c.id) * std::sin(c.wander * 0.37 + c.id * 0.7);
+        V3 tgt = route_point(c, look, c.lane + drift);
         double want = std::atan2(tgt.y - c.pos.y, tgt.x - c.pos.x);
         double err = std::remainder(want - c.yaw, 2 * PI);
         double max_rate = std::min({1.1, std::max(0.4, c.v) / WHEELBASE * std::tan(0.6), 3.8 / std::max(0.5, c.v)});
@@ -234,6 +304,12 @@ void Traffic::step(double dt, V3 player, V3 pvel) {
         V3 h2 = route_point(c, 3, c.lane);
         c.pos.z = here.z;
         double tp = std::atan2(h2.z - here.z, 3.0);
+        // the body squats and dives with the accelerations and leans out in bends
+        double acc = (c.v - c.prev_v) / std::max(dt, 1e-3);
+        c.prev_v = c.v;
+        double yr = std::clamp(err * 2.5, -max_rate, max_rate);
+        c.body_pitch += (std::clamp(-acc * 0.012, -0.05, 0.04) - c.body_pitch) * std::min(1.0, dt * 4);
+        c.roll += (std::clamp(-yr * c.v * 0.012, -0.06, 0.06) - c.roll) * std::min(1.0, dt * 4);
         c.pitch += (tp - c.pitch) * std::min(1.0, dt * 5);
         // next edges
         while (c.route.size() > 1 && c.s > edges_[c.route.front().first].len) {
