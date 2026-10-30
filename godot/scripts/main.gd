@@ -43,6 +43,11 @@ func _ready() -> void:
 	add_child(world)
 	var detail := float(args.get("detail", "700"))
 	var far := float(args.get("far", "2400"))
+	if args.has("debugmat"):
+		var cols := [Color.RED, Color.GREEN, Color.YELLOW, Color.MAGENTA, Color.CYAN]
+		var ids: PackedStringArray = (args["debugmat"] as String).split(",")
+		for i in ids.size():
+			world.debug_mats[int(ids[i])] = cols[i % cols.size()]
 	world.start(lat, lon, cache, not args.has("offline"), detail, far, not args.has("noenrich"))
 	world.chunk_added.connect(_on_chunk)
 	_setup_car()

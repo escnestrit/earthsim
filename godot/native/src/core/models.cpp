@@ -193,54 +193,120 @@ MeshSet lamp() {
     return ms;
 }
 
+// A compact crossover body lofted from smooth cross-sections (superellipses) along its length, with a
+// tumblehome greenhouse, wheel arches, glazing, lights and trim picked per face.
 MeshSet car(bool with_wheels) {
     MeshSet ms;
     MeshBuf &P = ms[M_CARPAINT], &G = ms[M_GLASS], &T = ms[M_TIRE], &D = ms[M_DARK], &Lm = ms[M_LAMP];
     Col w{1, 1, 1, 1};
-    // side profile (x forward, z up) of a compact hatchback, extruded across the width with rounded sides
-    std::vector<V2> lower = {{-2.15, 0.32}, {2.15, 0.32}, {2.25, 0.55}, {2.2, 0.82}, {1.2, 0.98}, {-1.6, 1.0}, {-2.15, 0.95}, {-2.25, 0.6}};
-    double hw = 0.88;
-    auto extrude = [&](MeshBuf &m, const std::vector<V2> &prof, double half, double inset_top, Col c) {
-        size_t n = prof.size();
-        // sides
-        for (int s : {-1, 1}) {
-            int base = (int)m.verts();
-            double y = s * half;
-            for (auto &p : prof) {
-                double ins = std::max(0.0, (p.y - 0.8)) * inset_top;
-                m.v({p.x, y - s * ins, p.y}, {0, (double)s, 0}, p.x, p.y, c);
-            }
-            for (size_t i = 1; i + 1 < n; i++) {
-                if (s > 0) m.tri(base, base + (int)i + 1, base + (int)i);
-                else m.tri(base, base + (int)i, base + (int)i + 1);
-            }
-        }
-        // around the profile
-        for (size_t i = 0; i < n; i++) {
-            V2 a = prof[i], b = prof[(i + 1) % n];
-            double ia = std::max(0.0, (a.y - 0.8)) * inset_top, ib = std::max(0.0, (b.y - 0.8)) * inset_top;
-            V3 p0(a.x, -half + ia, a.y), p1(b.x, -half + ib, b.y), p2(b.x, half - ib, b.y), p3(a.x, half - ia, a.y);
-            V3 nrm = V3(b.y - a.y, 0, -(b.x - a.x)).norm();
-            m.quad(p0, p3, p2, p1, nrm, c);
-        }
+    const double X0 = -2.25, X1 = 2.25;
+    const double WX[2] = {1.35, -1.35};
+    auto smooth = [](double e0, double e1, double x) {
+        double t = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+        return t * t * (3 - 2 * t);
     };
-    extrude(P, lower, hw, 0.0, w);
-    std::vector<V2> cabin = {{-1.55, 0.98}, {1.15, 0.97}, {0.35, 1.42}, {-1.35, 1.45}, {-1.75, 1.2}};
-    extrude(G, cabin, hw - 0.08, 0.35, w);
-    // roof cap over the glass
-    P.obox({-0.5, 0}, 0, 1.6, (hw - 0.08 - 0.22) * 2, 1.44, 1.47, w);
-    // wheels
-    for (double x : {-1.35, 1.35})
+    auto half_w = [&](double x) { return 0.91 - 0.13 * std::pow(std::abs(x) / 2.25, 5); };
+    auto bottom = [&](double x) { return 0.34 + std::max(0.0, x - 1.85) * 0.55 + std::max(0.0, -1.95 - x) * 0.7; };
+    auto top = [&](double x) {
+        // tail, rear window, roof, windscreen, hood, nose
+        if (x < -2.1) return 0.96 + 0.16 * smooth(-2.25, -2.1, x);
+        if (x < -1.5) return 1.12 + 0.46 * smooth(-2.1, -1.5, x);
+        if (x < 0.3) return 1.58 + 0.03 * smooth(-1.5, -0.6, x) - 0.01 * smooth(-0.6, 0.3, x);
+        if (x < 1.15) return 1.6 - 0.56 * smooth(0.3, 1.15, x);
+        if (x < 2.05) return 1.04 - 0.08 * smooth(1.15, 2.05, x);
+        return 0.96 - 0.22 * smooth(2.05, 2.25, x);
+    };
+    auto belt = [&](double x) { return 1.02 + 0.05 * smooth(0.5, -1.8, x); };
+    auto arch = [&](double x) {
+        double z = 0;
+        for (double wx : WX) {
+            double dx = x - wx, r = 0.43;
+            if (std::abs(dx) < r) z = std::max(z, 0.33 + std::sqrt(r * r - dx * dx));
+        }
+        return z;
+    };
+    const int NX = 48, NS = 40;
+    std::vector<V3> pts((NX + 1) * NS);
+    for (int i = 0; i <= NX; i++) {
+        double t = double(i) / NX;
+        double x = X0 + (X1 - X0) * (0.5 - 0.5 * std::cos(t * PI));  // denser at the ends
+        double zb = bottom(x), zt = top(x), zbelt = std::min(belt(x), zt - 0.02), hwid = half_w(x);
+        double zc = (zb + zt) / 2, hz = (zt - zb) / 2;
+        for (int k = 0; k < NS; k++) {
+            double a = 2 * PI * k / NS;
+            double c = std::cos(a), sn = std::sin(a);
+            double n = 5.0;
+            double y = hwid * (c < 0 ? -1 : 1) * std::pow(std::abs(c), 2 / n);
+            double z = zc + hz * (sn < 0 ? -1 : 1) * std::pow(std::abs(sn), 2 / n);
+            if (z > zbelt) {
+                double f = (z - zbelt) / std::max(0.05, zt - zbelt);
+                y *= 1 - 0.2 * f;  // tumblehome
+            }
+            if (z < zc && std::abs(y) > 0.62 * hwid) z = std::max(z, arch(x));
+            pts[i * NS + k] = V3(x, y, z);
+        }
+    }
+    auto P_ = [&](int i, int k) { return pts[std::clamp(i, 0, NX) * NS + ((k % NS) + NS) % NS]; };
+    auto nrm = [&](int i, int k) {
+        V3 dx = P_(i + 1, k) - P_(i - 1, k), dk = P_(i, k + 1) - P_(i, k - 1);
+        V3 n = dk.cross(dx);
+        if (n.len() < 1e-9) return V3(i == 0 ? -1 : 1, 0, 0);
+        return n.norm();
+    };
+    for (int i = 0; i < NX; i++)
+        for (int k = 0; k < NS; k++) {
+            V3 a = P_(i, k), b = P_(i + 1, k), c = P_(i + 1, k + 1), d = P_(i, k + 1);
+            V3 m = (a + b + c + d) * 0.25;
+            double x = m.x, zb = bottom(x), zt = top(x), zbelt = belt(x);
+            V3 fn = nrm(i, k) + nrm(i + 1, k + 1);
+            fn = fn.norm();
+            MeshBuf *mb = &P;
+            Col col = w;
+            bool upper = m.z > zbelt + 0.03 && m.z < zt - 0.04;
+            bool cabin = x > -2.1 && x < 1.12;
+            bool pillar = std::abs(x - 1.1) < 0.06 || std::abs(x + 0.35) < 0.05 || std::abs(x + 1.55) < 0.12;
+            if (upper && cabin && !(std::abs(fn.z) > 0.85 && x < 0.3 && x > -1.5) && !(pillar && std::abs(fn.y) > 0.5)) mb = &G;
+            else if (m.z < zb + 0.12 || (x > 2.12 && m.z < 0.55) || (x < -2.15 && m.z < 0.6)) mb = &D, col = {0.35f, 0.35f, 0.37f, 1};
+            else if (x > 2.08 && m.z > 0.66 && m.z < 0.84 && std::abs(m.y) > 0.42) mb = &Lm;
+            else if (x < -2.12 && m.z > 0.86 && m.z < 1.05 && std::abs(m.y) > 0.45) mb = &D, col = {0.75f, 0.06f, 0.05f, 1};
+            else if (x > 2.15 && m.z > 0.5 && m.z < 0.66 && std::abs(m.y) < 0.45) mb = &D, col = {0.12f, 0.12f, 0.13f, 1};
+            (void)zt;
+            int ia = mb->v(a, nrm(i, k), a.x / 2, a.z / 2, col), ib = mb->v(b, nrm(i + 1, k), b.x / 2, b.z / 2, col);
+            int ic = mb->v(c, nrm(i + 1, k + 1), c.x / 2, c.z / 2, col), id = mb->v(d, nrm(i, k + 1), d.x / 2, d.z / 2, col);
+            // outward facing: section points run counter-clockwise seen from +x
+            mb->tri(ia, id, ic);
+            mb->tri(ia, ic, ib);
+        }
+    // end caps
+    for (int e = 0; e < 2; e++) {
+        int i = e == 0 ? 0 : NX;
+        V3 ctr;
+        for (int k = 0; k < NS; k++) ctr = ctr + P_(i, k);
+        ctr = ctr * (1.0 / NS);
+        V3 n(e == 0 ? -1 : 1, 0, 0);
+        int ci = D.v(ctr, n, 0, 0, Col{0.3f, 0.3f, 0.32f, 1});
+        for (int k = 0; k < NS; k++) {
+            int a = D.v(P_(i, k), n, 0, 0, Col{0.3f, 0.3f, 0.32f, 1}), b = D.v(P_(i, k + 1), n, 0, 0, Col{0.3f, 0.3f, 0.32f, 1});
+            if (e == 0) D.tri(ci, a, b);
+            else D.tri(ci, b, a);
+        }
+    }
+    // mirrors
+    for (double y : {-1.0, 1.0}) P.obox({0.95, y * 0.97}, 0, 0.2, 0.14, 1.02, 1.13, w);
+    // roof rails
+    for (double y : {-0.58, 0.58}) D.obox({-0.55, y}, 0, 2.0, 0.05, 1.6, 1.64, Col{0.2f, 0.2f, 0.21f, 1});
+    // wheels: tyre, sidewall and rim
+    for (double x : WX)
         for (double y : {-0.78, 0.78}) {
             if (!with_wheels) continue;
             int base = (int)T.verts();
-            int seg = 14;
-            double r = 0.31, half = 0.1;
+            int seg = 20;
+            double r = 0.33, half = 0.115;
             for (int i = 0; i <= seg; i++) {
                 double a = 2 * PI * i / seg;
                 V3 n(std::cos(a), 0, std::sin(a));
-                T.v({x + std::cos(a) * r, y - half, 0.31 + std::sin(a) * r}, n, 0, 0, w);
-                T.v({x + std::cos(a) * r, y + half, 0.31 + std::sin(a) * r}, n, 0, 0, w);
+                T.v({x + std::cos(a) * r, y - half, 0.33 + std::sin(a) * r}, n, 0, 0, w);
+                T.v({x + std::cos(a) * r, y + half, 0.33 + std::sin(a) * r}, n, 0, 0, w);
             }
             for (int i = 0; i < seg; i++) {
                 int a0 = base + i * 2;
@@ -248,21 +314,17 @@ MeshSet car(bool with_wheels) {
                 T.tri(a0, a0 + 1, a0 + 3);
             }
             double ys = y > 0 ? y + half : y - half;
-            int ci = D.v({x, ys, 0.31}, {0, y > 0 ? 1.0 : -1.0, 0}, 0, 0, Col{0.6f, 0.6f, 0.62f, 1});
+            double sgn = y > 0 ? 1.0 : -1.0;
+            Col rim{0.72f, 0.73f, 0.75f, 1};
+            int ci = D.v({x, ys, 0.33}, {0, sgn, 0}, 0, 0, rim);
             for (int i = 0; i < seg; i++) {
                 double a0 = 2 * PI * i / seg, a1 = 2 * PI * (i + 1) / seg;
-                int p = D.v({x + std::cos(a0) * r * 0.65, ys, 0.31 + std::sin(a0) * r * 0.65}, {0, y > 0 ? 1.0 : -1.0, 0}, 0, 0, Col{0.6f, 0.6f, 0.62f, 1});
-                int q = D.v({x + std::cos(a1) * r * 0.65, ys, 0.31 + std::sin(a1) * r * 0.65}, {0, y > 0 ? 1.0 : -1.0, 0}, 0, 0, Col{0.6f, 0.6f, 0.62f, 1});
+                int p = D.v({x + std::cos(a0) * r * 0.7, ys, 0.33 + std::sin(a0) * r * 0.7}, {0, sgn, 0}, 0, 0, rim);
+                int q = D.v({x + std::cos(a1) * r * 0.7, ys, 0.33 + std::sin(a1) * r * 0.7}, {0, sgn, 0}, 0, 0, rim);
                 if (y > 0) D.tri(ci, q, p);
                 else D.tri(ci, p, q);
             }
         }
-    // lights and grille
-    for (double y : {-0.6, 0.6}) {
-        Lm.quad({2.24, y - 0.18, 0.62}, {2.24, y + 0.18, 0.62}, {2.21, y + 0.18, 0.76}, {2.21, y - 0.18, 0.76}, {1, 0, 0}, Col{1, 1, 1, 1});
-        D.quad({-2.24, y + 0.16, 0.7}, {-2.24, y - 0.16, 0.7}, {-2.21, y - 0.16, 0.86}, {-2.21, y + 0.16, 0.86}, {-1, 0, 0}, Col{0.7f, 0.05f, 0.04f, 1});
-    }
-    D.quad({2.255, -0.4, 0.4}, {2.255, 0.4, 0.4}, {2.255, 0.4, 0.55}, {2.255, -0.4, 0.55}, {1, 0, 0}, Col{0.15f, 0.15f, 0.16f, 1});
     return ms;
 }
 

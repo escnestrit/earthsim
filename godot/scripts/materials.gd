@@ -101,6 +101,7 @@ func build() -> void:
 	mats[M_ASPHALT] = _orm(T_ASPHALT)
 	mats[M_ASPHALT].uv1_scale = Vector3(1, 1, 1)
 	mats[M_PAVERS] = _orm(T_PAVERS)
+	mats[M_PAVERS].metallic_specular = 0.15
 	mats[M_CURB] = _orm(T_CURB, 1.5)
 	var mk := _plain(Color(0.93, 0.93, 0.9), 0.55)
 	mk.normal_enabled = true

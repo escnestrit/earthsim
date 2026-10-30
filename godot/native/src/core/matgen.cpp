@@ -215,7 +215,7 @@ MatTex material_texture(int kind) {
                     float bevel = smooth(0.0f, 0.012f, edge);
                     float hue = h01(col & 15, row & 31, 51);
                     float n = vnoise(u, v, 128, 52);
-                    float k = 0.62f + 0.12f * hue + 0.06f * n;
+                    float k = 0.46f + 0.1f * hue + 0.05f * n;
                     float rr = hue > 0.85f ? 0.08f : 0;
                     set(f, i, (k + rr) * bevel + 0.25f * (1 - bevel), k * bevel + 0.24f * (1 - bevel), (k - rr * 0.5f) * bevel + 0.22f * (1 - bevel));
                     f.h[i] = bevel * 0.8f + n * 0.1f;

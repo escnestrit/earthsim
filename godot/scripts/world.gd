@@ -113,7 +113,7 @@ func _add_chunk(d: Dictionary) -> void:
 		var am := ArrayMesh.new()
 		for mat in surf:
 			am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surf[mat])
-			am.surface_set_material(am.get_surface_count() - 1, mats.get_mat(mat))
+			am.surface_set_material(am.get_surface_count() - 1, _debug_mat(int(mat)))
 		var mi := MeshInstance3D.new()
 		mi.mesh = am
 		mi.name = "built"
@@ -129,6 +129,14 @@ func _add_chunk(d: Dictionary) -> void:
 	chunks[k] = root
 	full[k] = is_full
 	chunk_added.emit(k.x, k.y, is_full)
+
+var debug_mats := {}
+func _debug_mat(id: int) -> Material:
+	if debug_mats.has(id):
+		var m := StandardMaterial3D.new()
+		m.albedo_color = debug_mats[id]
+		return m
+	return mats.get_mat(id)
 
 func _place(root: Node3D, body: StaticBody3D, kind: int, a: PackedFloat32Array, key: Vector2i) -> void:
 	var count := a.size() / 8

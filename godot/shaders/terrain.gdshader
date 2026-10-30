@@ -69,7 +69,7 @@ void fragment() {
 	NORMAL_MAP_DEPTH = 1.0;
 	AO = orm.r;
 	AO_LIGHT_AFFECT = 0.5;
-	ROUGHNESS = orm.g;
+	ROUGHNESS = max(orm.g, 0.88);
 	METALLIC = 0.0;
-	SPECULAR = 0.2;
+	SPECULAR = 0.12;
 }
