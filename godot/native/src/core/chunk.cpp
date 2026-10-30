@@ -559,7 +559,7 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
                 if (st) {
                     std::string sn = *st;
                     // shorten the usual Russian street words
-                    for (auto [from, to] : std::initializer_list<std::pair<const char *, const char *>>{{"улица ", "ул. "}, {" улица", ""}, {"проспект ", "пр. "}, {" проспект", " пр."}, {"переулок ", "пер. "}, {" переулок", " пер."}, {"бульвар ", "б-р "}, {"площадь ", "пл. "}, {"вуліца ", "вул. "}}) {
+                    for (auto [from, to] : std::initializer_list<std::pair<const char *, const char *>>{{"улица ", "ул. "}, {" улица", ""}, {"проспект ", "пр. "}, {" проспект", " пр."}, {"переулок ", "пер. "}, {" переулок", " пер."}, {"бульвар ", "б-р "}, {"площадь ", "пл. "}, {"вуліца ", "вул. "}, {" вуліца", ""}, {"праспект ", "пр. "}, {"завулак ", "зав. "}, {"плошча ", "пл. "}}) {
                         size_t k = sn.find(from);
                         if (k != std::string::npos) sn.replace(k, strlen(from), to);
                     }

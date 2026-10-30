@@ -69,8 +69,8 @@ struct Ctx {
     // ground low-passed over ~35 m: what roads are laid on. The DEM (about 15-20 m cells, with buildings and
     // trees baked into it in towns) is bumpy at road scale, and roads following it raw drive like waves. Only
     // a function of position, so neighbouring chunks agree where a road crosses between them.
-    double Gs(V2 p) const {
-        static const double R1 = 9, R2 = 18;
+    double Gs(V2 p, double scale = 1) const {
+        const double R1 = 9 * scale, R2 = 18 * scale;
         double sum = G(p) * 4, w = 4;
         for (int k = 0; k < 6; k++) {
             double a = k * PI / 3;

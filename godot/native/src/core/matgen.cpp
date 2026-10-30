@@ -332,7 +332,7 @@ MatTex material_texture(int kind) {
                 case T_ROOF_FLAT: {
                     float seam = std::fmod(v * 4, 1.0f) < 0.012f ? 1.0f : 0.0f;
                     float n = fbm(u, v, 8, 4, 121), sp = h01(x, y, 122);
-                    float g = 0.24f + 0.08f * n + (sp > 0.9f ? 0.08f : 0) + seam * 0.05f;
+                    float g = 0.6f + 0.12f * n + (sp > 0.9f ? 0.1f : 0) + seam * 0.06f;  // neutral: the roof colour tints it
                     set(f, i, g, g * 0.98f, g * 0.96f);
                     f.h[i] = n * 0.3f + seam * 0.5f + (sp > 0.9f ? 0.3f : 0);
                     f.rough[i] = 0.9f;

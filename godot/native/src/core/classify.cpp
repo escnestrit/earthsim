@@ -524,6 +524,16 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
         else bi.roof_shape = "flat";
     } else
         bi.roof_shape = "flat";
+    // flat roofs without a mapped colour: bitumen, gravel, light membranes on big sheds and malls, the odd
+    // green roof; tiled roofs on apartment blocks a muted red or grey rather than one bright red
+    if (!tag(tags, "roof:colour")) {
+        if (bi.roof_shape == "flat") {
+            bool big = area > 1500 && (use == Use::Retail || use == Use::Industrial || use == Use::Office);
+            bi.roof_colour = big ? pick(std::initializer_list<Col>{{0.78f, 0.78f, 0.76f}, {0.62f, 0.63f, 0.64f}, {0.7f, 0.68f, 0.62f}}, seed)
+                                 : pick(std::initializer_list<Col>{{0.42f, 0.41f, 0.4f}, {0.55f, 0.54f, 0.5f}, {0.36f, 0.36f, 0.37f}, {0.6f, 0.57f, 0.5f}, {0.47f, 0.5f, 0.45f}}, seed);
+        } else if (use == Use::Housing)
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.5f, 0.3f, 0.25f}, {0.4f, 0.4f, 0.42f}, {0.45f, 0.26f, 0.22f}, {0.32f, 0.38f, 0.36f}}, seed);
+    }
     double rh;
     if (tag(tags, "roof:height") && parse_num(*tag(tags, "roof:height"), rh) && rh > 0) bi.roof_height = rh;
     // landmark

@@ -260,7 +260,8 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
     }
     // ---- heights: natural ground; bridges arch between their ends
     for (auto &r : roads) {
-        for (auto &q : r.pts) q.z = c.Gs(q.p);
+        // main roads are graded flatter (they were built that way, and drive better for it)
+        for (auto &q : r.pts) q.z = c.Gs(q.p, r.prio >= 6 ? 1.7 : 1.0);
         if (r.bridge) {
             double L = chain_len(r.pts), za = r.pts.front().z, zb = r.pts.back().z;
             // how high it must rise: over roads a lorry's clearance, over water a little, otherwise it follows
@@ -269,23 +270,28 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 double d1 = (b - a).cross(c - a), d2 = (b - a).cross(d - a), d3 = (d - c).cross(a - c), d4 = (d - c).cross(b - c);
                 return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0));
             };
-            bool over_road = false, over_water = false;
+            // where it passes over another road it must clear a lorry (5 m over that road's surface): the rise
+            // is just enough for that, not a fixed hump
+            double R = std::min(L / 2, 45.0);
+            auto sm = [](double x) { x = std::clamp(x, 0.0, 1.0); return x * x * (3 - 2 * x); };
+            std::vector<double> cs(r.pts.size(), 0);
+            for (size_t i = 1; i < r.pts.size(); i++) cs[i] = cs[i - 1] + (r.pts[i].p - r.pts[i - 1].p).len();
+            double amp = std::min(1.0, 0.01 * L);  // otherwise (water, valleys): a gentle camber
             for (auto &o : roads) {
-                if (&o == &r || o.bridge || over_road) continue;
-                for (size_t i = 0; i + 1 < r.pts.size() && !over_road; i += 2)
+                if (&o == &r || o.bridge) continue;
+                for (size_t i = 0; i + 1 < r.pts.size(); i++)
                     for (size_t k = 0; k + 1 < o.pts.size(); k++)
-                        if (seg_x(r.pts[i].p, r.pts[std::min(i + 2, r.pts.size() - 1)].p, o.pts[k].p, o.pts[k + 1].p)) {
-                            over_road = true;
-                            break;
+                        if (seg_x(r.pts[i].p, r.pts[i + 1].p, o.pts[k].p, o.pts[k + 1].p)) {
+                            double sx = (cs[i] + cs[i + 1]) / 2;
+                            double ramp = R > 1e-6 ? sm(sx / R) * sm((L - sx) / R) : 0;
+                            double lin = za + (zb - za) * (L > 0 ? sx / L : 0);
+                            double need = c.Gs((r.pts[i].p + r.pts[i + 1].p) * 0.5) + 5.3 - lin;
+                            if (ramp > 0.15 && need > 0) amp = std::max(amp, std::min(9.0, need / ramp));
                         }
             }
-            (void)over_water;
-            double amp = over_road ? 6.0 * std::max(1, r.layer) : std::min(2.0, 0.02 * L);
-            double R = std::min(L / 2, 45.0);
             double s = 0;
             for (size_t i = 0; i < r.pts.size(); i++) {
                 if (i) s += (r.pts[i].p - r.pts[i - 1].p).len();
-                auto sm = [](double x) { x = std::clamp(x, 0.0, 1.0); return x * x * (3 - 2 * x); };
                 double ramp = R > 1e-6 ? sm(s / R) * sm((L - s) / R) : 0;
                 double lin = za + (zb - za) * (L > 0 ? s / L : 0);
                 // never below the ground under it plus clearance where it should pass over something
@@ -352,14 +358,37 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             r.trim[n.ends[i].start ? 0 : 1] = trim[i];
         }
     }
-    // node heights: mean of the road ends' heights at their trims
+    // node heights: the road ends' heights at their trims, the bigger roads weighing most; then each road is
+    // eased to its junctions' heights over its last 30 m, so junction surfaces are flat and meet the arms
     for (auto &n : nodes) {
-        double z = 0;
+        double z = 0, wsum = 0;
         for (auto &e : n.ends) {
             Road &r = roads[e.road];
-            z += at_chainage(r.pts, r.trim[e.start ? 0 : 1], e.start).z;
+            double w = 1 + r.prio * r.prio;
+            z += w * at_chainage(r.pts, r.trim[e.start ? 0 : 1], e.start).z, wsum += w;
         }
-        n.z = n.ends.empty() ? c.G(n.p) : z / n.ends.size();
+        n.z = n.ends.empty() ? c.G(n.p) : z / wsum;
+    }
+    for (auto &r : roads) {
+        if (r.pts.size() < 2) continue;
+        double L = chain_len(r.pts);
+        std::vector<double> s(r.pts.size(), 0);
+        for (size_t i = 1; i < r.pts.size(); i++) s[i] = s[i - 1] + (r.pts[i].p - r.pts[i - 1].p).len();
+        double d[2] = {0, 0};
+        for (int e = 0; e < 2; e++) {
+            int nd = r.node[e];
+            if (nd < 0 || nodes[nd].ends.size() < 2) continue;
+            d[e] = nodes[nd].z - at_chainage(r.pts, r.trim[e], e == 0).z;
+        }
+        if (d[0] == 0 && d[1] == 0) continue;
+        double R = std::min(30.0, L * 0.5);
+        for (size_t i = 0; i < r.pts.size(); i++) {
+            auto sm = [](double x) { x = std::clamp(x, 0.0, 1.0); return 1 - x * x * (3 - 2 * x); };
+            double w0 = sm((s[i] - r.trim[0]) / R), w1 = sm((L - r.trim[1] - s[i]) / R);
+            if (s[i] < r.trim[0]) w0 = 1;
+            if (L - s[i] < r.trim[1]) w1 = 1;
+            r.pts[i].z += d[0] * w0 + d[1] * w1;
+        }
     }
     auto zoff = [](const Road &r) { return 0.03 + r.prio * 0.004; };
 

@@ -12,6 +12,7 @@ int main() {
     Streamer s(cfg, [](const std::string &, const std::vector<std::string> &, const std::string *, std::string &, int &st, std::string &) { st = 0; return false; });
     s.update(0, 0);
     ChunkResult r;
+    int labels = 0, nlab = 0;
     double hi = 0, lo = 0, ms = 0, coll = 0, grass = 0, inst = 0;
     int n = 0;
     for (int i = 0; i < 500; i++) {
@@ -25,9 +26,11 @@ int main() {
             coll += o.coll.size() * 4.0;
             for (auto &g : o.grass) grass += g.size() * 4.0;
             inst += o.inst.size();
+            labels += o.labels.size();
+            for (auto &l : o.labels) if (nlab++ < 12) printf("label: %s\n", l.text.c_str());
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         if (s.status().find("builds 0 (0 queued)") != std::string::npos && i > 50) break;
     }
-    printf("%d full chunks, per chunk MB: hi %.2f lo %.2f meshes %.2f coll %.2f grass %.2f, inst %.0f\n", n, hi / n / 1e6, lo / n / 1e6, ms / n / 1e6, coll / n / 1e6, grass / n / 1e6, inst / n);
+    printf("%d full chunks, per chunk MB: hi %.2f lo %.2f meshes %.2f coll %.2f grass %.2f, inst %.0f, labels %d\n", n, hi / n / 1e6, lo / n / 1e6, ms / n / 1e6, coll / n / 1e6, grass / n / 1e6, inst / n, labels);
 }
