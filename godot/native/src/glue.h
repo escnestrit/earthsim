@@ -9,4 +9,5 @@ namespace godot {
 // mesh arrays (Mesh::ARRAY_*) in Godot axes, front faces clockwise, with tangents
 Array mesh_arrays(const ec::MeshBuf &m);
 PackedByteArray bytes(const std::vector<uint8_t> &v);
+PackedByteArray bytes_of(const std::string &v);
 }  // namespace godot

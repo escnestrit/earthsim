@@ -73,4 +73,11 @@ PackedByteArray bytes(const std::vector<uint8_t> &v) {
 }
 
 
+PackedByteArray bytes_of(const std::string &v) {
+    PackedByteArray b;
+    b.resize((int64_t)v.size());
+    if (!v.empty()) memcpy(b.ptrw(), v.data(), v.size());
+    return b;
+}
+
 }  // namespace godot

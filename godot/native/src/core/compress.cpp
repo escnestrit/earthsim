@@ -4,7 +4,7 @@
 
 namespace ec {
 
-static bool inflate_raw(const unsigned char *p, size_t n, std::string &out) {
+static bool inflate_raw_p(const unsigned char *p, size_t n, std::string &out) {
     tinfl_decompressor d;
     tinfl_init(&d);
     out.clear();
@@ -43,10 +43,15 @@ bool inflate_any(const std::string &in, std::string &out) {
         }
         if (flg & 2) i += 2;
         if (i >= n) return false;
-        return inflate_raw(p + i, n - i - 8, out);
+        return inflate_raw_p(p + i, n - i - 8, out);
     }
-    if (n >= 2 && (p[0] & 0x0f) == 8 && ((p[0] << 8) | p[1]) % 31 == 0) return inflate_raw(p + 2, n - 2, out);
-    return inflate_raw(p, n, out);
+    if (n >= 2 && (p[0] & 0x0f) == 8 && ((p[0] << 8) | p[1]) % 31 == 0) return inflate_raw_p(p + 2, n - 2, out);
+    return inflate_raw_p(p, n, out);
+}
+
+bool inflate_raw(const std::string &in, std::string &out, size_t expect) {
+    out.reserve(expect);
+    return inflate_raw_p((const unsigned char *)in.data(), in.size(), out);
 }
 
 }  // namespace ec

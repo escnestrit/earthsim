@@ -4,7 +4,13 @@
 extends Node3D
 
 var world: EarthWorld
-var car: EarthCar
+var car: Node3D          # EarthCar (built-in) or EarthJCar (a BeamNG vehicle)
+var builtin_car: EarthCar
+var jcar: EarthJCar
+var vehicles := []
+var vehicle_i := -1
+var car_msg := ""
+var car_msg_t := 0.0
 var spawn := Vector3.ZERO
 var spawn_yaw := 0.0
 var cam_grounded := false
@@ -162,6 +168,20 @@ func _setup_car() -> void:
 	wheel.radial_segments = 24
 	wheel.material = world.mats.get_mat(EarthMaterials.M_TIRE)
 	car.setup(world.stream, EarthCore.model(4, 1), mats, wheel)
+	builtin_car = car
+	# BeamNG vehicles the player owns: a mods folder next to the game, and BeamNG.drive's own folder
+	var dirs := PackedStringArray([OS.get_executable_path().get_base_dir().path_join("mods")])
+	if args.has("mods"):
+		dirs.append(args["mods"])
+	vehicles = EarthJCar.find_vehicles(dirs)
+	if args.has("car"):
+		var want: String = args["car"]
+		for i in vehicles.size():
+			if vehicles[i]["name"] == want or vehicles[i]["path"] == want:
+				_load_vehicle(i)
+		if vehicle_i < 0 and FileAccess.file_exists(want):
+			vehicles.append({"path": want, "name": want.get_file().get_basename()})
+			_load_vehicle(vehicles.size() - 1)
 	spawn = Vector3(float(args.get("x", "0")), 0, float(args.get("z", "0")))
 	spawn_yaw = deg_to_rad(float(args.get("yaw", "0")))
 	cam = Camera3D.new()
@@ -170,6 +190,67 @@ func _setup_car() -> void:
 	cam.fov = 70.0
 	add_child(cam)
 	cam.make_current()
+
+func _load_vehicle(i: int) -> void:
+	if jcar:
+		jcar.queue_free()
+		jcar = null
+	vehicle_i = i
+	if i < 0 or i >= vehicles.size():
+		return
+	jcar = EarthJCar.new()
+	jcar.name = "JCar"
+	add_child(jcar)
+	jcar.load(world.stream, vehicles[i]["path"])
+	_say("Загрузка: " + vehicles[i]["name"] + "…")
+
+func _say(t: String) -> void:
+	car_msg = t
+	car_msg_t = 6.0
+	print(t)
+
+func _poll_vehicle() -> void:
+	if jcar == null or car == jcar:
+		return
+	var st: String = jcar.poll()
+	if st == "ready":
+		# swap in where the built-in car is (or at the spawn road)
+		var p: Vector3 = builtin_car.global_position if spawn_ready else spawn
+		var f: Vector3 = builtin_car.forward()
+		var r: Dictionary = world.stream.nearest_road(p, 60.0)
+		var pos: Vector3 = r["pos"] if not r.is_empty() else p
+		var yaw: float = r["yaw"] if not r.is_empty() else atan2(-f.z, f.x)
+		if world.stream.collision_ready(pos) and jcar.place(pos, yaw):
+			car = jcar
+			builtin_car.visible = false
+			builtin_car.process_mode = Node.PROCESS_MODE_DISABLED
+			spawn_ready = true
+			_say(vehicles[vehicle_i]["name"] + " загружен.\n" + jcar.notes())
+			if args.has("auto"):
+				var a: PackedStringArray = (args["auto"] as String).split(",")
+				jcar.set_auto_input(float(a[0]), float(a[1]) if a.size() > 1 else 0.0, 0.0)
+	elif st.begins_with("error"):
+		_say("Не удалось загрузить " + vehicles[vehicle_i]["name"] + ": " + st)
+		jcar.queue_free()
+		jcar = null
+
+func _next_vehicle() -> void:
+	if vehicles.is_empty():
+		_say("Машины BeamNG не найдены (папка mods рядом с игрой или установленный BeamNG.drive)")
+		return
+	if car == jcar and jcar:
+		car = builtin_car
+		builtin_car.visible = true
+		builtin_car.process_mode = Node.PROCESS_MODE_INHERIT
+	var n := vehicle_i + 1
+	if n >= vehicles.size():
+		if jcar:
+			jcar.queue_free()
+			jcar = null
+		vehicle_i = -1
+		_say("Встроенная машина")
+		return
+	_load_vehicle(n)
 
 func _setup_hud() -> void:
 	var cl := CanvasLayer.new()
@@ -181,7 +262,7 @@ func _setup_hud() -> void:
 	hud.add_theme_constant_override("outline_size", 4)
 	cl.add_child(hud)
 	help = Label.new()
-	help.text = "WASD / стрелки — ехать, Space — ручник, R — поставить на колёса, C — камера, T — время суток, G — GI вкл/выкл, F1 — помощь"
+	help.text = "WASD / стрелки — ехать, Space — ручник, R — поставить на колёса, C — камера, V — машина BeamNG, T — время суток, G — GI вкл/выкл, F1 — помощь"
 	help.add_theme_font_size_override("font_size", 14)
 	help.add_theme_color_override("font_outline_color", Color.BLACK)
 	help.add_theme_constant_override("outline_size", 4)
@@ -196,6 +277,8 @@ func _on_chunk(_cx: int, _cy: int, _full: bool) -> void:
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
+			KEY_V:
+				_next_vehicle()
 			KEY_R:
 				car.reset()
 			KEY_C:
@@ -219,6 +302,8 @@ func _unhandled_input(e: InputEvent) -> void:
 
 func _process(dt: float) -> void:
 	t_since += dt
+	_poll_vehicle()
+	car_msg_t -= dt
 	if not spawn_ready and world.stream.collision_ready(spawn):
 		var r: Dictionary = world.stream.nearest_road(spawn, 400.0)
 		if not r.is_empty():
@@ -240,6 +325,8 @@ func _process(dt: float) -> void:
 	var gear_s: String = "R" if car.gear() < 0 else str(car.gear())
 	hud.text = "%d км/ч   передача %s   %d об/мин\n%.5f, %.5f   %02d:%02d   FPS %d\n%s" % [
 		roundi(car.speed_kmh()), gear_s, roundi(car.rpm()), ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60), roundi(fps_acc), world.stream.status()]
+	if car_msg_t > 0.0:
+		hud.text += "\n" + car_msg
 	if shot_t > 0.0 and int(t_since / 5.0) != int((t_since - dt) / 5.0):
 		print("t=%.0f fps=%d car %s %.0f km/h dmg %.2f | %s" % [t_since, fps_acc, car.global_position, car.speed_kmh(), car.damage(), world.stream.status()])
 	if shot_t > 0.0 and t_since > shot_t:
@@ -269,7 +356,7 @@ func _update_camera(dt: float) -> void:
 		cam.look_at(free_pos + f, Vector3.UP)
 		return
 	var tr := car.global_transform
-	var fwd := car.forward()
+	var fwd: Vector3 = car.forward()
 	fwd.y = 0
 	if fwd.length() < 0.1:
 		fwd = Vector3.FORWARD
@@ -278,9 +365,9 @@ func _update_camera(dt: float) -> void:
 		cam.global_position = tr * car.eye()
 		cam.global_basis = tr.basis * Basis(Vector3.UP, -PI / 2) * Basis(Vector3.RIGHT, -0.08)
 		return
-	var back := fwd.rotated(Vector3.UP, cam_yaw)
-	var target := (car.global_position if spawn_ready else spawn) + Vector3(0, 1.3, 0)
-	var want := target - back * cam_dist * cos(cam_pitch) + Vector3(0, cam_dist * sin(cam_pitch), 0)
+	var back: Vector3 = fwd.rotated(Vector3.UP, cam_yaw)
+	var target: Vector3 = (car.global_position if spawn_ready else spawn) + Vector3(0, 1.3, 0)
+	var want: Vector3 = target - back * cam_dist * cos(cam_pitch) + Vector3(0, cam_dist * sin(cam_pitch), 0)
 	var g := world.ground(want.x, want.z)
 	if not is_nan(g):
 		want.y = maxf(want.y, g + 0.6)

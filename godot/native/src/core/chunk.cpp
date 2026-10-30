@@ -696,7 +696,7 @@ ChunkOut build_chunk(int cx, int cy, const std::vector<std::shared_ptr<const Raw
         return V3(-dx / (2 * g.cell), -dy / (2 * g.cell), 1).norm();
     };
     for (int lod = 0; lod < 2; lod++) {
-        int step = lod == 0 ? 1 : 4;
+        int step = lod == 0 ? 2 : 8;
         MeshBuf &m = lod == 0 ? out.terrain_hi : out.terrain_lo;
         int n = GRID_N / step;
         for (int j = 0; j <= n; j++)

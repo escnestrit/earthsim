@@ -116,12 +116,12 @@ func _add_chunk(d: Dictionary) -> void:
 	var tmat := mats.terrain_material(d["splat0"], d["splat1"], d["splat_n"])
 	if is_full:
 		var hi := _mesh_instance(d["terrain_hi"], tmat, "terrain_hi")
-		hi.visibility_range_end = 900.0
+		hi.visibility_range_end = 600.0
 		hi.visibility_range_end_margin = 60.0
 		hi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
 		root.add_child(hi)
 		var lo := _mesh_instance(d["terrain_lo"], tmat, "terrain_lo")
-		lo.visibility_range_begin = 900.0
+		lo.visibility_range_begin = 600.0
 		lo.visibility_range_begin_margin = 60.0
 		lo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(lo)

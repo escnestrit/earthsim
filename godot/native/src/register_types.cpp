@@ -5,6 +5,7 @@
 #include "earth_core.h"
 #include "earth_stream.h"
 #include "earth_car.h"
+#include "earth_jcar.h"
 
 using namespace godot;
 
@@ -13,6 +14,7 @@ void initialize_earthcore(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(EarthCore);
     GDREGISTER_CLASS(EarthStream);
     GDREGISTER_CLASS(EarthCar);
+    GDREGISTER_CLASS(EarthJCar);
 }
 
 void uninitialize_earthcore(ModuleInitializationLevel p_level) {}
