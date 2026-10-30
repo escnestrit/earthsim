@@ -81,7 +81,11 @@ func _setup_env() -> void:
 	sm.ground_color = Color(0.25, 0.25, 0.22)
 	sm.energy_multiplier = 1.0
 	sky.sky_material = sm
-	if RenderingServer.get_current_rendering_method() == "gl_compatibility" or args.has("procsky"):
+	if not args.has("physsky"):
+		var shm := ShaderMaterial.new()
+		shm.shader = load("res://shaders/sky.gdshader")
+		sky.sky_material = shm
+	elif args.has("procsky"):
 		var ps := ProceduralSkyMaterial.new()
 		ps.sky_top_color = Color(0.25, 0.45, 0.8)
 		ps.sky_horizon_color = Color(0.7, 0.78, 0.88)
