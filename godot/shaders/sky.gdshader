@@ -3,7 +3,7 @@
 shader_type sky;
 render_mode use_debanding;
 
-uniform vec3 zenith : source_color = vec3(0.16, 0.36, 0.78);
+uniform vec3 zenith : source_color = vec3(0.2, 0.38, 0.72);
 uniform vec3 horizon : source_color = vec3(0.68, 0.79, 0.92);
 uniform vec3 ground_col : source_color = vec3(0.27, 0.28, 0.27);
 uniform float cloud_cover : hint_range(0.0, 1.0) = 0.45;
