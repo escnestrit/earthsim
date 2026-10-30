@@ -96,7 +96,7 @@ std::string infer_class(const Tags &t, const Ring &ring, double area) {
         if (contains_any(name, {"больниц", "поликлин", "госпитал", "hospital", "clinic", "медицин"})) return "hospital";
         if (contains_any(name, {"церк", "храм", "собор", "костёл", "костел", "часовн", "church", "cathedral", "chapel"})) return "religious";
         if (contains_any(name, {"театр", "музей", "дворец", "библиотек", "кинотеатр", "вокзал", "филармон", "цирк", "theatre", "museum", "station", "library", "palace"})) return "civic";
-        if (contains_any(name, {"памятник", "монумент", "обелиск", "мемориал", "monument", "memorial", "obelisk"})) return "monument";
+        if (contains_any(name, {"памятник", "монумент", "обелиск", "мемориал", "стела", "манумент", "помнік", "стэла", "пам'ятник", "monument", "memorial", "obelisk", "statue", "denkmal", "mémorial", "monumento", "pomnik"})) return "monument";
         if (contains_any(name, {"завод", "фабрик", "комбинат", "factory", "plant", "склад", "warehouse"})) return "industrial";
         if (contains_any(name, {"гараж", "garage"})) return "garages";
         if (contains_any(name, {"стадион", "арена", "спорт", "бассейн", "stadium", "arena", "sport"})) return "civic";

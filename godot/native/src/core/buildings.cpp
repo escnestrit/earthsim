@@ -431,6 +431,26 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
         monument(b, ms, coll);
         return;
     }
+    if (bi.use == Use::Monument && bi.part) {
+        // a piece of a monument: dressed stone, and a slender top piece ends in a pyramidion
+        const Ring &o = b.rings[0];
+        double ar = std::abs(signed_area(o));
+        double z0 = bi.min_height > 0.1 ? b.base + bi.min_height : b.base - 0.5, z1 = b.base + bi.height;
+        Col stone = hash01(bi.seed, 7) < 0.6 ? Col{0.78f, 0.76f, 0.72f, 1} : Col{0.45f, 0.4f, 0.38f, 1};
+        walls(b.rings, z0, z1, b.base, M_CONCRETE, stone, 3, bi.seed, ms, coll);
+        bool slender = (z1 - z0) > 3 * std::sqrt(std::max(ar, 0.5));
+        if (slender && o.size() >= 3) {
+            V2 cc = centroid(o);
+            double tip = std::sqrt(ar) * 0.9;
+            for (size_t i = 0; i < o.size(); i++) {
+                V2 a = o[i], e = o[(i + 1) % o.size()];
+                ms[M_CONCRETE].quadn(V3(a.x, a.y, z1), V3(e.x, e.y, z1), V3(cc.x, cc.y, z1 + tip), V3(cc.x, cc.y, z1 + tip), stone);
+            }
+        } else
+            flat_cap(b.rings, z1, true, M_CONCRETE, stone, ms, &coll);
+        if (bi.min_height > 0.1) flat_cap(b.rings, z0, false, M_CONCRETE, mul(stone, 0.8f), ms, nullptr);
+        return;
+    }
     const Ring &outer = b.rings[0];
     double area = ring_area(outer);
     double base = b.base;

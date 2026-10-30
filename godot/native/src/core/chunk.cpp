@@ -587,6 +587,11 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
             if (!b.b->part && point_in_poly(p->ctr, b.rings) && (!host || b.area < host->area)) host = &b;
         for (auto &q : (host ? host->rings[0] : p->rings[0])) gmin = std::min(gmin, c.ground(q));
         g.base = gmin;
+        // parts of a monument (an obelisk drawn as base and shaft parts) are stone, not floors with windows
+        if (host) {
+            double ha = std::abs(signed_area(host->rings[0]));
+            if (use_of(host->b->tags) == Use::Monument || infer_class(host->b->tags, host->rings[0], ha) == "monument") g.info.use = Use::Monument;
+        }
         build_building(g, c.out.ms, c.out.coll);
         c.out.buildings++;
     }

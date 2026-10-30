@@ -27,6 +27,7 @@ struct RawRoad {
     double width = 6.5;
     bool width_from_data = false;
     bool bridge = false;
+    bool tunnel = false;  // runs below ground (cut and cover / underpass)
     int oneway = 0;  // 1 along, -1 against
     int layer = 0;
     int speed = 0;  // km/h from the data, 0 unknown

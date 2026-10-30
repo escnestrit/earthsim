@@ -23,7 +23,7 @@ struct Road {
     double hw = 3;   // carriageway half width
     double sw = 0;   // sidewalk width (0: none)
     double sws[2] = {0, 0};  // per side (left, right): out to the facades where buildings line the street
-    bool bridge = false, urban = false;
+    bool bridge = false, urban = false, tunnel = false;
     int oneway = 0, layer = 0, prio = 0;
     int lanes = 2;
     std::string name;
@@ -131,6 +131,8 @@ std::vector<V2> bezier(V2 a, V2 c, V2 b, int n) {
     return o;
 }
 
+Col mul_col(Col c, float k) { return {c.r * k, c.g * k, c.b * k, c.a}; }
+
 Col asphalt_col(const Road &r) {
     // older, greyer surfaces on minor roads
     float k = r.prio >= 5 ? 0.92f : r.prio >= 3 ? 1.0f : 1.06f;
@@ -164,6 +166,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             r.cls = rr.cls;
             r.hw = std::clamp(rr.width, 3.0, 40.0) / 2;
             r.bridge = rr.bridge;
+            r.tunnel = rr.tunnel && !rr.bridge;
             r.oneway = rr.oneway;
             r.name = rr.name;
             r.speed = rr.speed;
@@ -171,7 +174,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             r.prio = prio_of(rr.cls);
             r.urban = urban;
             r.lanes = std::max(1, (int)std::lround(r.hw * 2 / 3.3));
-            if (urban && wants_sidewalk(rr.cls) && !rr.bridge) r.sw = r.prio >= 6 ? 4.5 : r.prio >= 5 ? 3.5 : 3.0;
+            if (urban && wants_sidewalk(rr.cls) && !rr.bridge && !rr.tunnel) r.sw = r.prio >= 6 ? 4.5 : r.prio >= 5 ? 3.5 : 3.0;
             // densify at <= 3 m per piece; dashes on alternate sub-segments
             std::vector<size_t> orig;
             for (size_t i = 0; i < p.size(); i++) {
@@ -297,6 +300,19 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 double lin = za + (zb - za) * (L > 0 ? s / L : 0);
                 // never below the ground under it plus clearance where it should pass over something
                 r.pts[i].z = lin + amp * ramp;
+            }
+        }
+        if (r.tunnel) {
+            // down under whatever is above: up to 6.5 m below the line between the portals, eased in over 50 m
+            double L = chain_len(r.pts), za = r.pts.front().z, zb = r.pts.back().z;
+            double R = std::min(L / 2, 50.0), s = 0;
+            // short "tunnels" are passages through buildings and the like: they stay level
+            double depth = L < 70 ? 0.0 : std::min(6.5, 3.0 + (L - 70) * 0.1);
+            auto sm = [](double x) { x = std::clamp(x, 0.0, 1.0); return x * x * (3 - 2 * x); };
+            for (size_t i = 0; i < r.pts.size(); i++) {
+                if (i) s += (r.pts[i].p - r.pts[i - 1].p).len();
+                double ramp = R > 1e-6 ? sm(s / R) * sm((L - s) / R) : 0;
+                r.pts[i].z = za + (zb - za) * (L > 0 ? s / L : 0) - depth * ramp;
             }
         }
     }
@@ -457,10 +473,11 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             size_t q = (size_t)j * N + i;
             if (w > bw[q] + 1e-6 || (std::abs(w - bw[q]) <= 1e-6 && d < bd[q])) bw[q] = (float)w, bt[q] = (float)t, bd[q] = (float)d;
         };
-        const double FALL = 7;
+        const double FALL_ROAD = 7, FALL = FALL_ROAD;
         for (auto &r : roads) {
             if (r.bridge) continue;
-            double core = r.hw + r.sw + 0.8;
+            double core = r.tunnel ? r.hw + 0.4 : r.hw + r.sw + 0.8;
+            const double FALL = r.tunnel ? 0.6 : FALL_ROAD;
             for (size_t i = 0; i + 1 < r.pts.size(); i++) {
                 V2 a = r.pts[i].p, b = r.pts[i + 1].p;
                 double R = core + FALL;
@@ -642,7 +659,40 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 }
             }
         };
-        if (!r0.bridge) {
+        if (r0.tunnel) {
+            strip(AS, -r0.hw, r0.hw, zo, zo, ac, true, 4);
+            // retaining walls up to the natural ground; a concrete roof where it is deep enough to be covered
+            Col wc{0.66f, 0.65f, 0.62f, 1}, rc{0.6f, 0.6f, 0.58f, 1};
+            for (size_t i = 0; i + 1 < P.size(); i++) {
+                if (!c.own((pp[i] + pp[i + 1]) * 0.5)) continue;
+                double g0 = c.Gs(pp[i]), g1 = c.Gs(pp[i + 1]);
+                double d0 = g0 - P[i].z, d1 = g1 - P[i + 1].z;
+                if (d0 < 0.3 && d1 < 0.3) continue;
+                for (int side : {1, -1}) {
+                    double o = side * (r0.hw + 0.3);
+                    V3 a = Q(i, o, 0), b = Q(i + 1, o, 0);
+                    V3 a1(a.x, a.y, std::max(a.z, g0 + 0.3)), b1(b.x, b.y, std::max(b.z, g1 + 0.3));
+                    if (side > 0) CO.quadn(b, a, a1, b1, wc), c.tri_coll(b, a, a1), c.tri_coll(b, a1, b1);
+                    else CO.quadn(a, b, b1, a1, wc), c.tri_coll(a, b, b1), c.tri_coll(a, b1, a1);
+                    // the wall's cap
+                    V3 o0 = Q(i, o + side * 0.4, 0), o1 = Q(i + 1, o + side * 0.4, 0);
+                    V3 c0(o0.x, o0.y, a1.z), c1(o1.x, o1.y, b1.z);
+                    if (side > 0) CO.quadn(a1, b1, c1, c0, mul_col(wc, 1.05f));
+                    else CO.quadn(b1, a1, c0, c1, mul_col(wc, 1.05f));
+                }
+                if (d0 > 5.0 && d1 > 5.0) {
+                    double w = r0.hw + 0.7;
+                    V3 l0 = Q(i, w, 0), l1 = Q(i + 1, w, 0), r0p = Q(i, -w, 0), r1 = Q(i + 1, -w, 0);
+                    V3 t0(l0.x, l0.y, g0 + 0.3), t1(l1.x, l1.y, g1 + 0.3), u0(r0p.x, r0p.y, g0 + 0.3), u1(r1.x, r1.y, g1 + 0.3);
+                    // top (walkable/drivable) and the dark ceiling below
+                    CO.quadn(u0, u1, t1, t0, rc);
+                    c.tri_coll(u0, u1, t1);
+                    c.tri_coll(u0, t1, t0);
+                    V3 dn(0, 0, -0.5);
+                    c.out.ms[M_DARK].quadn(t0 + dn, t1 + dn, u1 + dn, u0 + dn, Col{1, 1, 1, 1});
+                }
+            }
+        } else if (!r0.bridge) {
             strip(AS, -r0.hw, r0.hw, zo, zo, ac, true, 4);
         } else {
             // deck: wider by the parapets, slab under it, parapet walls
@@ -692,7 +742,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
         }
         // sidewalks: kerb face, kerb stone, paving, back face down into the ground
         // central reservation on median sides: kerb, a strip out to the middle of the gap, guard rail on fast roads
-        if (!r0.bridge)
+        if (!r0.bridge && !r0.tunnel)
             for (int side : {1, -1}) {
                 double gap = med[r0i][side > 0 ? 0 : 1];
                 if (gap < 0) continue;
@@ -828,7 +878,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             }
         }
         // cars parked along the kerb of town streets wide enough for it (not near junctions or crossings)
-        if (r0.urban && !r0.bridge && r0.prio >= 2 && r0.prio <= 5 && r0.hw >= 5.5 && s.back() > 40) {
+        if (r0.urban && !r0.bridge && !r0.tunnel && r0.prio >= 2 && r0.prio <= 5 && r0.hw >= 5.5 && s.back() > 40) {
             static const Col PC[] = {{0.85f, 0.85f, 0.86f, 1}, {0.08f, 0.08f, 0.09f, 1}, {0.45f, 0.47f, 0.5f, 1}, {0.7f, 0.72f, 0.75f, 1}, {0.55f, 0.08f, 0.07f, 1},
                                      {0.1f, 0.2f, 0.45f, 1},    {0.95f, 0.95f, 0.95f, 1}, {0.2f, 0.32f, 0.22f, 1}, {0.6f, 0.5f, 0.35f, 1}, {0.3f, 0.3f, 0.32f, 1}};
             for (int side : {-1, 1}) {
@@ -854,7 +904,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
         }
         // advertising billboards beside main roads: 6 x 3 m boards on a post (half digital, half posters),
         // about every 220 m where there is room behind the pavement
-        if (r0.prio >= 5 && !r0.bridge && s.back() > 80) {
+        if (r0.prio >= 5 && !r0.bridge && !r0.tunnel && s.back() > 80) {
             uint64_t hs = (uint64_t)std::llround(pp[0].x * 3.1) * 2654435761ull ^ (uint64_t)std::llround(pp[0].y * 2.7) * 40503ull;
             double first = 60 + std::fmod((double)(hs % 1000), 160.0);
             for (double sp = first; sp < s.back() - 30; sp += 220) {

@@ -450,7 +450,8 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
             if (f.str("subtype") != "road") continue;
             std::string cls = f.str("class"), sub = f.str("subclass");
             std::string flags = f.str("road_flags");
-            if (whole_flag(flags, "is_tunnel") || whole_flag(flags, "is_underground")) continue;
+            if (whole_flag(flags, "is_underground")) continue;
+            bool whole_tunnel = whole_flag(flags, "is_tunnel");
             bool whole_bridge = whole_flag(flags, "is_bridge");
             static const std::set<std::string> pathc = {"footway", "pedestrian", "path", "cycleway", "steps", "track", "bridleway", "sidewalk", "crosswalk"};
             // bridges and tunnels over part of a segment ("between" fractions of its length): split there. The
@@ -499,11 +500,11 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                         else pieces.push_back({pc, st});
                     }
                 } else
-                    pieces.push_back({full, whole_bridge ? 1 : 0});
+                    pieces.push_back({full, whole_tunnel ? 2 : whole_bridge ? 1 : 0});
                 for (auto &[pts, state] : pieces)
                 for (auto [s, e] : clip_runs_ll(pts, eb)) {
-                    if (state == 2) continue;  // tunnels: not drawn (the terrain stays closed over them)
-                    bool bridge = state == 1;
+                    if (state == 2 && pathc.count(cls)) continue;  // footway tunnels: not drawn
+                    bool bridge = state == 1, tunnel = state == 2;
                     std::vector<LL> run(pts.begin() + s, pts.begin() + e + 1);
                     if (pathc.count(cls)) {
                         // pavements and crossings are drawn with the roads
@@ -526,6 +527,7 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                     r.cls = hw;
                     r.width = w;
                     r.bridge = bridge;
+                    r.tunnel = tunnel;
                     r.oneway = oneway_of(f.str("access_restrictions"));
                     if (hw == "motorway" || hw == "motorway_link") r.oneway = r.oneway ? r.oneway : 1;
                     r.name = f.str("@name");
@@ -544,8 +546,8 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                         };
                         double lv = whole_num(f.str("level_rules"), "value", nullptr);
                         if (!std::isnan(lv)) {
-                            if (lv < 0) continue;  // underground (garages, underpasses)
-                            r.layer = (int)lv;
+                            if (lv < 0 && !tunnel) continue;  // underground garages and the like
+                            r.layer = (int)std::max(0.0, lv);
                         }
                         double sp = whole_num(f.str("speed_limits"), "max_speed", "value");
                         if (!std::isnan(sp)) r.speed = (int)sp;
