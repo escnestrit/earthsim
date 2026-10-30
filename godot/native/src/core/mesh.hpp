@@ -42,7 +42,7 @@ enum Mat : int {
     M_FACADE = 100,  // + style * 3 + variant
 };
 
-constexpr int FACADE_STYLES = 13;
+constexpr int FACADE_STYLES = 20;
 inline int facade_mat(int style, int variant) { return M_FACADE + style * 3 + variant; }
 
 struct Col {

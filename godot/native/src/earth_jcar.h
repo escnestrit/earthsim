@@ -68,6 +68,8 @@ private:
         bool intact = true;
     } snap_;
     ec::V3 rest_com_;
+    // per node: neighbours by beam and their rest offsets (Godot axes), for the bones' rotations
+    std::vector<std::vector<std::pair<int, Vector3>>> nbr_;
     Skeleton3D *skel_ = nullptr;
     std::vector<MeshInstance3D *> wheel_mi_;
     std::vector<int> wheel_of_mi_;

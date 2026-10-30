@@ -123,6 +123,39 @@ Px stone_slab(float x, float y, int bx, int by) {
     return mk(v, v * 0.98f, v * 0.95f, 0.5f, 0, 0, WALL_D);
 }
 
+Px ashlar(float x, float y, int bx, int by) {
+    // dressed limestone blocks, fine joints, a slight warmth and wear
+    uint32_t course = (uint32_t)(y / 0.42f);
+    float off = course % 2 == 0 ? 0 : 0.45f;
+    float fx = fract((x + off) / 0.9f), fy = fract(y / 0.42f);
+    bool joint = fy < 0.035f || fx < 0.016f;
+    float v = 0.95f - hsh((uint32_t)((x + off) / 0.9f) + bx * 17, course + by * 23) * 0.07f - hsh((uint32_t)(x * 60), (uint32_t)(y * 60)) * 0.025f;
+    if (joint) return mk(0.78f, 0.76f, 0.72f, 0.9f, 0, 0, 0.22f);
+    return mk(v, v * 0.98f, v * 0.93f, 0.8f, 0, 0, WALL_D);
+}
+Px board_concrete(float x, float y, int bx, int by) {
+    // raw board-marked concrete: horizontal planks, tie holes, streaks
+    float plank = fract(y / 0.15f);
+    float v = 0.86f - hsh((uint32_t)(y / 0.15f) + bx * 3, by) * 0.06f - (plank < 0.05f ? 0.06f : 0) - hsh((uint32_t)(x * 4), (uint32_t)(y * 0.7f)) * 0.05f;
+    bool tie = fract(x / 0.6f) > 0.48f && fract(x / 0.6f) < 0.52f && fract(y / 0.6f) > 0.48f && fract(y / 0.6f) < 0.52f;
+    if (tie) return mk(0.45f, 0.45f, 0.45f, 0.9f, 0, 0, 0.3f);
+    return mk(v, v, v * 0.99f, 0.92f, 0, 0, plank < 0.05f ? 0.16f : WALL_D);
+}
+Px cladding(float x, float y, int bx, int by) {
+    // composite panels of a few tones in an irregular pattern
+    bool joint = fract(x / 1.0f) < 0.012f || fract(y / 0.75f) < 0.016f;
+    float t = hsh((uint32_t)(x / 1.0f) + bx * 41, (uint32_t)(y / 0.75f) + by * 43);
+    float v = t < 0.33f ? 0.95f : t < 0.66f ? 0.8f : 0.66f;
+    if (joint) return mk(0.3f, 0.3f, 0.32f, 0.6f, 0.2f, 0, 0.25f);
+    return mk(v, v, v, 0.4f, 0.35f, 0, WALL_D);
+}
+Px stucco(float x, float y, int, int) {
+    // rough hand-applied render with blotches (adobe, Mediterranean, Middle East)
+    float n = hsh((uint32_t)(x * 25), (uint32_t)(y * 25)) * 0.05f + hsh((uint32_t)(x * 3), (uint32_t)(y * 3)) * 0.06f;
+    float band = y < 0.25f ? 0.85f : 0.97f;
+    return mk(band - n, band - n * 1.1f, band - n * 1.25f, 0.95f, 0, 0, WALL_D);
+}
+
 struct Win {
     float x0, x1, y0, y1;
 };
@@ -136,6 +169,9 @@ struct Style {
     bool arch = false;
     int panes = 2;
     bool doors = false, no_sill = false;
+    bool shutters = false;  // louvred shutters beside each window (Mediterranean, Latin America)
+    bool ac = false;        // air-conditioner boxes under some windows (hot climates)
+    bool lintel = false;    // a stone lintel over the window (brick terraces)
 };
 
 Style st(WallFn w, std::vector<Win> win, float r, float g, float b) {
@@ -150,6 +186,44 @@ Style style(int si, int v) {
     const float D = 0.25f, W = 0.95f, G = 0.33f;
     Style s;
     switch (si) {
+        case 13:  // ashlar stone: Paris, London, Vienna, old town centres
+            if (v == 0) { s = st(ashlar, {{0.95f, 2.05f, 0.55f, 2.75f}}, W, W, W); s.panes = 2; return s; }
+            if (v == 1) { s = st(ashlar, {{0.95f, 2.05f, 0.55f, 2.75f}}, 0.2f, 0.25f, 0.22f); s.shutters = true; return s; }
+            s = st(ashlar, {{0.55f, 1.3f, 0.6f, 2.7f}, {1.7f, 2.45f, 0.6f, 2.7f}}, W, W, W);
+            s.pilaster = 0.25f;
+            return s;
+        case 14:  // shuttered plaster: Mediterranean, Latin America
+            if (v == 0) { s = st(stucco, {{1.0f, 2.0f, 0.6f, 2.6f}}, W, W, W); s.shutters = true; return s; }
+            if (v == 1) { s = st(plaster, {{0.55f, 1.3f, 0.7f, 2.5f}, {1.7f, 2.45f, 0.7f, 2.5f}}, W, W, W); s.shutters = true; return s; }
+            s = st(stucco, {{0.9f, 2.1f, 0.0f, 2.5f}}, 0.35f, 0.25f, 0.18f);
+            s.doors = true, s.shutters = true;
+            return s;
+        case 15:  // brutalist board-marked concrete, deep windows
+            if (v == 0) { s = st(board_concrete, {{0.4f, 2.6f, 1.0f, 2.3f}}, D, D, D); s.panes = 3; return s; }
+            if (v == 1) { s = st(board_concrete, {{0.8f, 2.2f, 0.9f, 2.4f}}, D, D, D); s.loggia = true, s.l0 = 0.05f, s.l1 = 0.85f; return s; }
+            return st(board_concrete, {{0.15f, 2.85f, 1.2f, 2.2f}}, D, D, D);
+        case 16:  // contemporary cladding, irregular windows
+            if (v == 0) { s = st(cladding, {{0.3f, 1.4f, 0.4f, 2.7f}}, D, D, D); s.panes = 1, s.no_sill = true; return s; }
+            if (v == 1) { s = st(cladding, {{1.4f, 2.8f, 0.3f, 2.7f}}, G, G, G); s.panes = 1, s.no_sill = true; return s; }
+            s = st(cladding, {{0.2f, 2.8f, 0.3f, 2.7f}}, G, G, G);
+            s.panes = 4, s.no_sill = true;
+            return s;
+        case 17:  // brick terrace / row house with white sash windows and lintels (UK, US east coast)
+            if (v == 0) { s = st(brick, {{0.95f, 2.05f, 0.6f, 2.6f}}, 0.95f, 0.95f, 0.93f); s.lintel = true; return s; }
+            if (v == 1) { s = st(brick, {{0.5f, 1.3f, 0.6f, 2.6f}, {1.7f, 2.5f, 0.6f, 2.6f}}, 0.95f, 0.95f, 0.93f); s.lintel = true; return s; }
+            s = st(brick, {{0.8f, 2.2f, 0.7f, 2.5f}}, 0.15f, 0.15f, 0.16f);
+            s.lintel = true;
+            return s;
+        case 18:  // hot-climate concrete blocks: render, grilles, air-conditioners (Asia, Middle East, Latin America)
+            if (v == 0) { s = st(plaster, {{0.8f, 2.2f, 0.9f, 2.3f}}, 0.7f, 0.72f, 0.74f); s.ac = true; return s; }
+            if (v == 1) { s = st(tile_panel, {{0.6f, 2.4f, 0.9f, 2.35f}}, 0.7f, 0.72f, 0.74f); s.ac = true; s.loggia = true, s.l0 = 0.05f, s.l1 = 0.95f; return s; }
+            s = st(stucco, {{0.5f, 1.3f, 0.9f, 2.3f}, {1.7f, 2.5f, 0.9f, 2.3f}}, 0.6f, 0.6f, 0.62f);
+            s.ac = true;
+            return s;
+        case 19:  // adobe / stucco with small deep windows (North Africa, Middle East, American southwest)
+            if (v == 0) return st(stucco, {{1.15f, 1.85f, 1.1f, 2.2f}}, 0.35f, 0.25f, 0.18f);
+            if (v == 1) { s = st(stucco, {{1.0f, 2.0f, 0.8f, 2.4f}}, 0.35f, 0.25f, 0.18f); s.arch = true; return s; }
+            return st(stucco, {{0.6f, 1.2f, 1.0f, 2.2f}, {1.8f, 2.4f, 1.0f, 2.2f}}, 0.95f, 0.95f, 0.95f);
         case 12:
             return v == 0 ? st(stone_slab, {}, D, D, D) : v == 1 ? st(panel, {}, D, D, D) : st(brick, {}, D, D, D);
         case 8:
@@ -240,6 +314,22 @@ Px pixel(const Style &s, int px, int py) {
         return p;
     }
     for (auto &w : s.windows) {
+        float ww = w.x1 - w.x0;
+        // shutters: louvred leaves half the window wide on each side, painted
+        if (s.shutters && y >= w.y0 && y <= w.y1 && ((x < w.x0 - 0.08f && x > w.x0 - 0.08f - ww * 0.5f) || (x > w.x1 + 0.08f && x < w.x1 + 0.08f + ww * 0.5f))) {
+            bool slat = fract(y / 0.06f) < 0.3f;
+            float pal[4][3] = {{0.22f, 0.36f, 0.28f}, {0.25f, 0.33f, 0.45f}, {0.42f, 0.28f, 0.2f}, {0.55f, 0.55f, 0.5f}};
+            float *c = pal[(int)(hsh(bx * 11 + 5, 7) * 4) % 4];
+            float k = slat ? 0.75f : 1.0f;
+            return mk(c[0] * k, c[1] * k, c[2] * k, 0.6f, 0, 0, slat ? 0.12f : 0.02f);
+        }
+        // a stone lintel over brick windows
+        if (s.lintel && x >= w.x0 - 0.12f && x <= w.x1 + 0.12f && y > w.y1 + 0.07f && y < w.y1 + 0.27f) return mk(0.88f, 0.86f, 0.8f, 0.8f, 0, 0, 0.02f);
+        // an air-conditioner box under some windows
+        if (s.ac && hsh(bx * 13 + 1, by * 7 + 2) < 0.45f && x > w.x0 + 0.05f && x < w.x0 + 0.85f && y < w.y0 - 0.12f && y > w.y0 - 0.62f) {
+            bool grille = fract(x / 0.05f) < 0.4f && x > w.x0 + 0.45f;
+            return mk(grille ? 0.55f : 0.85f, grille ? 0.55f : 0.85f, grille ? 0.56f : 0.84f, 0.5f, 0.2f, 0, 0.0f);
+        }
         float f = 0.07f, r = (w.x1 - w.x0) / 2, cx = (w.x0 + w.x1) / 2;
         auto in_arch = [&](float pad) {
             float yc = w.y1 - r;

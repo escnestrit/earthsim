@@ -17,6 +17,17 @@ std::vector<Region> regions_at(double lat, double lon) {
     if (in(24, 60, -130, -60)) r.push_back(Region::NorthAmerica);
     if (in(30, 46, 129, 146)) r.push_back(Region::Japan);
     if (in(18, 50, 97, 123)) r.push_back(Region::China);
+    if (in(33, 39, 124, 131)) r.push_back(Region::Korea);
+    if (in(35, 46, -10, 4) || in(36, 47, 6, 19) || in(34, 42, 19, 28) || in(34, 36, 32, 35)) r.push_back(Region::Mediterranean);
+    if (in(54.5, 71, 4, 31) && !in(53, 60, 21, 31)) r.push_back(Region::Scandinavia);
+    if (in(36, 42.2, 26, 45)) r.push_back(Region::Turkey);
+    if (in(-56, 32.7, -118, -34)) r.push_back(Region::LatinAmerica);
+    if (in(12, 38, 34, 63)) r.push_back(Region::MiddleEast);
+    if (in(18, 37.5, -17, 34)) r.push_back(Region::NorthAfrica);
+    if (in(-35, 18, -18, 52)) r.push_back(Region::SubSaharan);
+    if (in(6, 36, 67, 92)) r.push_back(Region::India);
+    if (in(-11, 23, 92, 141) && !in(18, 23, 97, 123)) r.push_back(Region::SouthEastAsia);
+    if (in(-48, -10, 112, 179)) r.push_back(Region::Oceania);
     return r;
 }
 
@@ -226,6 +237,47 @@ const Series CATALOGUE[] = {
      {{0.58f, 0.32f, 0.24f}, {0.68f, 0.44f, 0.32f}, {0.5f, 0.3f, 0.26f}}, 3.0f, Balconies::Railing, 2, 0.5f, StairWin::None, Canopy::None, 0.7f, 0.4f, false, true, 16, 2.9f},
     {"us-glass-tower", {}, {Region::NorthAmerica}, 1960, 2035, 15, 80, 20, 60, Use::Office, fs::GLASS, 0,
      {{0.7f, 0.76f, 0.82f}, {0.6f, 0.66f, 0.7f}, {0.78f, 0.8f, 0.82f}}, 3.6f, Balconies::None, 1, 0, StairWin::None, Canopy::Slab, 1.5f, 1.0f, true, true, 999, 3.0f},
+    // ---- the rest of the world: typical housing stock by region
+    {"paris-stone", {}, {Region::France}, 1850, 1939, 5, 8, 10, 20, Use::Housing, fs::ASHLAR, 0,
+     {{0.93f, 0.89f, 0.8f}, {0.9f, 0.86f, 0.76f}, {0.95f, 0.92f, 0.85f}}, 3.2f, Balconies::Railing, 1, 1.0f, StairWin::None, Canopy::None, 1.0f, 0.4f, false, true, 18, 2.6f},
+    {"med-shutters", {}, {Region::Mediterranean, Region::France}, 1850, 1980, 3, 7, 9, 16, Use::Housing, fs::SHUTTERED, 0,
+     {{0.92f, 0.78f, 0.55f}, {0.88f, 0.62f, 0.45f}, {0.95f, 0.88f, 0.72f}, {0.85f, 0.55f, 0.4f}, {0.94f, 0.92f, 0.86f}}, 3.1f, Balconies::Railing, 1, 1.0f, StairWin::None, Canopy::None, 0.6f, 0.4f, false, true, 14, 3.0f},
+    {"med-polykatoikia", {}, {Region::Mediterranean, Region::Turkey}, 1960, 2035, 4, 8, 10, 16, Use::Housing, fs::PLASTER, 0,
+     {{0.95f, 0.93f, 0.88f}, {0.9f, 0.86f, 0.76f}, {0.88f, 0.84f, 0.8f}}, 3.0f, Balconies::Open, 1, 1.0f, StairWin::None, Canopy::Slab, 0.5f, 0.3f, false, true, 16, 3.0f},
+    {"nordic-render", {}, {Region::Scandinavia}, 1900, 1975, 3, 7, 10, 14, Use::Housing, fs::PLASTER, 1,
+     {{0.92f, 0.82f, 0.5f}, {0.78f, 0.42f, 0.3f}, {0.9f, 0.9f, 0.86f}, {0.62f, 0.7f, 0.66f}}, 3.0f, Balconies::Railing, 2, 0.5f, StairWin::None, Canopy::None, 0.6f, 0.3f, false, false, 16, 3.0f},
+    {"nordic-modern", {}, {Region::Scandinavia}, 1990, 2035, 4, 10, 11, 16, Use::Housing, fs::CLADDING, 0,
+     {{0.55f, 0.4f, 0.3f}, {0.85f, 0.85f, 0.83f}, {0.4f, 0.42f, 0.44f}}, 3.0f, Balconies::Glazed, 1, 0.5f, StairWin::None, Canopy::Slab, 0.4f, 0.3f, false, false, 18, 3.0f},
+    {"uk-council", {}, {Region::Uk}, 1945, 1980, 3, 15, 9, 14, Use::Housing, fs::BRUTAL, 1,
+     {{0.78f, 0.76f, 0.72f}, {0.7f, 0.68f, 0.64f}}, 2.8f, Balconies::Open, 1, 0.5f, StairWin::Band, Canopy::Slab, 0.5f, 0.4f, false, false, 20, 3.0f},
+    {"us-brownstone", {"brownstone"}, {Region::NorthAmerica}, 1850, 1930, 3, 6, 12, 22, Use::Housing, fs::TERRACE, 1,
+     {{0.5f, 0.32f, 0.26f}, {0.62f, 0.36f, 0.28f}, {0.72f, 0.58f, 0.46f}}, 3.4f, Balconies::None, 1, 0, StairWin::None, Canopy::None, 1.2f, 0.8f, false, true, 6, 2.6f},
+    {"us-midrise", {}, {Region::NorthAmerica}, 1990, 2035, 4, 8, 15, 30, Use::Housing, fs::CLADDING, 2,
+     {{0.75f, 0.68f, 0.58f}, {0.5f, 0.52f, 0.55f}, {0.86f, 0.84f, 0.8f}, {0.58f, 0.38f, 0.3f}}, 3.0f, Balconies::Railing, 2, 0.5f, StairWin::None, Canopy::Slab, 0.6f, 0.8f, false, true, 30, 3.0f},
+    {"latam-casa", {}, {Region::LatinAmerica}, 1800, 2035, 1, 4, 8, 20, Use::Housing, fs::SHUTTERED, 2,
+     {{0.95f, 0.75f, 0.4f}, {0.4f, 0.65f, 0.75f}, {0.9f, 0.45f, 0.42f}, {0.6f, 0.8f, 0.5f}, {0.95f, 0.92f, 0.85f}, {0.85f, 0.6f, 0.75f}}, 3.2f, Balconies::Railing, 2, 0.5f, StairWin::None, Canopy::None, 0.3f, 0.5f, false, true, 8, 3.0f},
+    {"latam-edificio", {}, {Region::LatinAmerica}, 1960, 2035, 5, 25, 12, 25, Use::Housing, fs::HOT, 0,
+     {{0.92f, 0.9f, 0.86f}, {0.85f, 0.8f, 0.7f}, {0.75f, 0.78f, 0.8f}}, 2.8f, Balconies::Open, 1, 0.5f, StairWin::None, Canopy::Slab, 0.6f, 0.6f, false, true, 22, 3.0f},
+    {"mideast-block", {}, {Region::MiddleEast, Region::NorthAfrica, Region::Turkey}, 1950, 2035, 2, 12, 10, 22, Use::Housing, fs::ADOBE, 2,
+     {{0.9f, 0.82f, 0.66f}, {0.86f, 0.78f, 0.62f}, {0.95f, 0.92f, 0.85f}, {0.82f, 0.72f, 0.58f}}, 3.0f, Balconies::Open, 2, 0.5f, StairWin::None, Canopy::None, 0.4f, 0.8f, false, true, 18, 3.0f},
+    {"mideast-tower", {}, {Region::MiddleEast}, 1990, 2035, 12, 60, 18, 40, Use::Housing, fs::GLASS, 0,
+     {{0.7f, 0.72f, 0.74f}, {0.86f, 0.8f, 0.68f}}, 3.2f, Balconies::Glazed, 1, 0.5f, StairWin::None, Canopy::Slab, 1.0f, 1.0f, true, true, 999, 3.0f},
+    {"india-flats", {}, {Region::India}, 1960, 2035, 3, 16, 10, 22, Use::Housing, fs::HOT, 2,
+     {{0.95f, 0.85f, 0.65f}, {0.85f, 0.88f, 0.75f}, {0.92f, 0.75f, 0.65f}, {0.8f, 0.82f, 0.88f}, {0.96f, 0.94f, 0.9f}}, 3.0f, Balconies::Railing, 1, 0.5f, StairWin::None, Canopy::Slab, 0.5f, 0.8f, true, true, 16, 3.0f},
+    {"sea-shophouse", {"shophouse"}, {Region::SouthEastAsia, Region::China}, 1880, 2035, 2, 5, 12, 25, Use::Housing, fs::HOT, 2,
+     {{0.95f, 0.9f, 0.75f}, {0.85f, 0.75f, 0.65f}, {0.75f, 0.85f, 0.8f}, {0.92f, 0.92f, 0.9f}}, 3.4f, Balconies::Railing, 1, 0.5f, StairWin::None, Canopy::Slab, 0.4f, 0.5f, false, true, 5, 2.8f},
+    {"sea-condo", {}, {Region::SouthEastAsia}, 1990, 2035, 15, 50, 16, 35, Use::Housing, fs::HOT, 1,
+     {{0.95f, 0.94f, 0.9f}, {0.85f, 0.85f, 0.88f}, {0.9f, 0.85f, 0.75f}}, 3.0f, Balconies::Glazed, 1, 1.0f, StairWin::None, Canopy::Slab, 1.0f, 1.0f, true, true, 999, 3.0f},
+    {"kr-apartment", {}, {Region::Korea}, 1975, 2035, 10, 30, 10, 16, Use::Housing, fs::PANEL, 2,
+     {{0.95f, 0.94f, 0.92f}, {0.9f, 0.88f, 0.84f}}, 2.8f, Balconies::Glazed, 1, 0.5f, StairWin::None, Canopy::Slab, 0.8f, 0.8f, true, false, 999, 3.0f},
+    {"africa-block", {}, {Region::SubSaharan}, 1950, 2035, 2, 10, 10, 20, Use::Housing, fs::HOT, 0,
+     {{0.92f, 0.86f, 0.72f}, {0.85f, 0.88f, 0.9f}, {0.95f, 0.8f, 0.6f}, {0.8f, 0.85f, 0.72f}}, 3.0f, Balconies::Railing, 1, 0.5f, StairWin::None, Canopy::Slab, 0.5f, 0.5f, false, true, 18, 3.0f},
+    {"oz-walkup", {}, {Region::Oceania}, 1950, 1990, 2, 4, 10, 16, Use::Housing, fs::TERRACE, 0,
+     {{0.7f, 0.42f, 0.32f}, {0.82f, 0.72f, 0.58f}, {0.62f, 0.38f, 0.3f}}, 2.9f, Balconies::Railing, 1, 0.5f, StairWin::None, Canopy::Slab, 0.5f, 0.4f, false, false, 16, 3.0f},
+    {"eu-brutalist", {}, {Region::WesternEurope, Region::EasternEurope, Region::Uk}, 1960, 1985, 5, 20, 12, 18, Use::Housing, fs::BRUTAL, 0,
+     {{0.8f, 0.78f, 0.74f}, {0.72f, 0.7f, 0.66f}}, 2.9f, Balconies::Open, 1, 1.0f, StairWin::Band, Canopy::Slab, 0.8f, 0.6f, true, false, 999, 3.0f},
+    {"eu-contemporary", {}, {Region::WesternEurope, Region::Scandinavia, Region::EasternEurope}, 2005, 2035, 4, 14, 12, 20, Use::Housing, fs::CLADDING, 1,
+     {{0.9f, 0.88f, 0.84f}, {0.42f, 0.42f, 0.44f}, {0.7f, 0.55f, 0.42f}, {0.8f, 0.82f, 0.8f}}, 3.0f, Balconies::Glazed, 1, 0.5f, StairWin::None, Canopy::Slab, 0.6f, 0.4f, false, true, 24, 3.0f},
     {"cn-tower", {}, {Region::China}, 1990, 2035, 12, 34, 14, 26, Use::Housing, fs::PLASTER, 2,
      {{0.92f, 0.9f, 0.86f}, {0.76f, 0.74f, 0.7f}}, 3.0f, Balconies::Glazed, 1, 1.0f, StairWin::None, Canopy::Slab, 1.0f, 1.2f, false, false, 999, 3.0f},
 };
@@ -415,6 +467,22 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
         else if (any_of(c, {"industrial", "warehouse", "hangar", "service", "manufacture"})) style = fs::METAL;
         else if (any_of(c, {"apartments", "residential", "dormitory"}) && bi.height >= 15) style = fs::PANEL;
         else style = fs::PLASTER;
+        // the region's usual walls instead of plain plaster everywhere
+        if (style == fs::PLASTER || style == fs::PANEL) {
+            auto rg = regions_at(lat, lon);
+            auto has = [&](Region r) { return std::find(rg.begin(), rg.end(), r) != rg.end(); };
+            uint64_t k = (seed >> 11) % 10;
+            if (has(Region::France) && bi.height <= 26) style = k < 5 ? fs::ASHLAR : k < 7 ? fs::SHUTTERED : style;
+            else if (has(Region::Mediterranean)) style = k < 5 ? fs::SHUTTERED : k < 7 ? fs::ADOBE : style;
+            else if (has(Region::Uk)) style = k < 6 ? fs::TERRACE : k < 7 ? fs::BRUTAL : style;
+            else if (has(Region::NorthAmerica)) style = bi.height > 20 ? (k < 5 ? fs::CLADDING : style) : k < 4 ? fs::TERRACE : k < 7 ? fs::CLADDING : style;
+            else if (has(Region::LatinAmerica)) style = k < 5 ? fs::SHUTTERED : fs::HOT;
+            else if (has(Region::MiddleEast) || has(Region::NorthAfrica)) style = k < 6 ? fs::ADOBE : fs::HOT;
+            else if (has(Region::India) || has(Region::SouthEastAsia) || has(Region::SubSaharan) || has(Region::China)) style = k < 7 ? fs::HOT : style;
+            else if (has(Region::Scandinavia) || has(Region::Japan) || has(Region::Korea)) style = k < 4 ? fs::CLADDING : style;
+            else if (has(Region::WesternEurope)) style = k < 2 ? fs::CLADDING : k < 4 ? fs::BRICK : k < 5 ? fs::ASHLAR : style;
+            else if (has(Region::ExUssr) && bi.height < 15) style = k < 2 ? fs::BRICK : k < 3 ? fs::SILICATE : style;
+        }
     }
     int variant = (int)(seed % 3);
     Col col;
@@ -423,6 +491,13 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
         case fs::PANEL: col = pick(std::initializer_list<Col>{{0.78f, 0.77f, 0.74f}, {0.86f, 0.84f, 0.78f}, {0.7f, 0.72f, 0.74f}, {0.82f, 0.78f, 0.68f}, {0.74f, 0.7f, 0.66f}, {0.8f, 0.82f, 0.84f}}, seed); break;
         case fs::GLASS: col = pick(std::initializer_list<Col>{{0.55f, 0.62f, 0.68f}, {0.45f, 0.55f, 0.6f}, {0.6f, 0.6f, 0.58f}, {0.4f, 0.48f, 0.55f}}, seed); break;
         case fs::METAL: col = pick(std::initializer_list<Col>{{0.62f, 0.64f, 0.66f}, {0.55f, 0.6f, 0.68f}, {0.7f, 0.68f, 0.62f}, {0.5f, 0.56f, 0.52f}}, seed); break;
+        case fs::ASHLAR: col = pick(std::initializer_list<Col>{{0.95f, 0.91f, 0.82f}, {0.9f, 0.86f, 0.78f}, {0.85f, 0.82f, 0.76f}}, seed); break;
+        case fs::SHUTTERED: col = pick(std::initializer_list<Col>{{0.94f, 0.8f, 0.58f}, {0.9f, 0.64f, 0.48f}, {0.96f, 0.9f, 0.76f}, {0.86f, 0.58f, 0.44f}, {0.95f, 0.94f, 0.9f}, {0.7f, 0.82f, 0.86f}}, seed); break;
+        case fs::BRUTAL: col = pick(std::initializer_list<Col>{{0.82f, 0.8f, 0.76f}, {0.74f, 0.72f, 0.68f}}, seed); break;
+        case fs::CLADDING: col = pick(std::initializer_list<Col>{{0.9f, 0.88f, 0.84f}, {0.45f, 0.46f, 0.5f}, {0.72f, 0.56f, 0.42f}, {0.8f, 0.84f, 0.86f}, {0.6f, 0.66f, 0.58f}}, seed); break;
+        case fs::TERRACE: col = pick(std::initializer_list<Col>{{0.58f, 0.3f, 0.22f}, {0.66f, 0.38f, 0.28f}, {0.74f, 0.6f, 0.46f}, {0.5f, 0.28f, 0.22f}}, seed); break;
+        case fs::HOT: col = pick(std::initializer_list<Col>{{0.95f, 0.92f, 0.85f}, {0.92f, 0.82f, 0.62f}, {0.8f, 0.86f, 0.82f}, {0.9f, 0.76f, 0.66f}, {0.82f, 0.84f, 0.9f}, {0.96f, 0.86f, 0.55f}}, seed); break;
+        case fs::ADOBE: col = pick(std::initializer_list<Col>{{0.9f, 0.8f, 0.64f}, {0.86f, 0.74f, 0.58f}, {0.95f, 0.9f, 0.8f}, {0.8f, 0.66f, 0.52f}}, seed); break;
         case fs::WOOD: col = pick(std::initializer_list<Col>{{0.55f, 0.4f, 0.26f}, {0.45f, 0.32f, 0.22f}, {0.62f, 0.5f, 0.36f}}, seed); break;
         default: col = pick(std::initializer_list<Col>{{0.86f, 0.8f, 0.68f}, {0.92f, 0.88f, 0.78f}, {0.86f, 0.74f, 0.62f}, {0.8f, 0.84f, 0.82f}, {0.9f, 0.82f, 0.62f}, {0.84f, 0.7f, 0.66f}, {0.94f, 0.92f, 0.88f}, {0.78f, 0.8f, 0.72f}}, seed);
     }
@@ -528,7 +603,24 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
     Col rc;
     if (auto r = tag(tags, "roof:colour"); r && parse_colour(*r, rc)) bi.roof_colour = rc;
     else if (use == Use::Religious) bi.roof_colour = pick(std::initializer_list<Col>{{0.3f, 0.48f, 0.38f}, {0.35f, 0.38f, 0.42f}, {0.55f, 0.3f, 0.22f}}, seed);
-    else if (use == Use::House) bi.roof_colour = pick(std::initializer_list<Col>{{0.55f, 0.27f, 0.2f}, {0.35f, 0.33f, 0.32f}, {0.42f, 0.22f, 0.18f}, {0.3f, 0.36f, 0.42f}}, seed);
+    else if (use == Use::House || use == Use::Housing) {
+        // pitched roofs by region: terracotta in the south, slate and black glazed tiles in the north-west and
+        // Scandinavia, blue-grey kawara in Japan, sheet metal in the ex-USSR countryside
+        auto rg = regions_at(lat, lon);
+        auto has = [&](Region r) { return std::find(rg.begin(), rg.end(), r) != rg.end(); };
+        if (has(Region::Mediterranean) || has(Region::LatinAmerica) || has(Region::Turkey))
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.72f, 0.38f, 0.24f}, {0.78f, 0.45f, 0.3f}, {0.66f, 0.34f, 0.22f}}, seed);
+        else if (has(Region::Uk) || has(Region::France))
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.3f, 0.31f, 0.34f}, {0.55f, 0.3f, 0.22f}, {0.36f, 0.36f, 0.38f}}, seed);
+        else if (has(Region::Scandinavia))
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.18f, 0.18f, 0.2f}, {0.5f, 0.2f, 0.16f}, {0.3f, 0.32f, 0.3f}}, seed);
+        else if (has(Region::Japan) || has(Region::Korea))
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.3f, 0.34f, 0.4f}, {0.22f, 0.24f, 0.28f}, {0.45f, 0.3f, 0.25f}}, seed);
+        else if (has(Region::ExUssr))
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.32f, 0.45f, 0.38f}, {0.55f, 0.27f, 0.2f}, {0.5f, 0.52f, 0.55f}, {0.42f, 0.22f, 0.18f}, {0.3f, 0.36f, 0.42f}}, seed);
+        else
+            bi.roof_colour = pick(std::initializer_list<Col>{{0.55f, 0.27f, 0.2f}, {0.35f, 0.33f, 0.32f}, {0.42f, 0.22f, 0.18f}, {0.3f, 0.36f, 0.42f}}, seed);
+    }
     std::string rs = tagv(tags, "roof:shape");
     if (rs == "gabled" || rs == "gambrel" || rs == "saltbox") bi.roof_shape = "gabled";
     else if (rs == "hipped" || rs == "half-hipped" || rs == "mansard") bi.roof_shape = "hipped";
@@ -551,8 +643,7 @@ BuildingInfo classify(const std::string &id, const Tags &tags0, bool part, const
             bool big = area > 1500 && (use == Use::Retail || use == Use::Industrial || use == Use::Office);
             bi.roof_colour = big ? pick(std::initializer_list<Col>{{0.78f, 0.78f, 0.76f}, {0.62f, 0.63f, 0.64f}, {0.7f, 0.68f, 0.62f}}, seed)
                                  : pick(std::initializer_list<Col>{{0.42f, 0.41f, 0.4f}, {0.55f, 0.54f, 0.5f}, {0.36f, 0.36f, 0.37f}, {0.6f, 0.57f, 0.5f}, {0.47f, 0.5f, 0.45f}}, seed);
-        } else if (use == Use::Housing)
-            bi.roof_colour = pick(std::initializer_list<Col>{{0.5f, 0.3f, 0.25f}, {0.4f, 0.4f, 0.42f}, {0.45f, 0.26f, 0.22f}, {0.32f, 0.38f, 0.36f}}, seed);
+        }
     }
     double rh;
     if (tag(tags, "roof:height") && parse_num(*tag(tags, "roof:height"), rh) && rh > 0) bi.roof_height = rh;

@@ -649,18 +649,64 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
                     double z = base + fl * floor_h;
                     auto P = [&](double s, double dpt, double zz) { V2 q = a + dir * s + o * dpt; return V3(q.x, q.y, zz); };
                     Col sc = mul(wall, 0.92f);
+                    uint64_t hb = seed ^ ((uint64_t)(i * 131 + k) * 2654435761ull) ^ ((uint64_t)fl * 40503ull);
+                    double u = hash01(hb, 1);
+                    // vertical bars between a bottom and a top rail
+                    auto railing = [&](double s0r, double s1r, double dpt, double h, Col rc) {
+                        ms[M_METAL].quad(P(s0r, dpt, z + h - 0.05), P(s1r, dpt, z + h - 0.05), P(s1r, dpt, z + h), P(s0r, dpt, z + h), {o.x, o.y, 0}, rc);
+                        ms[M_METAL].quad(P(s0r, dpt, z + 0.1), P(s1r, dpt, z + 0.1), P(s1r, dpt, z + 0.14), P(s0r, dpt, z + 0.14), {o.x, o.y, 0}, rc);
+                        int nb = std::max(2, (int)((s1r - s0r) / 0.14));
+                        for (int q = 0; q <= nb; q++) {
+                            double sb = s0r + (s1r - s0r) * q / nb;
+                            ms[M_METAL].quad(P(sb - 0.012, dpt, z + 0.14), P(sb + 0.012, dpt, z + 0.14), P(sb + 0.012, dpt, z + h - 0.05), P(sb - 0.012, dpt, z + h - 0.05), {o.x, o.y, 0}, rc);
+                        }
+                    };
                     if (d.balconies == Balconies::Railing) {
-                        ms[M_METAL].quad(P(s0 + 0.3, depth, z + 0.1), P(s1 - 0.3, depth, z + 0.1), P(s1 - 0.3, depth, z + 1.0), P(s0 + 0.3, depth, z + 1.0), {o.x, o.y, 0}, Col{0.15f, 0.15f, 0.16f, 1});
+                        // French balcony: a shallow ledge with wrought-iron bars
+                        C.quad(P(s0 + 0.2, 0, z + 0.05), P(s1 - 0.2, 0, z + 0.05), P(s1 - 0.2, depth, z + 0.05), P(s0 + 0.2, depth, z + 0.05), {0, 0, 1}, sc);
+                        railing(s0 + 0.2, s1 - 0.2, depth, 1.0, Col{0.12f, 0.12f, 0.13f, 1});
                         continue;
                     }
-                    // slab, front parapet, side walls
+                    // slab
                     C.quad(P(s0, 0, z), P(s1, 0, z), P(s1, depth, z), P(s0, depth, z), {0, 0, 1}, sc);
                     C.quad(P(s1, 0, z - 0.15), P(s0, 0, z - 0.15), P(s0, depth, z - 0.15), P(s1, depth, z - 0.15), {0, 0, -1}, mul(sc, 0.8f));
-                    C.quad(P(s0, depth, z - 0.15), P(s1, depth, z - 0.15), P(s1, depth, z + 1.0), P(s0, depth, z + 1.0), {o.x, o.y, 0}, sc, 0, 0, (s1 - s0) / 3, 0.4);
-                    C.quad(P(s0, 0, z - 0.15), P(s0, depth, z - 0.15), P(s0, depth, z + 1.0), P(s0, 0, z + 1.0), {-dir.x, -dir.y, 0}, sc);
-                    C.quad(P(s1, depth, z - 0.15), P(s1, 0, z - 0.15), P(s1, 0, z + 1.0), P(s1, depth, z + 1.0), {dir.x, dir.y, 0}, sc);
-                    if (d.balconies == Balconies::Glazed)
-                        ms[M_GLASS].quad(P(s0, depth, z + 1.0), P(s1, depth, z + 1.0), P(s1, depth, z + floor_h - 0.2), P(s0, depth, z + floor_h - 0.2), {o.x, o.y, 0}, Col{1, 1, 1, 1});
+                    C.quad(P(s0, depth, z - 0.15), P(s1, depth, z - 0.15), P(s1, depth, z), P(s0, depth, z), {o.x, o.y, 0}, mul(sc, 0.85f));
+                    // the parapet: the building's own panel, or what the owner put up (corrugated sheet in some
+                    // colour), or just a railing
+                    bool glazed = d.balconies == Balconies::Glazed ? u < 0.72 : u < 0.22;  // residents glaze their own
+                    double ph = 1.0;
+                    int ptype = (int)(hash01(hb, 2) * 3);
+                    if (!glazed && ptype == 2) {
+                        railing(s0, s1, depth, ph, Col{0.2f, 0.2f, 0.21f, 1});
+                    } else {
+                        Col pc = sc;
+                        if (glazed && ptype != 0) {
+                            static const Col SHEET[] = {{0.93f, 0.92f, 0.88f, 1}, {0.85f, 0.78f, 0.62f, 1}, {0.55f, 0.36f, 0.26f, 1}, {0.55f, 0.62f, 0.72f, 1}, {0.75f, 0.76f, 0.74f, 1}};
+                            pc = SHEET[(int)(hash01(hb, 3) * 5) % 5];
+                        }
+                        C.quad(P(s0, depth, z), P(s1, depth, z), P(s1, depth, z + ph), P(s0, depth, z + ph), {o.x, o.y, 0}, pc, 0, 0, (s1 - s0) / 3, 0.4);
+                    }
+                    C.quad(P(s0, 0, z - 0.15), P(s0, depth, z - 0.15), P(s0, depth, z + ph), P(s0, 0, z + ph), {-dir.x, -dir.y, 0}, sc);
+                    C.quad(P(s1, depth, z - 0.15), P(s1, 0, z - 0.15), P(s1, 0, z + ph), P(s1, depth, z + ph), {dir.x, dir.y, 0}, sc);
+                    if (glazed) {
+                        double top = z + floor_h - 0.2;
+                        ms[M_GLASS].quad(P(s0, depth, z + ph), P(s1, depth, z + ph), P(s1, depth, top), P(s0, depth, top), {o.x, o.y, 0}, Col{1, 1, 1, 1});
+                        // frames: white PVC or brown, a mullion every ~0.8 m, a transom rail
+                        Col fc = hash01(hb, 4) < 0.7 ? Col{0.92f, 0.92f, 0.9f, 1} : Col{0.35f, 0.25f, 0.18f, 1};
+                        int nm = std::max(2, (int)std::round((s1 - s0) / 0.8));
+                        for (int q = 0; q <= nm; q++) {
+                            double sm = s0 + (s1 - s0) * q / nm;
+                            ms[M_PAINT].quad(P(sm - 0.03, depth + 0.01, z + ph), P(sm + 0.03, depth + 0.01, z + ph), P(sm + 0.03, depth + 0.01, top), P(sm - 0.03, depth + 0.01, top), {o.x, o.y, 0}, fc);
+                        }
+                        for (double zz : {z + ph, top - 0.05})
+                            ms[M_PAINT].quad(P(s0, depth + 0.01, zz), P(s1, depth + 0.01, zz), P(s1, depth + 0.01, zz + 0.06), P(s0, depth + 0.01, zz + 0.06), {o.x, o.y, 0}, fc);
+                        // a roof over the top floor's glazing
+                        if (fl == floors - 1) C.quad(P(s0, 0, top + 0.05), P(s1, 0, top + 0.05), P(s1, depth + 0.1, top), P(s0, depth + 0.1, top), {0, 0, 1}, Col{0.45f, 0.45f, 0.46f, 1});
+                    } else if (hash01(hb, 5) < 0.12) {
+                        // an air-conditioner on the balcony
+                        V2 ac = a + dir * (s0 + 0.5) + o * (depth - 0.2);
+                        ms[M_PAINT].obox(ac, std::atan2(o.y, o.x), 0.3, 0.75, z + 0.05, z + 0.6, Col{0.9f, 0.9f, 0.88f, 1});
+                    }
                 }
             }
         }

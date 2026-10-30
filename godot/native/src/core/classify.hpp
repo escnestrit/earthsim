@@ -13,11 +13,11 @@ enum class Balconies { None, Open, Glazed, Railing };
 enum class StairWin { None, Landing, Band };
 enum class Canopy { None, Slab, Gable };
 enum class Landmark { None, Orthodox, Spire, Chapel, Mosque };
-enum class Region { Any, ExUssr, Belarus, Gdr, EasternEurope, France, Uk, WesternEurope, NorthAmerica, Japan, China };
+enum class Region { Any, ExUssr, Belarus, Gdr, EasternEurope, France, Uk, WesternEurope, NorthAmerica, Japan, China, Mediterranean, Scandinavia, LatinAmerica, MiddleEast, NorthAfrica, SubSaharan, India, SouthEastAsia, Korea, Oceania, Turkey };
 
 // facade style indices
 namespace fs {
-enum { PLASTER = 0, BRICK = 1, PANEL = 2, GLASS = 3, WOOD = 4, METAL = 5, TILE_PANEL = 6, SILICATE = 7, ARCHED = 8, SCHOOL = 9, SHOP = 10, OFFICE = 11, BLANK = 12 };
+enum { PLASTER = 0, BRICK = 1, PANEL = 2, GLASS = 3, WOOD = 4, METAL = 5, TILE_PANEL = 6, SILICATE = 7, ARCHED = 8, SCHOOL = 9, SHOP = 10, OFFICE = 11, BLANK = 12, ASHLAR = 13, SHUTTERED = 14, BRUTAL = 15, CLADDING = 16, TERRACE = 17, HOT = 18, ADOBE = 19 };
 }
 
 struct Design {

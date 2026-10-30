@@ -239,6 +239,14 @@ void EarthJCar::build_nodes() {
         skel_->set_bone_pose_position(b, t.origin);
         skin->add_bind(b, t.affine_inverse());
     }
+    nbr_.assign(v.body.nodes.size(), {});
+    for (auto &be : v.body.beams) {
+        if (be.a == be.b) continue;
+        Vector3 d = conv(v.body.nodes[be.b].rest) - conv(v.body.nodes[be.a].rest);
+        if (d.length() < 0.02) continue;
+        if (nbr_[be.a].size() < 14) nbr_[be.a].push_back({be.b, d});
+        if (nbr_[be.b].size() < 14) nbr_[be.b].push_back({be.a, -d});
+    }
     std::map<std::string, Ref<StandardMaterial3D>> mats;
     std::map<std::string, Ref<Texture2D>> tex;
     Ref<ArrayMesh> body;
@@ -428,7 +436,33 @@ void EarthJCar::_process(double dt) {
     Transform3D t(frame_basis(s.cf, s.cl, s.cu), conv(o));
     set_global_transform(t);
     Transform3D inv = t.affine_inverse();
-    for (size_t i = 0; i < s.p.size(); i++) skel_->set_bone_pose_position((int)i, inv.xform(conv(s.p[i])));
+    // bones follow their nodes, and turn with the panel around them (best-fit rotation of the node's beam
+    // neighbourhood): bent doors and crumpled bonnets keep their surface instead of smearing
+    std::vector<Vector3> gp(s.p.size());
+    for (size_t i = 0; i < s.p.size(); i++) gp[i] = conv(s.p[i]);
+    for (size_t i = 0; i < s.p.size(); i++) {
+        skel_->set_bone_pose_position((int)i, inv.xform(gp[i]));
+        if (i >= nbr_.size() || nbr_[i].size() < 3) continue;
+        // A = sum current * rest^T
+        Basis A(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        for (auto &[j, d0] : nbr_[i]) {
+            if (j >= (int)gp.size()) continue;
+            Vector3 d = gp[j] - gp[i];
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++) A.rows[r][c] += d[r] * d0[c];
+        }
+        real_t det = A.determinant();
+        if (!(std::abs(det) > 1e-9)) continue;
+        // polar decomposition by iteration: R <- (R + R^-T) / 2
+        Basis R = A;
+        for (int it = 0; it < 10; it++) {
+            Basis Rit = R.inverse().transposed();
+            R = Basis(R.rows[0] + Rit.rows[0], R.rows[1] + Rit.rows[1], R.rows[2] + Rit.rows[2]) * 0.5;
+        }
+        if (R.determinant() < 0.5) continue;
+        Quaternion q = (inv.basis * R).orthonormalized().get_rotation_quaternion();
+        skel_->set_bone_pose_rotation((int)i, q);
+    }
     for (size_t k = 0; k < wheel_mi_.size(); k++) {
         int wi = wheel_of_mi_[k];
         if (wi >= (int)s.wc.size()) continue;

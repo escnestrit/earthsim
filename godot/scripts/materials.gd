@@ -29,7 +29,7 @@ const M_SIGNAL := 35
 const M_SCREEN := 36
 const M_POSTER := 37
 const M_FACADE := 100
-const FACADE_STYLES := 13
+const FACADE_STYLES := 20
 
 # texture kinds (core/textures.hpp)
 const T_GRASS := 0
