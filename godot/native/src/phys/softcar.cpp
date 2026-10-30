@@ -15,8 +15,9 @@ const double TIRE_K = 2.0e5, TIRE_C = 1200, G = 9.81, HANDBRAKE_GRIP_LOSS = 0.45
 
 int cage_index(int si, int yi, int zi) { return si * 6 + yi * 2 + zi; }
 
-double shape(double s) {
-    const double C = 1.5;
+double shape(double s, double sliding = 0.707) {
+    // Pacejka-like rise to 1 at s = 1, then falling towards `sliding`
+    const double C = 2 - 2 * std::asin(std::clamp(sliding, 0.3, 0.98)) / PI;
     double b = std::tan(PI / (2 * C));
     return std::sin(C * std::atan(b * s));
 }
@@ -41,11 +42,11 @@ TireOut tire_force(const TireParams &p, double fz, double surface, double vl, do
     double kappa = (omega * radius - vl) / den, ta = vt / den;
     double sx = kappa / p.kappa_peak, sy = ta / p.tan_alpha_peak;
     double s = std::sqrt(sx * sx + sy * sy);
-    double load = std::clamp(1 - p.load_sens * (fz / p.fz0 - 1), 0.6, 1.3);
+    double load = p.bl_slope > 0 ? p.bl_full + (p.bl_none - p.bl_full) * std::exp(-p.bl_slope * fz) : std::clamp(1 - p.load_sens * (fz / p.fz0 - 1), 0.6, 1.3);
     double limit = p.mu * surface * load * fz;
     o.kappa = kappa, o.tan_alpha = ta, o.limit = limit;
     if (s < 1e-9) return o;
-    double f = limit * shape(s);
+    double f = limit * shape(s, p.sliding);
     o.fx = f * sx / s;
     o.fy = -f * sy / s;
     return o;

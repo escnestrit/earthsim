@@ -1,4 +1,5 @@
 #include "jvehicle.hpp"
+#include <cstdio>
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
@@ -223,8 +224,25 @@ bool JVehicle::from_model(const JModel &m, JVehicle &v, std::string &err) {
             w.arm = idx(m, r.str("nodeArm"));
             w.brake_torque = r.num("brakeTorque", 1500);
             w.parking_torque = r.num("parkingTorque", 0);
+            // tyre compound: road tyres sit around frictionCoef 1.0
+            double fc = r.num("frictionCoef", 1.0);
+            // (rows also inherit node friction defaults, so only a tyre-like value is taken; BeamNG's
+            // slidingFrictionCoef means something else for nodes and is not mapped)
+            if (fc >= 0.7 && fc <= 1.6) w.mu_scale = fc;
+            if (r.has_num("loadSensitivitySlope") && r.has_num("noLoadCoef") && r.has_num("fullLoadCoef") && r.num("loadSensitivitySlope") > 0) {
+                w.bl_none = r.num("noLoadCoef"), w.bl_full = r.num("fullLoadCoef"), w.bl_slope = r.num("loadSensitivitySlope");
+                // normalise so the factor is 1 at our reference load (the base mu already covers a typical tyre)
+                double ref = w.bl_full + (w.bl_none - w.bl_full) * std::exp(-w.bl_slope * 3800);
+                if (ref > 0.1) w.bl_none /= ref, w.bl_full /= ref;
+                else w.bl_slope = 0;
+            }
             v.wheels.push_back(w);
         }
+    if (!v.wheels.empty()) {
+        char b[160];
+        snprintf(b, sizeof b, "tyres: grip x%.2f, %s", v.wheels[0].mu_scale, v.wheels[0].bl_slope > 0 ? "load sensitivity from the mod" : "default load sensitivity");
+        v.notes.push_back(b);
+    }
     if (v.wheels.size() < 3) {
         err = "only " + std::to_string(v.wheels.size()) + " usable wheels found";
         return false;
@@ -497,6 +515,8 @@ void JVehicle::substep(double dt, const CarInput &in, const CollisionWorld &w) {
             double vl = cvel.dot(head), vt = cvel.dot(side);
             double grip = s.grip * (!wh.front ? 1 - 0.45 * in.handbrake : 1.0);
             TireParams tp = tire;
+            tp.mu *= wh.mu_scale;
+            tp.bl_none = wh.bl_none, tp.bl_full = wh.bl_full, tp.bl_slope = wh.bl_slope;
             if (tb > 0 && std::abs(w0) < 0.5 && sp < 1) tp.v0 = 0.4;
             TireOut o1 = tire_force(tp, fz, grip, vl, vt, w0, r), o2 = tire_force(tp, fz, grip, vl, vt, w0 + 1, r);
             double jx = std::max(0.0, o2.fx - o1.fx);

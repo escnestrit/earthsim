@@ -9,6 +9,10 @@ namespace ec {
 
 struct TireParams {
     double mu = 1.1, kappa_peak = 0.11, tan_alpha_peak = 0.14, load_sens = 0.10, fz0 = 3800, v0 = 3.0;
+    // grip left when fully sliding, as a fraction of the peak (BeamNG's slidingFrictionCoef / frictionCoef)
+    double sliding = 0.707;
+    // BeamNG-style load sensitivity, used when bl_slope > 0: mu(fz) = mu * (full + (none - full) * exp(-slope * fz))
+    double bl_none = 0, bl_full = 0, bl_slope = 0;
 };
 struct TireOut {
     double fx = 0, fy = 0, kappa = 0, tan_alpha = 0, limit = 0;

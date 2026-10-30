@@ -14,6 +14,8 @@ struct JWheel {
     double radius = 0.33, width = 0.2;
     bool front = false, driven = false;
     double brake_torque = 1500, parking_torque = 0, inertia = 1.1;
+    // tyre compound from the jbeam (frictionCoef etc.); mu_scale multiplies our base grip
+    double mu_scale = 1, bl_none = 0, bl_full = 0, bl_slope = 0;
     WheelState st;
 };
 
