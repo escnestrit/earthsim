@@ -200,7 +200,7 @@ func _apply_time() -> void:
 	if elev < -0.05:
 		# moonlight: the key light swings to a moon high in the sky
 		sun.rotation = Vector3(-deg_to_rad(40.0), az + PI, 0)
-		sun.light_energy = 0.12
+		sun.light_energy = 0.07
 		sun.light_color = Color(0.6, 0.7, 1.0)
 	env.background_energy_multiplier = lerpf(1.0, 0.08, night)
 	# lit windows must stay windows: at night GI (which would spread their light over whole facades) and
@@ -211,10 +211,10 @@ func _apply_time() -> void:
 	gi_night_off = night > 0.5
 	env.sdfgi_enabled = gi_wanted and not gi_night_off
 	env.fog_aerial_perspective = lerpf(0.85, 0.0, night)
-	env.ambient_light_sky_contribution = lerpf(0.55, 0.15, night)
-	env.glow_hdr_threshold = lerpf(1.0, 1.6, night)
-	env.glow_bloom = lerpf(0.05, 0.0, night)
-	env.ambient_light_energy = lerpf(1.0, 0.45, night)
+	env.ambient_light_sky_contribution = lerpf(0.55, 0.1, night)
+	env.glow_hdr_threshold = lerpf(1.0, 1.1, night)
+	env.glow_bloom = lerpf(0.05, 0.02, night)
+	env.ambient_light_energy = lerpf(1.0, 0.3, night)
 	env.ambient_light_color = Color(0.62, 0.66, 0.72).lerp(Color(0.25, 0.3, 0.45), night)
 	if world:
 		world.mats.set_night(night)
