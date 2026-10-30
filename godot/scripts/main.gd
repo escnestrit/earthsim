@@ -160,6 +160,9 @@ func _apply_time() -> void:
 	sun.light_energy = 1.6 * day + 0.02
 	sun.light_color = Color(1.0, lerpf(0.65, 0.96, day), lerpf(0.45, 0.9, day))
 	var night := 1.0 - clampf(sin(t) * 4.0 + 0.6, 0.0, 1.0)
+	if env.sky and env.sky.sky_material is ShaderMaterial:
+		# direction toward the sun (Godot lights shine along -z)
+		(env.sky.sky_material as ShaderMaterial).set_shader_parameter("sun_dir", sun.global_transform.basis.z if sun.is_inside_tree() else Basis.from_euler(sun.rotation).z)
 	if elev < -0.05:
 		# moonlight: the key light swings to a moon high in the sky
 		sun.rotation = Vector3(-deg_to_rad(40.0), az + PI, 0)

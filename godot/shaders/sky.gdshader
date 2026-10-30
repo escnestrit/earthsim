@@ -8,6 +8,8 @@ uniform vec3 horizon : source_color = vec3(0.68, 0.79, 0.92);
 uniform vec3 ground_col : source_color = vec3(0.27, 0.28, 0.27);
 uniform float cloud_cover : hint_range(0.0, 1.0) = 0.45;
 uniform float cloud_speed = 0.004;
+// the real sun direction (the key light becomes the moon at night)
+uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
 
 float hash(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
@@ -31,7 +33,7 @@ float fbm(vec2 p) {
 
 void sky() {
 	vec3 d = normalize(EYEDIR);
-	vec3 sd = LIGHT0_ENABLED ? normalize(LIGHT0_DIRECTION) : vec3(0.0, 1.0, 0.0);
+	vec3 sd = normalize(sun_dir);
 	float sun_h = sd.y;
 	float day = smoothstep(-0.12, 0.25, sun_h);
 	float dusk = smoothstep(0.35, 0.0, abs(sun_h - 0.02));
