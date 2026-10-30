@@ -398,7 +398,9 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
         double covered = 0;
         for (auto *p : parts)
             if (point_in_poly(p->ctr, b.rings)) covered += p->area;
-        if (covered >= 0.4 * b.area) continue;
+        // OSM convention (Overture keeps it as has_parts): a building drawn by its parts is not drawn itself
+        bool has_parts = tagv(b.b->tags, "earthsim:has_parts") == "yes";
+        if (covered >= 0.4 * b.area || (has_parts && covered > 0.05 * b.area)) continue;
         BuildingGeom g;
         g.rings = b.rings;
         double la, lo;

@@ -285,6 +285,10 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                 if (!in_tile(c)) continue;
                 rb.tags = building_tags(f, part);
                 rb.part = part;
+                {
+                    auto hp = f.prop("has_parts");
+                    if (hp && ((hp->kind == mvt::Value::Bool && hp->b) || f.str("has_parts") == "true")) set_tag(rb.tags, "earthsim:has_parts", "yes");
+                }
                 rb.id = "ov:" + std::to_string(f.id) + ":" + std::to_string((long long)std::llround(c.lat * 1e7)) + ":" + std::to_string((long long)std::llround(c.lon * 1e7));
                 out.buildings.push_back(std::move(rb));
             }

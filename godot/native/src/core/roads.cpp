@@ -258,7 +258,24 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
         for (auto &q : r.pts) q.z = c.G(q.p);
         if (r.bridge) {
             double L = chain_len(r.pts), za = r.pts.front().z, zb = r.pts.back().z;
-            double amp = r.layer > 0 ? 6.0 * r.layer : 1.2;
+            // how high it must rise: over roads a lorry's clearance, over water a little, otherwise it follows
+            // the ground between its ends (viaducts over valleys)
+            auto seg_x = [](V2 a, V2 b, V2 c, V2 d) {
+                double d1 = (b - a).cross(c - a), d2 = (b - a).cross(d - a), d3 = (d - c).cross(a - c), d4 = (d - c).cross(b - c);
+                return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0));
+            };
+            bool over_road = false, over_water = false;
+            for (auto &o : roads) {
+                if (&o == &r || o.bridge || over_road) continue;
+                for (size_t i = 0; i + 1 < r.pts.size() && !over_road; i += 2)
+                    for (size_t k = 0; k + 1 < o.pts.size(); k++)
+                        if (seg_x(r.pts[i].p, r.pts[std::min(i + 2, r.pts.size() - 1)].p, o.pts[k].p, o.pts[k + 1].p)) {
+                            over_road = true;
+                            break;
+                        }
+            }
+            (void)over_water;
+            double amp = over_road ? 6.0 * std::max(1, r.layer) : std::min(2.0, 0.02 * L);
             double R = std::min(L / 2, 45.0);
             double s = 0;
             for (size_t i = 0; i < r.pts.size(); i++) {
