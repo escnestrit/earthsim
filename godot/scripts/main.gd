@@ -100,6 +100,8 @@ func _ready() -> void:
 	for k in ["traffic", "people", "fov", "volume", "gi", "ssr", "shadows", "fog", "hud"]:
 		if settings.has_section_key("game", k):
 			apply_setting(k, settings.get_value("game", k))
+	if args.has("traffic"):
+		apply_setting("traffic", int(args["traffic"]))
 	if args.has("nogi"):
 		gi_wanted = false
 		env.sdfgi_enabled = false

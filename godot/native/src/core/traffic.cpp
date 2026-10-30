@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "traffic.hpp"
 #include <algorithm>
 #include "geom.hpp"
@@ -206,6 +207,8 @@ void Traffic::step(double dt, V3 player, V3 pvel) {
                 }
             }
         }
+        if (getenv("EC_TRAFFIC_DEBUG") && std::hypot(c.pos.x - player.x, c.pos.y - player.y) < 6.0)
+            fprintf(stderr, "traffic %d near player: d %.2f v %.1f loose %d yaw %.2f pos %.1f,%.1f,%.1f player %.1f,%.1f,%.1f\n", c.id, std::hypot(c.pos.x - player.x, c.pos.y - player.y), c.v, (int)c.loose, c.yaw, c.pos.x, c.pos.y, c.pos.z, player.x, player.y, player.z);
         if (c.loose) {
             // sliding: tyre friction scrubs speed and spin, a little rolling along the heading
             V2 vv(c.lvx, c.lvy);
@@ -265,14 +268,15 @@ void Traffic::step(double dt, V3 player, V3 pvel) {
         // gap to the nearest obstacle ahead along the heading
         V2 hd(std::cos(c.yaw), std::sin(c.yaw));
         double gap = 1e9;
-        auto check = [&](V3 p, double their_v) {
+        auto check = [&](V3 p, double their_v, double reach) {
             double dx = p.x - c.pos.x, dy = p.y - c.pos.y;
             double ahead = dx * hd.x + dy * hd.y, side = std::abs(-dx * hd.y + dy * hd.x);
-            if (ahead > 0.5 && ahead < 50 && side < 2.0 && std::abs(p.z - c.pos.z) < 4) gap = std::min(gap, ahead - 4.7 + their_v * 0.6);
+            if (ahead > 0.5 && ahead < 50 && side < reach && std::abs(p.z - c.pos.z) < 4) gap = std::min(gap, ahead - 4.7 + their_v * 0.6);
         };
         for (size_t j = 0; j < cars_.size(); j++)
-            if (j != i) check(cars_[j].pos, cars_[j].v);
-        check(player, 0);
+            if (j != i) check(cars_[j].pos, cars_[j].v, 2.0);
+        // the player can stand anywhere (on a lane line, across lanes): two car widths plus this car's lane drift
+        check(player, std::max(0.0, V2(pvel.x, pvel.y).dot(hd)), 2.7);
         double headway = 1.3 / c.aggr;
         double vsafe = std::max(0.0, (gap - 2.0) / headway);
         vt = std::min(vt, vsafe);

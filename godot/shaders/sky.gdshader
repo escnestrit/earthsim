@@ -11,24 +11,33 @@ uniform float cloud_speed = 0.004;
 // the real sun direction (the key light becomes the moon at night)
 uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
 
+// integer-lattice hash (no sin, no big products): stable at any distance, so no streaks or seams
 float hash(vec2 p) {
-	p = fract(p * vec2(123.34, 456.21));
-	p += dot(p, p + 45.32);
-	return fract(p.x * p.y);
+	uvec2 q = uvec2(ivec2(floor(p)) + ivec2(32768));
+	uint h = q.x * 1597334677u ^ q.y * 3812015801u;
+	h = h * 1597334677u;
+	h ^= h >> 16u;
+	return float(h) * (1.0 / 4294967295.0);
 }
 float noise(vec2 p) {
 	vec2 i = floor(p), f = fract(p);
-	f = f * f * (3.0 - 2.0 * f);
+	f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 	return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
 }
+const mat2 ROT = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8));
 float fbm(vec2 p) {
 	float s = 0.0, a = 0.5;
 	for (int i = 0; i < 6; i++) {
 		s += noise(p) * a;
-		p = p * 2.03 + vec2(1.7, 9.2);
+		p = ROT * p * 2.02 + vec2(1.7, 9.2);
 		a *= 0.5;
 	}
 	return s;
+}
+// cloud density: a warped fbm, so shapes are billows rather than blotches
+float clouds(vec2 uv) {
+	vec2 w = vec2(fbm(uv * 0.5 + vec2(3.1, 7.7)), fbm(uv * 0.5 + vec2(8.3, 2.8)));
+	return fbm(uv + (w - 0.5) * 1.6);
 }
 
 void sky() {
@@ -50,15 +59,22 @@ void sky() {
 	col += vec3(1.0, 0.85, 0.7) * pow(max(cosang, 0.0), 6.0) * 0.12 * day;
 	// clouds on a dome
 	if (d.y > 0.0) {
-		vec2 uv = d.xz / (d.y + 0.08) * 1.4 + TIME * cloud_speed * vec2(1.0, 0.4);
-		float c = fbm(uv * 1.3);
-		float cov = smoothstep(1.0 - cloud_cover, 1.0 - cloud_cover + 0.35, c);
-		float shade = fbm(uv * 1.3 + sd.xz * 0.06);
-		vec3 lit = mix(vec3(0.55, 0.58, 0.64), vec3(1.0, 0.98, 0.95), clamp(1.0 - (shade - c) * 4.0, 0.0, 1.0));
+		// plane at cloud height seen from below; kept bounded so precision holds near the horizon
+		vec2 uv = d.xz / max(d.y + 0.15, 0.15) * 0.45;
+		uv += TIME * cloud_speed * vec2(1.0, 0.4) * 6.0;
+		float c = clouds(uv);
+		float cov = smoothstep(1.02 - cloud_cover * 0.6, 1.2 - cloud_cover * 0.6, c);
+		// light: density a little toward the sun says how much cloud the light crosses
+		float toward = clouds(uv + normalize(sd.xz + 1e-4) * 0.08);
+		float dens = clamp((toward - c) * 5.0 + 0.5, 0.0, 1.0);
+		vec3 lit = mix(vec3(1.0, 0.98, 0.95), vec3(0.5, 0.54, 0.6), dens);
+		lit = mix(lit, vec3(0.62, 0.64, 0.68), smoothstep(0.6, 1.0, cloud_cover) * 0.6);
+		// thin edges glow round the sun
+		lit += vec3(1.0, 0.9, 0.75) * pow(max(cosang, 0.0), 12.0) * (1.0 - cov) * 0.8 * day;
 		lit = mix(lit, vec3(1.0, 0.62, 0.4), dusk * 0.6);
 		lit *= mix(0.06, 1.0, day);
-		float fade = smoothstep(0.0, 0.18, d.y);
-		col = mix(col, lit, cov * fade * 0.92);
+		float fade = smoothstep(0.0, 0.12, d.y);
+		col = mix(col, mix(hor, lit, fade), cov * 0.95);
 		// stars
 		float night = 1.0 - smoothstep(-0.2, 0.0, sun_h);
 		vec2 sp = d.xz / (d.y + 0.3) * 160.0;
