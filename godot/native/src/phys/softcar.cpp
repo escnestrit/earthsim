@@ -451,6 +451,8 @@ CarInput Driver::update(double dt, bool upk, bool downk, bool lk, bool rk, bool 
     if (std::abs(steer) > lock && dir != 0) steer = (steer > 0 ? 1 : -1) * lock;
     CarInput in;
     in.throttle = throttle, in.brake = brake, in.steer = steer, in.handbrake = handbrake, in.reverse = reverse;
+    // hold the car when stopped with no pedal pressed (like an automatic's hill hold)
+    if (thr == 0 && brk == 0 && std::abs(v) < 1.0) in.brake = std::max(in.brake, 0.35);
     return in;
 }
 

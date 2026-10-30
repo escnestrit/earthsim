@@ -8,6 +8,7 @@ var car: EarthCar
 var spawn := Vector3.ZERO
 var spawn_yaw := 0.0
 var cam_grounded := false
+var last_car_pos := Vector3.ZERO
 var cam: Camera3D
 var sun: DirectionalLight3D
 var env: Environment
@@ -222,6 +223,10 @@ func _process(dt: float) -> void:
 	var focus_p: Vector3 = car.global_position if spawn_ready else spawn
 	world.focus = focus_p if cam_mode != 2 else cam.global_position
 	_update_camera(dt)
+	if spawn_ready:
+		var cv := (car.global_position - last_car_pos) / maxf(dt, 1e-4)
+		last_car_pos = car.global_position
+		world.update_traffic(dt, car.global_position, cv)
 	fps_acc = lerpf(fps_acc, 1.0 / maxf(dt, 1e-4), 0.05)
 	var ll := world.stream.latlon(car.global_position)
 	var gear_s: String = "R" if car.gear() < 0 else str(car.gear())

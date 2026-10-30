@@ -431,10 +431,12 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
         std::vector<RPt> P = cut(r0.pts, r0.trim[0], L - r0.trim[1]);
         if (P.size() < 2) continue;
         c.out.roads++;
-        for (size_t i = 0; i + 1 < P.size(); i++) {
-            if (!c.own((P[i].p + P[i + 1].p) * 0.5)) continue;
+        // centre line through the junctions (untrimmed), so pieces meet at shared nodes
+        for (size_t i = 0; i + 1 < r0.pts.size(); i++) {
+            const RPt &a = r0.pts[i], &b = r0.pts[i + 1];
+            if (!c.own((a.p + b.p) * 0.5)) continue;
             double zo2 = 0.03 + r0.prio * 0.004;
-            c.out.lanes.push_back({V3(P[i].p.x, P[i].p.y, P[i].z + zo2), V3(P[i + 1].p.x, P[i + 1].p.y, P[i + 1].z + zo2), r0.hw, r0.oneway, r0.prio, r0.lanes});
+            c.out.lanes.push_back({V3(a.p.x, a.p.y, a.z + zo2), V3(b.p.x, b.p.y, b.z + zo2), r0.hw, r0.oneway, r0.prio, r0.lanes});
         }
         std::vector<V2> pp(P.size()), nn;
         std::vector<double> sc, s(P.size(), 0);

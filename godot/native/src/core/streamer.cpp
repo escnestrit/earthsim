@@ -245,6 +245,7 @@ void Streamer::schedule_locked() {
                 if (it->second.built) drops_.push_back({it->first.x, it->first.y});
                 coll_->remove(it->first.x, it->first.y);
                 lanes_.erase(it->first);
+                lanes_version_++;
                 if (!it->second.queued) {
                     it = chunks_.erase(it);
                     continue;
@@ -377,6 +378,7 @@ void Streamer::build_worker() {
             coll_->add(cc);
             std::lock_guard<std::mutex> l(mu_);
             lanes_[job.first] = out->lanes;
+            lanes_version_++;
         }
         {
             std::lock_guard<std::mutex> l(mu_);
@@ -515,6 +517,26 @@ bool Streamer::nearest_road(double x, double y, double radius, V3 &pos, double &
             }
         }
     return found;
+}
+
+const std::vector<TrafficCar> &Streamer::traffic_step(double dt, V3 player, V3 pv, int count) {
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (traffic_version_ != lanes_version_) {
+            std::vector<LaneSeg> all;
+            for (auto &[k, v] : lanes_)
+                if (!v.empty() && std::hypot((k.x + 0.5) * CHUNK - player.x, (k.y + 0.5) * CHUNK - player.y) < traffic_.radius + 400) all.insert(all.end(), v.begin(), v.end());
+            traffic_.set_roads(all);
+            traffic_version_ = lanes_version_;
+        }
+    }
+    traffic_.target = count;
+    traffic_.step(dt, player, pv);
+    std::vector<DynBox> boxes;
+    for (auto &c : traffic_.cars())
+        if (std::hypot(c.pos.x - player.x, c.pos.y - player.y) < 60) boxes.push_back({V3(c.pos.x, c.pos.y, c.pos.z + 0.75), c.yaw, 2.2, 0.9, 0.7});
+    coll_->set_dynamic(std::move(boxes));
+    return traffic_.cars();
 }
 
 std::string Streamer::status() {

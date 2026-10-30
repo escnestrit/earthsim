@@ -12,6 +12,7 @@
 #include "chunk.hpp"
 #include "pmtiles.hpp"
 #include "../phys/collide.hpp"
+#include "traffic.hpp"
 
 namespace ec {
 
@@ -54,6 +55,8 @@ public:
     // nearest drivable road point to (x, y) within `radius`: position on the centre line (right-hand lane
     // offset applied), heading along the road; false when none is loaded
     bool nearest_road(double x, double y, double radius, V3 &pos, double &heading);
+    // advance the traffic around the player (main thread); cars also become obstacles for the soft bodies
+    const std::vector<TrafficCar> &traffic_step(double dt, V3 player, V3 player_vel, int count);
     // blocks until terrain at (x, y) is loaded or `timeout_s` passes
     bool wait_ground(double x, double y, double timeout_s);
 
@@ -92,6 +95,8 @@ private:
     std::map<Key, ChunkState> chunks_;
     std::map<uint64_t, std::shared_ptr<const RawTile>> src_;  // z14 tiles
     std::map<Key, std::vector<LaneSeg>> lanes_;
+    int lanes_version_ = 0, traffic_version_ = -1;
+    Traffic traffic_;
     std::set<uint64_t> src_pending_, dem_pending_, enrich_pending_, enrich_done_;
     std::set<uint64_t> dem_ok_;
     std::deque<NetJob> net_q_;

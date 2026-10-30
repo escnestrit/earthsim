@@ -36,8 +36,15 @@ struct ColChunk {
     void index();
 };
 
+// a moving box (traffic car): centre, heading about z, half extents
+struct DynBox {
+    V3 c;
+    double yaw, hx, hy, hz;
+};
+
 class CollisionWorld {
 public:
+    void set_dynamic(std::vector<DynBox> boxes);
     void add(std::shared_ptr<ColChunk> c);
     void remove(int cx, int cy);
     bool has(int cx, int cy) const;
@@ -52,6 +59,7 @@ public:
 private:
     mutable std::shared_mutex mu_;
     std::map<std::pair<int, int>, std::shared_ptr<ColChunk>> chunks_;
+    std::vector<DynBox> dyn_;
     const ColChunk *chunk_at(double x, double y) const;
 };
 

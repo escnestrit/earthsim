@@ -59,6 +59,11 @@ void ColChunk::index() {
     }
 }
 
+void CollisionWorld::set_dynamic(std::vector<DynBox> b) {
+    std::unique_lock<std::shared_mutex> l(mu_);
+    dyn_ = std::move(b);
+}
+
 void CollisionWorld::add(std::shared_ptr<ColChunk> c) {
     if (c->cells.empty()) c->index();
     std::unique_lock<std::shared_mutex> l(mu_);
@@ -118,6 +123,30 @@ Surface CollisionWorld::surface(double x, double y, double z, double step) const
 void CollisionWorld::sphere(V3 p, double r, std::vector<Hit> &out, bool terrain) const {
     out.clear();
     std::shared_lock<std::shared_mutex> l(mu_);
+    for (auto &b : dyn_) {
+        V3 d = p - b.c;
+        if (std::abs(d.z) > b.hz + r || d.x * d.x + d.y * d.y > (b.hx + b.hy + r) * (b.hx + b.hy + r)) continue;
+        double cs = std::cos(b.yaw), sn = std::sin(b.yaw);
+        double lx = d.x * cs + d.y * sn, ly = -d.x * sn + d.y * cs, lz = d.z;
+        double qx = std::clamp(lx, -b.hx, b.hx), qy = std::clamp(ly, -b.hy, b.hy), qz = std::clamp(lz, -b.hz, b.hz);
+        double ex = lx - qx, ey = ly - qy, ez = lz - qz;
+        double dist = std::sqrt(ex * ex + ey * ey + ez * ez);
+        V3 nl;
+        double depth;
+        if (dist > 1e-6) {
+            if (dist >= r) continue;
+            nl = V3(ex, ey, ez) * (1 / dist);
+            depth = r - dist;
+        } else {
+            // centre inside the box: push out through the nearest side
+            double px = b.hx - std::abs(lx), py = b.hy - std::abs(ly), pz = b.hz - std::abs(lz);
+            if (px < py && px < pz) nl = V3(lx > 0 ? 1 : -1, 0, 0), depth = px + r;
+            else if (py < pz) nl = V3(0, ly > 0 ? 1 : -1, 0), depth = py + r;
+            else nl = V3(0, 0, lz > 0 ? 1 : -1), depth = pz + r;
+        }
+        V3 n(nl.x * cs - nl.y * sn, nl.x * sn + nl.y * cs, nl.z);
+        out.push_back({n, depth, 1.0});
+    }
     // chunks touched by the sphere's box
     int ci0 = (int)std::floor((p.x - r) / CHUNK), ci1 = (int)std::floor((p.x + r) / CHUNK);
     int cj0 = (int)std::floor((p.y - r) / CHUNK), cj1 = (int)std::floor((p.y + r) / CHUNK);
@@ -165,6 +194,8 @@ void CollisionWorld::sphere(V3 p, double r, std::vector<Hit> &out, bool terrain)
 
 bool CollisionWorld::any_near(V3 lo, V3 hi) const {
     std::shared_lock<std::shared_mutex> l(mu_);
+    for (auto &b : dyn_)
+        if (b.c.x + b.hx + b.hy > lo.x && b.c.x - b.hx - b.hy < hi.x && b.c.y + b.hx + b.hy > lo.y && b.c.y - b.hx - b.hy < hi.y && b.c.z + b.hz > lo.z && b.c.z - b.hz < hi.z) return true;
     int ci0 = (int)std::floor(lo.x / CHUNK), ci1 = (int)std::floor(hi.x / CHUNK);
     int cj0 = (int)std::floor(lo.y / CHUNK), cj1 = (int)std::floor(hi.y / CHUNK);
     for (int cj = cj0; cj <= cj1; cj++)

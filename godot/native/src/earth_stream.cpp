@@ -228,7 +228,23 @@ Dictionary EarthStream::nearest_road(Vector3 p, double radius) {
     return d;
 }
 
+PackedFloat32Array EarthStream::traffic(double dt, Vector3 p, Vector3 v, int count) {
+    PackedFloat32Array a;
+    if (!s_) return a;
+    auto &cars = s_->traffic_step(dt, ec::V3(p.x, -p.z, p.y), ec::V3(v.x, -v.z, v.y), count);
+    a.resize((int64_t)cars.size() * 8);
+    float *f = a.ptrw();
+    for (size_t i = 0; i < cars.size(); i++) {
+        auto &c = cars[i];
+        f[i * 8] = (float)c.pos.x, f[i * 8 + 1] = (float)c.pos.z, f[i * 8 + 2] = (float)-c.pos.y;
+        f[i * 8 + 3] = (float)c.yaw, f[i * 8 + 4] = (float)c.pitch;
+        f[i * 8 + 5] = c.col.r, f[i * 8 + 6] = c.col.g, f[i * 8 + 7] = c.col.b;
+    }
+    return a;
+}
+
 void EarthStream::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("traffic", "dt", "player", "player_vel", "count"), &EarthStream::traffic);
     ClassDB::bind_method(D_METHOD("nearest_road", "pos", "radius"), &EarthStream::nearest_road);
     ClassDB::bind_method(D_METHOD("collision_ready", "pos"), &EarthStream::collision_ready);
     ClassDB::bind_method(D_METHOD("start", "lat", "lon", "cache_dir", "online", "detail_radius", "terrain_radius", "enrich"), &EarthStream::start);

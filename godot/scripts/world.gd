@@ -19,6 +19,8 @@ var models := {}         # "kind:variant" -> ArrayMesh
 var focus := Vector3.ZERO
 var budget_ms := 6.0
 var lamp_lights: Array[OmniLight3D] = []
+var traffic_mm: MultiMeshInstance3D
+var traffic_count := 40
 var lamp_points := {}     # Vector2i -> PackedVector3Array
 
 func start(lat: float, lon: float, cache_dir: String, online := true, detail := 700.0, far := 2400.0, enrich := true) -> void:
@@ -46,6 +48,28 @@ func _build_models() -> void:
 				am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, d[mat])
 				am.surface_set_material(am.get_surface_count() - 1, mats.get_mat(mat))
 			models["%d:%d" % [kind, v]] = am
+
+func update_traffic(dt: float, player: Vector3, vel: Vector3) -> void:
+	if traffic_mm == null:
+		traffic_mm = MultiMeshInstance3D.new()
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = models["%d:0" % I_CAR]
+		traffic_mm.multimesh = mm
+		add_child(traffic_mm)
+	var a: PackedFloat32Array = stream.traffic(dt, player, vel, traffic_count)
+	var n := a.size() / 8
+	var mm2 := traffic_mm.multimesh
+	if mm2.instance_count != n:
+		mm2.instance_count = n
+	for i in n:
+		var o := i * 8
+		var b := Basis(Vector3.UP, a[o + 3]) * Basis(Vector3(0, 0, 1), a[o + 4])
+		mm2.set_instance_transform(i, Transform3D(b, Vector3(a[o], a[o + 1], a[o + 2])))
+		mm2.set_instance_color(i, Color(a[o + 5], a[o + 6], a[o + 7]))
+	# the multimesh's bounds must follow the cars
+	traffic_mm.custom_aabb = AABB(player - Vector3(600, 300, 600), Vector3(1200, 600, 1200))
 
 func ground(x: float, z: float) -> float:
 	return stream.ground(x, z)
