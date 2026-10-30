@@ -36,6 +36,8 @@ enum Mat : int {
     M_CONIFER = 32,
     M_CARPAINT = 33,
     M_TIRE = 34,
+    M_SIGNAL = 35,
+    M_SCREEN = 36,  // LED advertising screens (animated in the shader, uv 0..1 over the screen)  // traffic light lamps (animated in the shader)
     M_FACADE = 100,  // + style * 3 + variant
 };
 
@@ -139,6 +141,14 @@ struct MeshBuf {
         col.insert(col.end(), o.col.begin(), o.col.end());
         for (int i : o.idx) idx.push_back(base + i);
     }
+};
+
+// a text sign placed in the world: outward normal angle in the local x/y plane, max width in metres
+struct Label {
+    V3 p;
+    double ang = 0, max_w = 3;
+    std::string text;
+    Col c;
 };
 
 struct MeshSet {

@@ -32,7 +32,7 @@ std::vector<std::string> steam_libraries(const std::string &vdf) {
 static std::string vehicles_in(const sfs::path &install) {
     std::error_code ec;
     sfs::path v = install / "content" / "vehicles";
-    if (sfs::is_regular_file(v / "common.zip", ec)) return v.string();
+    if (sfs::is_regular_file(v / "common.zip", ec)) return v.u8string();
     return "";
 }
 
@@ -40,7 +40,7 @@ std::string find_beamng_vehicles() {
     std::error_code ec;
     if (const char *e = getenv("EARTHSIM_BEAMNG")) {
         sfs::path p(e);
-        if (sfs::is_regular_file(p / "common.zip", ec)) return p.string();
+        if (sfs::is_regular_file(p / "common.zip", ec)) return p.u8string();
         std::string v = vehicles_in(p);
         if (!v.empty()) return v;
     }

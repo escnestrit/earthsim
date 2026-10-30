@@ -5,7 +5,7 @@ which has internet access; the development sandbox has none).
 Saves, under out/:
   overture/<release>/<theme>/14/<x>/<y>.mvt   raw (decompressed) Overture vector tiles, themes buildings,
                                                transportation, base
-  osm/enrich_14_<x>_<y>.json                   Overpass answer of the game's OSM tag query per z14 tile
+  osm/enrich2_14_<x>_<y>.json                   Overpass answer of the game's OSM tag query per z14 tile
   dem/13/<x>/<y>.png                           terrarium elevation tiles
   region.json                                  what was fetched
 Data: (c) OpenStreetMap contributors (ODbL), (c) Overture Maps Foundation (CDLA / ODbL per theme),
@@ -99,18 +99,14 @@ def fetch_osm(tiles, out, sess):
     for (x, y) in tiles:
         s, w, n, e = bounds(14, x, y)
         bb = f"{s:.6f},{w:.6f},{n:.6f},{e:.6f}"
-        q = (f'[out:json][timeout:60];(way["building"]["building:levels"]({bb});way["building"]["height"]({bb});'
-             f'relation["building"]["building:levels"]({bb});relation["building"]["height"]({bb});'
-             f'way["building"][~"^(amenity|shop|office|tourism|historic|man_made|name|building:use)$"~"."]({bb});'
-             f'way["building"~"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$"]({bb}););out tags center;'
-             f'node["entrance"]({bb});out body;'
-             f'(way["highway"]["oneway"]({bb});way["highway"]["lanes"]({bb});way["highway"]["width"]({bb}););out tags center;')
+        # the same query as the game (godot/native/src/core/enrich.cpp, osm_enrich_query)
+        q = f'[out:json][timeout:60];(way["building"]["building:levels"]({bb});way["building"]["addr:housenumber"]({bb});way["building"]["height"]({bb});relation["building"]["building:levels"]({bb});relation["building"]["height"]({bb});way["building"][~"^(amenity|shop|office|tourism|historic|man_made|name|building:use)$"~"."]({bb});way["building"~"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$"]({bb}););out tags center;node["entrance"]({bb});out body;(node["highway"~"^(traffic_signals|stop|give_way|crossing|bus_stop)$"]({bb});node["traffic_sign"]({bb});node["shop"]({bb});node["amenity"~"^(bench|waste_basket|atm|cafe|restaurant|fast_food|bar|pub|pharmacy|bank|post_office|cinema|theatre|fuel|car_wash|clinic|dentist|library|marketplace)$"]({bb});node["office"]["name"]({bb}););out body;(way["highway"]["oneway"]({bb});way["highway"]["lanes"]({bb});way["highway"]["width"]({bb}););out tags center;way["highway"]["bridge"~"^(yes|viaduct|movable|cantilever|beam|aqueduct)$"]({bb});out tags geom;'
         for k in range(3):
             ep = OVERPASS[k % len(OVERPASS)]
             try:
                 r = sess.post(ep, data={"data": q}, timeout=100)
                 if r.status_code == 200 and r.text.lstrip().startswith("{"):
-                    open(f"{out}/osm/enrich_14_{x}_{y}.json", "w").write(r.text)
+                    open(f"{out}/osm/enrich2_14_{x}_{y}.json", "w").write(r.text)
                     break
                 print("overpass", ep, r.status_code)
             except Exception as ex:

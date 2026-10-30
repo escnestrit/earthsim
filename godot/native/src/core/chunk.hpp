@@ -16,7 +16,9 @@ constexpr int GRID_N = 256;     // terrain cells per chunk side (1 m)
 constexpr int SPLAT_N = 256;    // ground-cover texels per side (1 m)
 constexpr double FEATURE_MARGIN = 48;  // features this far outside a chunk still shape it
 
-enum InstKind { I_TREE = 0, I_CONIFER = 1, I_BUSH = 2, I_LAMP = 3, I_CAR = 4, I_BENCH = 5, I_CAR_INTERIOR = 6, I_STEERING_WHEEL = 7, I_PERSON = 8 };
+enum InstKind { I_TREE = 0, I_CONIFER = 1, I_BUSH = 2, I_LAMP = 3, I_CAR = 4, I_BENCH = 5, I_CAR_INTERIOR = 6, I_STEERING_WHEEL = 7, I_PERSON = 8, I_SIGNAL = 9, I_SIGN = 10, I_BIN = 11, I_SHELTER = 12 };
+// I_SIGN variants (Instance.c.r holds the index)
+enum SignKind { SG_STOP = 0, SG_YIELD = 1, SG_PRIORITY = 2, SG_CROSSING = 3, SG_SPEED30 = 4, SG_SPEED40 = 5, SG_SPEED50 = 6, SG_SPEED60 = 7, SG_NOENTRY = 8, SG_PARKING = 9, SG_BUS = 10, SG_COUNT = 11 };
 
 struct Instance {
     int kind = 0;
@@ -48,6 +50,7 @@ struct ChunkOut {
     std::vector<float> coll;         // static collision triangles (xyz)
     std::vector<Instance> inst;
     std::vector<LaneSeg> lanes;  // owned road centre-line pieces
+    std::vector<Label> labels;             // shop names and the like
     std::vector<std::pair<V3, V3>> walks;  // pedestrian lines: sidewalks and paths (owned pieces)
     // grass tufts in 64 m blocks (row-major 4x4): MultiMesh buffers in Godot axes, 16 floats per tuft
     // (3x4 transform rows, then colour)

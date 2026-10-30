@@ -1,6 +1,7 @@
 // Road network of a chunk: pieces joined into chains, junctions with rounded kerbs, carriageways that sit on
 // terrain flattened under them, raised sidewalks with kerbs, markings and zebra crossings, bridges with
 // parapets and piers, street lamps.
+#include <array>
 #include <algorithm>
 #include <map>
 #include <set>
@@ -24,6 +25,8 @@ struct Road {
     bool bridge = false, urban = false;
     int oneway = 0, layer = 0, prio = 0;
     int lanes = 2;
+    std::string name;
+    int speed = 0;
     double trim[2] = {0, 0};
     int node[2] = {-1, -1};
     bool alive = true;
@@ -161,11 +164,13 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             r.hw = std::clamp(rr.width, 3.0, 40.0) / 2;
             r.bridge = rr.bridge;
             r.oneway = rr.oneway;
+            r.name = rr.name;
+            r.speed = rr.speed;
             r.layer = rr.layer;
             r.prio = prio_of(rr.cls);
             r.urban = urban;
             r.lanes = std::max(1, (int)std::lround(r.hw * 2 / 3.3));
-            if (urban && wants_sidewalk(rr.cls) && !rr.bridge) r.sw = r.prio >= 6 ? 3.5 : 2.5;
+            if (urban && wants_sidewalk(rr.cls) && !rr.bridge) r.sw = r.prio >= 6 ? 4.5 : r.prio >= 5 ? 3.5 : 3.0;
             // densify at <= 3 m per piece; dashes on alternate sub-segments
             std::vector<size_t> orig;
             for (size_t i = 0; i < p.size(); i++) {
@@ -255,7 +260,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
     }
     // ---- heights: natural ground; bridges arch between their ends
     for (auto &r : roads) {
-        for (auto &q : r.pts) q.z = c.G(q.p);
+        for (auto &q : r.pts) q.z = c.Gs(q.p);
         if (r.bridge) {
             double L = chain_len(r.pts), za = r.pts.front().z, zb = r.pts.back().z;
             // how high it must rise: over roads a lorry's clearance, over water a little, otherwise it follows
@@ -440,9 +445,62 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             c.stroke(n.p, n.p, rad + 1, [&](int t) { c.layer[t] = L_ASPHALT, c.occ[t] |= O_ROAD; });
         }
 
+    auto free_spot = [&](V2 p, double clear) {
+        for (auto &br : c.building_rings)
+            if (ring_dist(p, br) < clear || point_in_ring(p, br)) return false;
+        return true;
+    };
+    // ---- dual carriageways: a side of a one-way road that runs alongside another road a few metres away gets
+    // a central reservation (kerbed strip, guard rail on fast roads) instead of a sidewalk
+    std::vector<std::array<double, 2>> med(roads.size(), {-1.0, -1.0});
+    {
+        std::vector<std::pair<V2, V2>> bb(roads.size());
+        for (size_t i = 0; i < roads.size(); i++) {
+            V2 lo(1e300, 1e300), hi(-1e300, -1e300);
+            for (auto &q : roads[i].pts) lo = V2(std::min(lo.x, q.p.x), std::min(lo.y, q.p.y)), hi = V2(std::max(hi.x, q.p.x), std::max(hi.y, q.p.y));
+            bb[i] = {lo, hi};
+        }
+        for (size_t ri = 0; ri < roads.size(); ri++) {
+            const Road &r = roads[ri];
+            if (!r.alive || r.oneway == 0 || r.pts.size() < 2 || r.prio < 3) continue;
+            for (int sd = 0; sd < 2; sd++) {
+                double side = sd == 0 ? 1 : -1;
+                int n = 0, hit = 0;
+                std::vector<double> gaps;
+                for (size_t i = 0; i + 1 < r.pts.size(); i += 2) {
+                    V2 a = r.pts[i].p, b = r.pts[i + 1].p, d = (b - a).norm();
+                    V2 q = (a + b) * 0.5 + d.perp() * (side * (r.hw + 0.2));
+                    n++;
+                    double best = 1e9;
+                    for (size_t oi = 0; oi < roads.size(); oi++) {
+                        if (oi == ri || !roads[oi].alive) continue;
+                        const Road &o = roads[oi];
+                        if (q.x < bb[oi].first.x - 20 || q.x > bb[oi].second.x + 20 || q.y < bb[oi].first.y - 20 || q.y > bb[oi].second.y + 20) continue;
+                        for (size_t k = 0; k + 1 < o.pts.size(); k++) {
+                            V2 e = o.pts[k + 1].p - o.pts[k].p;
+                            double el = e.len();
+                            if (el < 1e-6 || std::abs(d.cross(e * (1 / el))) > 0.35) continue;  // only parallel pieces
+                            double dist = seg_dist(q, o.pts[k].p, o.pts[k + 1].p) - o.hw;
+                            // on our side of the road
+                            V2 mid = (o.pts[k].p + o.pts[k + 1].p) * 0.5;
+                            if ((mid - a).dot(d.perp()) * side <= 0) continue;
+                            best = std::min(best, dist);
+                        }
+                    }
+                    if (best < 14) hit++, gaps.push_back(std::max(0.0, best));
+                }
+                if (n > 0 && hit * 2 > n) {
+                    std::nth_element(gaps.begin(), gaps.begin() + gaps.size() / 2, gaps.end());
+                    med[ri][sd] = gaps[gaps.size() / 2] + 0.2;
+                }
+            }
+        }
+    }
+
     // ---- meshes
     MeshBuf &AS = c.out.ms[M_ASPHALT], &MK = c.out.ms[M_MARKING], &CU = c.out.ms[M_CURB], &PV = c.out.ms[M_PAVERS], &CO = c.out.ms[M_CONCRETE];
-    for (auto &r0 : roads) {
+    for (size_t r0i = 0; r0i < roads.size(); r0i++) {
+        Road &r0 = roads[r0i];
         double L = chain_len(r0.pts);
         if (L - r0.trim[0] - r0.trim[1] < 0.2) continue;
         std::vector<RPt> P = cut(r0.pts, r0.trim[0], L - r0.trim[1]);
@@ -548,9 +606,54 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             }
         }
         // sidewalks: kerb face, kerb stone, paving, back face down into the ground
+        // central reservation on median sides: kerb, a strip out to the middle of the gap, guard rail on fast roads
+        if (!r0.bridge)
+            for (int side : {1, -1}) {
+                double gap = med[r0i][side > 0 ? 0 : 1];
+                if (gap < 0) continue;
+                Col kc{0.78f, 0.78f, 0.76f, 1};
+                double half = std::max(0.25, gap / 2 - 0.02);
+                double o0 = side * r0.hw, o1 = side * (r0.hw + half);
+                if (r0.prio >= 7 || gap < 1.2) {
+                    // fast roads and tight gaps: a concrete barrier (New Jersey profile, roughly), solid in collision
+                    double bw = std::min(half, 0.3);
+                    double ob = side * (r0.hw + half - bw);
+                    strip(CO, side > 0 ? o0 : ob, side > 0 ? ob : o0, zo, zo, Col{0.55f, 0.55f, 0.53f, 1}, true, 3);
+                    face(CO, ob, zo - 0.05, zo + 0.25, side > 0 ? -1 : 1, Col{0.74f, 0.73f, 0.7f, 1}, true);
+                    double ot = side * (r0.hw + half - bw * 0.35);
+                    // sloped lower face up to the narrow top
+                    for (size_t i = 0; i + 1 < P.size(); i++) {
+                        if (!c.own((pp[i] + pp[i + 1]) * 0.5)) continue;
+                        V3 a = Q(i, ob, zo + 0.25), b = Q(i + 1, ob, zo + 0.25), d = Q(i + 1, ot, zo + 0.85), e = Q(i, ot, zo + 0.85);
+                        if (side < 0) std::swap(a, b), std::swap(d, e);
+                        CO.quadn(a, b, d, e, Col{0.74f, 0.73f, 0.7f, 1});
+                        c.tri_coll(a, b, d);
+                        c.tri_coll(a, d, e);
+                    }
+                    strip(CO, side > 0 ? ot : o1, side > 0 ? o1 : ot, zo + 0.85, zo + 0.85, Col{0.78f, 0.77f, 0.74f, 1}, true, 2);
+                } else {
+                    // kerbed island: grass-coloured top on wide medians, paving on narrow ones
+                    face(CU, o0, zo - 0.02, zo + 0.15, side > 0 ? -1 : 1, kc, true);
+                    MeshBuf &top = gap > 3 ? c.out.ms[M_GRASS] : CU;
+                    Col tc = gap > 3 ? Col{0.55f, 0.62f, 0.4f, 1} : kc;
+                    strip(top, side > 0 ? o0 : o1, side > 0 ? o1 : o0, zo + 0.15, zo + 0.15, tc, true, 2);
+                    // a lane-side rail on dual carriageways of fast roads with wide medians
+                    if (r0.prio >= 6 && gap > 3) {
+                        double orl = side * (r0.hw + 0.6);
+                        face(c.out.ms[M_METAL], orl, zo + 0.45, zo + 0.8, side > 0 ? -1 : 1, Col{0.75f, 0.76f, 0.78f, 1}, true);
+                        face(c.out.ms[M_METAL], orl + side * 0.02, zo + 0.45, zo + 0.8, side > 0 ? 1 : -1, Col{0.65f, 0.66f, 0.68f, 1}, false);
+                        for (size_t i = 0; i < P.size(); i += 1) {
+                            if (s[i] - std::floor(s[i] / 4) * 4 > 3.01 || !c.own(pp[i])) continue;
+                            V3 b = Q(i, orl + side * 0.1, zo + 0.15);
+                            c.out.ms[M_METAL].obox({b.x, b.y}, 0, 0.1, 0.1, b.z, P[i].z + zo + 0.8, Col{0.6f, 0.6f, 0.62f, 1});
+                        }
+                    }
+                }
+            }
         if (r0.sw > 0) {
             Col kc{0.78f, 0.78f, 0.76f, 1}, pc{1, 1, 1, 1};
             for (int side : {1, -1}) {
+                if (med[r0i][side > 0 ? 0 : 1] >= 0) continue;
                 double o0 = side * r0.hw, o1 = side * (r0.hw + 0.18), o2 = side * (r0.hw + r0.sw);
                 face(CU, o0, zo - 0.02, 0.15 + zo, side > 0 ? -1 : 1, kc, true);
                 if (side > 0) {
@@ -617,6 +720,26 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 }
             }
         }
+        // speed limit signs where a road with a posted limit leaves a junction (the town default, 60, only on
+        // main roads)
+        if (!r0.bridge && r0.speed >= 30 && r0.speed <= 60 && r0.speed % 10 == 0 && (r0.speed != 60 || r0.prio >= 6) && s.back() > 30) {
+            int sg = r0.speed == 30 ? SG_SPEED30 : r0.speed == 40 ? SG_SPEED40 : r0.speed == 50 ? SG_SPEED50 : SG_SPEED60;
+            for (int e = 0; e < 2; e++) {
+                if (e == 1 && r0.oneway != 0) continue;
+                if (e == 0 && r0.oneway < 0) continue;
+                int nd = r0.node[e];
+                if (nd < 0 || nodes[nd].ends.size() < 3) continue;
+                double sp = e == 0 ? 14 : s.back() - 14;
+                size_t i = 0;
+                while (i + 1 < s.size() && s[i + 1] < sp) i++;
+                V2 dir = (pp[std::min(i + 1, pp.size() - 1)] - pp[i]).norm() * (e == 0 ? 1.0 : -1.0);
+                double side = e == 0 ? -1.0 : 1.0;  // right of the traffic
+                V2 q = pp[i] + nn[i] * (side * (r0.hw + (r0.sw > 0 ? 0.6 : 1.0)));
+                if (!c.own(q) || !free_spot(q, 0.5)) continue;
+                double z = P[i].z + zo + (r0.sw > 0 ? 0.15 : 0.0);
+                c.out.inst.push_back({I_SIGN, {q.x, q.y, z}, std::atan2(-dir.y, -dir.x), 1, {(float)sg, 0, 0, 1}});
+            }
+        }
         // street lamps along urban roads with sidewalks, every 32 m, alternate sides on wide roads
         if (r0.sw > 0 && r0.prio >= 2) {
             double first = std::fmod(std::abs(pp[0].x * 0.37 + pp[0].y * 0.61), 32.0);
@@ -644,6 +767,26 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             }
         }
     }
+    // mapped street furniture: signals, stop / give-way signs, crossings, bus stops, signs, benches, bins
+    struct FPt {
+        V2 p;
+        std::string kind;
+    };
+    std::vector<FPt> fpts;
+    bool all_osm = !tiles.empty();
+    for (auto &t : tiles) {
+        if (!t->has_osm) all_osm = false;
+        for (auto &p : t->points) {
+            const std::string &k = p.kind;
+            if (k == "signal" || k == "stop" || k == "giveway" || k == "bench" || k == "bin" || k.rfind("crossing:", 0) == 0 || k.rfind("busstop", 0) == 0 || k.rfind("sign:", 0) == 0)
+                fpts.push_back({c.fr.to_local(p.p.lat, p.p.lon), k});
+        }
+    }
+    auto has_pt = [&](V2 p, const char *kind, double r) {
+        for (auto &f : fpts)
+            if (f.kind == kind && (f.p - p).len() < r) return true;
+        return false;
+    };
     // junction surfaces with rounded kerbs, sidewalk corners
     for (size_t ni = 0; ni < nodes.size(); ni++) {
         Node &n = nodes[ni];
@@ -670,6 +813,138 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             ep.push_back({q.p, q.p + u.perp() * r.hw, q.p - u.perp() * r.hw, q.z, r.hw, r.sw, u});
         }
         double zo = 0.03 + pr * 0.004 + 0.002;
+        // traffic lights, give-way / stop signs with their lines, priority and crossing signs
+        if (k >= 3 && !bridge) {
+            std::set<std::string> named;
+            int top1 = 0, top2 = 0, nmajor = 0;
+            for (auto &e : n.ends) {
+                int pe = roads[e.road].prio;
+                if (pe > top1) top2 = top1, top1 = pe;
+                else if (pe > top2) top2 = pe;
+            }
+            bool minor_arm = false;
+            for (auto &e : n.ends) minor_arm |= roads[e.road].prio <= top1 - 2;
+            for (auto &e : n.ends) nmajor += roads[e.road].prio >= top1 && top1 >= 5;
+            bool urban_n = false;
+            for (auto &e : n.ends) urban_n |= roads[e.road].urban;
+            bool signalised = has_pt(n.p, "signal", 30.0) || (!all_osm && urban_n && top1 >= 6 && top2 >= 5 && k >= 3);
+            bool stop_n = has_pt(n.p, "stop", 25.0);
+            uint64_t hseed = (uint64_t)std::llround(n.p.x * 7.0) * 73856093ull ^ (uint64_t)std::llround(n.p.y * 7.0) * 19349663ull;
+            (void)hseed;
+            for (size_t ai = 0; ai < k; ai++) {
+                const EP &a = ep[ai];
+                const Road &ar = roads[n.ends[ai].road];
+                if (ar.hw < 2.4 || ar.prio < 2) continue;
+                V2 rs = a.u.perp();  // right of the traffic coming in
+                double edge = a.hw + (a.sw > 0 ? 0.6 : 1.2);
+                auto on_arm = [&](double along, double lat) { return a.c + a.u * along + rs * lat; };
+                double zs = a.z + zo + (a.sw > 0 ? 0.15 : 0.0);
+                double yaw = std::atan2(a.u.y, a.u.x);
+                bool zebra = ar.urban && ar.prio >= 2 && ar.prio <= 7;
+                double zl = at_chainage(ar.pts, ar.trim[n.ends[ai].start ? 0 : 1] + 4.1, n.ends[ai].start).z + 0.03 + ar.prio * 0.004 + 0.008;
+                if (signalised) {
+                    V2 pp = on_arm(1.6, edge);
+                    if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGNAL, {pp.x, pp.y, zs}, yaw, 1, {1, 1, 1, 1}});
+                } else if (minor_arm && ar.prio <= top1 - 2 && top1 >= 5) {
+                    V2 pp = on_arm(4.6, edge);
+                    if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGN, {pp.x, pp.y, zs}, yaw, 1, {stop_n ? (float)SG_STOP : (float)SG_YIELD, 0, 0, 1}});
+                } else if (minor_arm && ar.prio >= top1 && top1 >= 5) {
+                    V2 pp = on_arm(2.4, edge);
+                    if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGN, {pp.x, pp.y, zs}, yaw, 1, {(float)SG_PRIORITY, 0, 0, 1}});
+                }
+                // stop line (solid for lights and stop, teeth for give way) across the incoming half
+                bool line_solid = signalised || stop_n;
+                bool line_yield = !signalised && !stop_n && minor_arm && ar.prio <= top1 - 2 && top1 >= 5;
+                if ((line_solid || line_yield) && zebra) {
+                    Col w{0.95f, 0.95f, 0.93f, 1};
+                    if (line_solid) {
+                        V2 q0 = on_arm(3.9, 0.15), q1 = on_arm(3.9, a.hw - 0.2), q2 = on_arm(4.35, a.hw - 0.2), q3 = on_arm(4.35, 0.15);
+                        c.out.ms[M_MARKING].quadn(V3(q0.x, q0.y, zl), V3(q3.x, q3.y, zl), V3(q2.x, q2.y, zl), V3(q1.x, q1.y, zl), w);
+                    } else {
+                        for (double o = 0.3; o + 0.5 < a.hw - 0.2; o += 0.9) {
+                            V2 q0 = on_arm(3.9, o), q1 = on_arm(3.9, o + 0.5), q2 = on_arm(4.4, o + 0.25);
+                            c.out.ms[M_MARKING].quadn(V3(q0.x, q0.y, zl), V3(q2.x, q2.y, zl), V3(q2.x, q2.y, zl), V3(q1.x, q1.y, zl), w);
+                        }
+                    }
+                }
+                if (zebra && !signalised) {
+                    V2 pp = on_arm(3.4, edge + 0.5);
+                    if (free_spot(pp, 0.6)) c.out.inst.push_back({I_SIGN, {pp.x, pp.y, zs}, yaw, 1, {(float)SG_CROSSING, 0, 0, 1}});
+                }
+                // street name plate on the right corner of each named arm (two-sided, across the arm so the
+                // crossing traffic reads it)
+                if (!ar.name.empty() && urban_n && ar.prio >= 2 && !named.count(ar.name)) {
+                    named.insert(ar.name);
+                    V2 pp = on_arm(2.2, -(edge + 0.2));
+                    if (c.own(pp) && free_spot(pp, 0.5)) {
+                        MeshBuf &MT = c.out.ms[M_METAL], &PM = c.out.ms[M_PAINT];
+                        MT.cyl(pp, 0.04, 0.04, zs - 0.1, zs + 2.75, 6, Col{0.45f, 0.46f, 0.48f, 1});
+                        double w = std::clamp(0.12 * (double)utf8_len(ar.name) + 0.3, 0.9, 2.4);
+                        double pz = zs + 2.45;
+                        // plate along the arm direction
+                        V2 d = a.u, nside = a.u.perp();
+                        V2 c0 = pp + d * 0.05;
+                        auto P = [&](double along, double up, double off) { V2 q = c0 + d * along + nside * off; return V3(q.x, q.y, pz + up); };
+                        for (int sd : {1, -1}) {
+                            V3 nv(nside.x * sd, nside.y * sd, 0);
+                            double off = 0.03 * sd;
+                            V3 q0 = P(0, -0.17, off), q1 = P(w, -0.17, off), q2 = P(w, 0.17, off), q3 = P(0, 0.17, off);
+                            if (sd < 0) std::swap(q0, q1), std::swap(q2, q3);
+                            PM.quad(q0, q1, q2, q3, nv, Col{0.07f, 0.22f, 0.52f, 1});
+                            V3 m = P(w / 2, 0, off * 1.6);
+                            c.out.labels.push_back({m, std::atan2(nside.y * sd, nside.x * sd), w - 0.15, ar.name, Col{1, 1, 1, 1}});
+                        }
+                        c.coll_prism(pp, 0, 0.09, 0.09, zs - 0.1, zs + 2.7);
+                    }
+                }
+                // a direction panel some way before junctions of main roads: the crossing streets left and right
+                if (ar.prio >= 6 && !ar.bridge && ar.oneway >= 0 && k >= 3) {
+                    std::string left, right, ahead;
+                    V2 travel = a.u * -1;
+                    for (size_t bi = 0; bi < k; bi++) {
+                        if (bi == ai) continue;
+                        const Road &br = roads[n.ends[bi].road];
+                        if (br.name.empty() || br.name == ar.name || br.prio < 3) continue;
+                        V2 bu = ep[bi].u;
+                        double cr = travel.cross(bu), dt = travel.dot(bu);
+                        if (dt > 0.7) { if (ahead.empty()) ahead = br.name; }
+                        else if (cr > 0) { if (left.empty()) left = br.name; }
+                        else if (right.empty()) right = br.name;
+                    }
+                    if (!left.empty() || !right.empty()) {
+                        double back = std::min(35.0, chain_len(ar.pts) - ar.trim[0] - ar.trim[1] - 5);
+                        if (back > 12) {
+                            RPt q = at_chainage(ar.pts, ar.trim[n.ends[ai].start ? 0 : 1] + back, n.ends[ai].start);
+                            V2 pp = q.p + rs * (a.hw + (a.sw > 0 ? a.sw * 0.5 : 1.6));
+                            if (c.own(pp) && free_spot(pp, 0.8)) {
+                                double gz = q.z + zo + (a.sw > 0 ? 0.15 : 0);
+                                MeshBuf &MT = c.out.ms[M_METAL], &PM = c.out.ms[M_PAINT];
+                                double W = 2.6, H = 1.5, z0 = gz + 2.0;
+                                V2 nf = a.u;  // the panel faces the approaching traffic
+                                V2 side = nf.perp();
+                                for (double o : {-W * 0.35, W * 0.35}) {
+                                    V2 lp = pp + side * o;
+                                    MT.cyl(lp, 0.06, 0.06, gz - 0.2, z0 + H * 0.9, 6, Col{0.5f, 0.51f, 0.53f, 1});
+                                    c.coll_prism(lp, 0, 0.13, 0.13, gz - 0.2, z0 + H);
+                                }
+                                auto P = [&](double u, double v, double off) { V2 qq = pp + side * u + nf * off; return V3(qq.x, qq.y, z0 + v); };
+                                V3 nv(nf.x, nf.y, 0);
+                                PM.quad(P(W / 2, 0, 0.08), P(-W / 2, 0, 0.08), P(-W / 2, H, 0.08), P(W / 2, H, 0.08), nv, Col{0.92f, 0.92f, 0.92f, 1});
+                                PM.quad(P(W / 2 - 0.05, 0.05, 0.09), P(-W / 2 + 0.05, 0.05, 0.09), P(-W / 2 + 0.05, H - 0.05, 0.09), P(W / 2 - 0.05, H - 0.05, 0.09), nv, Col{0.05f, 0.2f, 0.5f, 1});
+                                PM.quad(P(-W / 2, 0, 0.06), P(W / 2, 0, 0.06), P(W / 2, H, 0.06), P(-W / 2, H, 0.06), nv * -1, Col{0.5f, 0.51f, 0.53f, 1});
+                                std::string text;
+                                if (!ahead.empty()) text += "↑ " + ahead + "\n";
+                                if (!left.empty()) text += "← " + left + "\n";
+                                if (!right.empty()) text += right + " →";
+                                while (!text.empty() && text.back() == '\n') text.pop_back();
+                                V3 m = P(0, H / 2, 0.11);
+                                c.out.labels.push_back({m, std::atan2(nf.y, nf.x), W - 0.3, text, Col{1, 1, 1, 1}});
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (size_t i = 0; i < k; i++) {
             const EP &a = ep[i], &b = ep[(i + 1) % k];
             poly.push_back(a.r), pz.push_back(a.z);
@@ -734,6 +1009,94 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             c.tri_coll(C, {poly[i].x, poly[i].y, pz[i] + zo}, {poly[j].x, poly[j].y, pz[j] + zo});
         }
         (void)bridge;
+    }
+    // ---- mapped points away from junctions: bus stops, benches, bins, standalone signs, mid-block crossings ----
+    auto nearest_seg = [&](V2 p, double maxd, int &rid, V2 &q, V2 &tan) {
+        double best = maxd;
+        rid = -1;
+        for (auto &sg : c.roads.segs) {
+            V2 d = sg.b - sg.a;
+            double l2 = std::max(1e-9, d.dot(d));
+            double tt = std::clamp((p - sg.a).dot(d) / l2, 0.0, 1.0);
+            V2 cp = sg.a + d * tt;
+            double dist = (cp - p).len();
+            if (dist < best) best = dist, rid = sg.id, q = cp, tan = d.norm();
+        }
+    };
+    // which side of the carriageway faces which traffic: sign at `p` should face the drivers who have it on their right
+    auto face_traffic = [&](V2 p, V2 q, V2 tan) {
+        V2 v = p - q;
+        V2 travel = tan.cross(v) < 0 ? tan : tan * -1.0;  // the sign is on the right of this direction
+        V2 f = travel * -1.0;
+        return std::atan2(f.y, f.x);
+    };
+    auto sign_of = [&](const std::string &k) -> int {
+        std::string v = k.substr(5);
+        if (v.rfind("maxspeed=", 0) == 0) {
+            int sp = std::atoi(v.c_str() + 9);
+            return sp == 30 ? SG_SPEED30 : sp == 40 ? SG_SPEED40 : sp == 50 ? SG_SPEED50 : sp == 60 ? SG_SPEED60 : -1;
+        }
+        auto has = [&](const char *t) { return v.find(t) != std::string::npos; };
+        if (has("2.1") && !has("2.1.")) return SG_PRIORITY;
+        if (has("2.4")) return SG_YIELD;
+        if (has("2.5")) return SG_STOP;
+        if (has("5.19")) return SG_CROSSING;
+        if (has("3.1") && !has("3.1.") && !has("3.10")) return SG_NOENTRY;
+        if (has("6.4")) return SG_PARKING;
+        if (has("5.16")) return SG_BUS;
+        return -1;
+    };
+    for (auto &f : fpts) {
+        if (!c.own(f.p)) continue;
+        int rid;
+        V2 q, tan;
+        const std::string &k = f.kind;
+        if (k == "signal" || k == "crossing:traffic_signals") continue;  // junction logic handles lights; mid-block signalled crossings are zebras
+        bool nearj = false;
+        for (auto &n : nodes)
+            if (n.ends.size() >= 3 && (n.p - f.p).len() < 25) nearj = true;
+        nearest_seg(f.p, 30, rid, q, tan);
+        if (rid < 0) continue;
+        const Road &r = roads[(size_t)rid];
+        if (r.bridge) continue;
+        if (!free_spot(f.p, 0.8)) continue;
+        double zg = c.ground(f.p);
+        if (k.rfind("busstop", 0) == 0) {
+            double sidew = (f.p - q).len();
+            V2 away = (f.p - q).norm();
+            double yaw = std::atan2(-away.y, -away.x);
+            V2 sp = f.p + away * std::max(0.0, 1.4 - std::max(0.0, sidew - r.hw));
+            if (free_spot(sp, 0.5) && c.roads.clearance(sp) > -0.5) c.out.inst.push_back({I_SHELTER, {sp.x, sp.y, c.ground(sp)}, yaw, 1, {1, 1, 1, 1}});
+            c.out.inst.push_back({I_SIGN, {f.p.x, f.p.y, zg}, face_traffic(f.p, q, tan), 1, {(float)SG_BUS, 0, 0, 1}});
+        } else if (k == "bench" || k == "bin") {
+            V2 away = (f.p - q).norm();
+            c.out.inst.push_back({k == "bench" ? I_BENCH : I_BIN, {f.p.x, f.p.y, zg}, std::atan2(-away.y, -away.x), 1, {1, 1, 1, 1}});
+        } else if (k == "stop" || k == "giveway") {
+            if (nearj) continue;
+            c.out.inst.push_back({I_SIGN, {f.p.x, f.p.y, zg}, face_traffic(f.p, q, tan), 1, {(float)(k == "stop" ? SG_STOP : SG_YIELD), 0, 0, 1}});
+        } else if (k.rfind("sign:", 0) == 0) {
+            int v = sign_of(k);
+            if (v < 0) continue;
+            c.out.inst.push_back({I_SIGN, {f.p.x, f.p.y, zg}, face_traffic(f.p, q, tan), 1, {(float)v, 0, 0, 1}});
+        } else if (k.rfind("crossing:", 0) == 0) {
+            std::string kind = k.substr(9);
+            if (nearj || kind == "no" || kind == "unmarked") continue;
+            if (!r.urban && r.prio < 3) continue;
+            // zebra stripes across the carriageway at the road's point nearest the node, plus a sign on each side
+            V2 lat = tan.perp();
+            double zl = c.ground(q) + 0.03 + r.prio * 0.004 + 0.01;
+            for (double o = -r.hw + 0.5; o + 0.5 <= r.hw - 0.3; o += 1.0) {
+                V2 a = q + lat * o - tan * 1.5;
+                V3 p0(a.x, a.y, zl), p1(a.x + lat.x * 0.5, a.y + lat.y * 0.5, zl);
+                V3 p2 = p1 + V3(tan.x * 3, tan.y * 3, 0), p3 = p0 + V3(tan.x * 3, tan.y * 3, 0);
+                c.out.ms[M_MARKING].quadn(p0, p3, p2, p1, Col{0.95f, 0.95f, 0.93f, 1});
+            }
+            for (int sd : {-1, 1}) {
+                V2 pp = q + lat * (sd * (r.hw + (r.sw > 0 ? 0.6 : 1.2)));
+                if (!free_spot(pp, 0.6)) continue;
+                c.out.inst.push_back({I_SIGN, {pp.x, pp.y, c.ground(pp)}, face_traffic(pp, q, tan), 1, {(float)SG_CROSSING, 0, 0, 1}});
+            }
+        }
     }
 }
 

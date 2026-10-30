@@ -431,6 +431,217 @@ MeshSet person() {
     return ms;
 }
 
+
+// ---- street signs, traffic lights, bench, bin, bus shelter (model frame: x toward the traffic, z up) ----
+
+// flat polygon facing +x at plane x, centred (cy, cz)
+void fan_x(MeshBuf &m, double x, double cy, double cz, double r, int sides, double rot, Col c, bool front = true, double sy = 1.0) {
+    V3 n(front ? 1 : -1, 0, 0);
+    int ci = m.v({x, cy, cz}, n, 0.5, 0.5, c);
+    std::vector<int> ring;
+    for (int i = 0; i < sides; i++) {
+        double a = rot + 2 * PI * i / sides;
+        ring.push_back(m.v({x, cy + std::cos(a) * r * sy, cz + std::sin(a) * r}, n, 0.5 + std::cos(a) * 0.5, 0.5 + std::sin(a) * 0.5, c));
+    }
+    for (int i = 0; i < sides; i++) {
+        if (front) m.tri(ci, ring[i], ring[(i + 1) % sides]);
+        else m.tri(ci, ring[(i + 1) % sides], ring[i]);
+    }
+}
+void rect_x(MeshBuf &m, double x, double y0, double z0, double y1, double z1, Col c) { m.quad({x, y0, z0}, {x, y1, z0}, {x, y1, z1}, {x, y0, z1}, {1, 0, 0}, c); }
+
+void digit_x(MeshBuf &m, double x, double cy, double cz, double h, int d, Col c) {
+    // 7 segments a(top) b(upper right) c(lower right) d(bottom) e(lower left) f(upper left) g(middle)
+    static const int SEG[10] = {0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110, 0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111};
+    double w = h * 0.5, t = h * 0.14;
+    int mask = SEG[d];
+    auto hbar = [&](double z) { rect_x(m, x, cy - w / 2, z - t / 2, cy + w / 2, z + t / 2, c); };
+    auto vbar = [&](double y, double z0, double z1) { rect_x(m, x, y - t / 2, z0, y + t / 2, z1, c); };
+    if (mask & 1) hbar(cz + h / 2 - t / 2);
+    if (mask & 2) vbar(cy + w / 2 - t / 2, cz, cz + h / 2);
+    if (mask & 4) vbar(cy + w / 2 - t / 2, cz - h / 2, cz);
+    if (mask & 8) hbar(cz - h / 2 + t / 2);
+    if (mask & 16) vbar(cy - w / 2 + t / 2, cz - h / 2, cz);
+    if (mask & 32) vbar(cy - w / 2 + t / 2, cz, cz + h / 2);
+    if (mask & 64) hbar(cz);
+}
+
+MeshSet sign_post(int kind) {
+    MeshSet ms;
+    MeshBuf &M = ms[M_METAL], &P = ms[M_PAINT];
+    Col pole{0.5f, 0.52f, 0.55f, 1}, back{0.55f, 0.57f, 0.6f, 1};
+    Col red{0.78f, 0.06f, 0.06f, 1}, white{0.96f, 0.96f, 0.94f, 1}, blue{0.05f, 0.25f, 0.62f, 1}, yellow{0.98f, 0.8f, 0.05f, 1}, black{0.05f, 0.05f, 0.06f, 1};
+    double H = 2.75, cz = 2.3;  // plate centre height
+    if (kind == SG_BUS) cz = 2.5;
+    M.cyl({0, 0}, 0.04, 0.04, 0, H, 8, pole, true);
+    const double X = 0.05;
+    switch (kind) {
+        case SG_STOP: {
+            fan_x(M, X - 0.012, 0, cz, 0.37, 8, PI / 8, back, false);
+            fan_x(P, X, 0, cz, 0.36, 8, PI / 8, white);
+            fan_x(P, X + 0.001, 0, cz, 0.34, 8, PI / 8, red);
+            rect_x(P, X + 0.002, -0.27, cz - 0.045, 0.27, cz + 0.045, white);
+            break;
+        }
+        case SG_YIELD: {
+            // triangle pointing down
+            for (int pass = 0; pass < 3; pass++) {
+                double r = pass == 0 ? 0.5 : pass == 1 ? 0.47 : 0.28;
+                Col c = pass == 1 ? red : pass == 0 ? white : white;
+                double x = pass == 0 ? X : X + 0.001 * pass;
+                if (pass == 0) {
+                    // back plate
+                    V3 n(-1, 0, 0);
+                    int ci = M.v({X - 0.012, 0, cz - 0.04}, n, 0.5, 0.5, back);
+                    int a = M.v({X - 0.012, 0, cz - 0.04 - r * 0.9}, n, 0, 0, back), b = M.v({X - 0.012, -r * 0.78, cz - 0.04 + r * 0.45}, n, 0, 0, back), cc = M.v({X - 0.012, r * 0.78, cz - 0.04 + r * 0.45}, n, 0, 0, back);
+                    M.tri(ci, a, b), M.tri(ci, b, cc), M.tri(ci, cc, a);
+                }
+                V3 n(1, 0, 0);
+                double zc = cz - 0.04 + (pass == 2 ? 0.02 : 0);
+                int ci = P.v({x, 0, zc}, n, 0.5, 0.5, c);
+                int a = P.v({x, 0, zc - r * 0.9}, n, 0, 0, c), b = P.v({x, r * 0.78, zc + r * 0.45}, n, 0, 0, c), cc = P.v({x, -r * 0.78, zc + r * 0.45}, n, 0, 0, c);
+                P.tri(ci, a, b), P.tri(ci, b, cc), P.tri(ci, cc, a);
+            }
+            break;
+        }
+        case SG_PRIORITY: {
+            fan_x(M, X - 0.012, 0, cz, 0.42, 4, 0, back, false);
+            fan_x(P, X, 0, cz, 0.41, 4, 0, black);
+            fan_x(P, X + 0.001, 0, cz, 0.385, 4, 0, white);
+            fan_x(P, X + 0.002, 0, cz, 0.30, 4, 0, yellow);
+            break;
+        }
+        case SG_CROSSING: {
+            rect_x(M, X - 0.012, -0.32, cz - 0.32, 0.32, cz + 0.32, back);
+            rect_x(P, X, -0.31, cz - 0.31, 0.31, cz + 0.31, white);
+            rect_x(P, X + 0.001, -0.29, cz - 0.29, 0.29, cz + 0.29, blue);
+            // white triangle with a walker
+            {
+                V3 n(1, 0, 0);
+                double x = X + 0.002;
+                int a = P.v({x, -0.22, cz - 0.2}, n, 0, 0, white), b = P.v({x, 0.22, cz - 0.2}, n, 0, 0, white), c2 = P.v({x, 0, cz + 0.22}, n, 0, 0, white);
+                P.tri(a, b, c2);
+                fan_x(P, X + 0.003, 0.0, cz + 0.05, 0.03, 8, 0, black);
+                rect_x(P, X + 0.003, -0.02, cz - 0.1, 0.02, cz + 0.02, black);
+                rect_x(P, X + 0.003, -0.07, cz - 0.17, -0.02, cz - 0.1, black);
+                rect_x(P, X + 0.003, 0.02, cz - 0.17, 0.07, cz - 0.1, black);
+            }
+            break;
+        }
+        case SG_SPEED30:
+        case SG_SPEED40:
+        case SG_SPEED50:
+        case SG_SPEED60: {
+            int tens = kind - SG_SPEED30 + 3;
+            fan_x(M, X - 0.012, 0, cz, 0.37, 24, 0, back, false);
+            fan_x(P, X, 0, cz, 0.36, 24, 0, red);
+            fan_x(P, X + 0.001, 0, cz, 0.27, 24, 0, white);
+            digit_x(P, X + 0.002, -0.07, cz, 0.24, tens, black);
+            digit_x(P, X + 0.002, 0.07, cz, 0.24, 0, black);
+            break;
+        }
+        case SG_NOENTRY: {
+            fan_x(M, X - 0.012, 0, cz, 0.37, 24, 0, back, false);
+            fan_x(P, X, 0, cz, 0.36, 24, 0, red);
+            rect_x(P, X + 0.001, -0.27, cz - 0.05, 0.27, cz + 0.05, white);
+            break;
+        }
+        case SG_PARKING: {
+            rect_x(M, X - 0.012, -0.32, cz - 0.32, 0.32, cz + 0.32, back);
+            rect_x(P, X, -0.31, cz - 0.31, 0.31, cz + 0.31, white);
+            rect_x(P, X + 0.001, -0.29, cz - 0.29, 0.29, cz + 0.29, blue);
+            rect_x(P, X + 0.002, -0.13, cz - 0.2, -0.04, cz + 0.2, white);
+            rect_x(P, X + 0.002, -0.04, cz + 0.11, 0.12, cz + 0.2, white);
+            rect_x(P, X + 0.002, -0.04, cz - 0.0, 0.12, cz + 0.09, white);
+            rect_x(P, X + 0.002, 0.08, cz - 0.0, 0.14, cz + 0.2, white);
+            break;
+        }
+        case SG_BUS: {
+            rect_x(M, X - 0.012, -0.32, cz - 0.32, 0.32, cz + 0.32, back);
+            rect_x(P, X, -0.31, cz - 0.31, 0.31, cz + 0.31, white);
+            rect_x(P, X + 0.001, -0.29, cz - 0.29, 0.29, cz + 0.29, blue);
+            rect_x(P, X + 0.002, -0.2, cz - 0.1, 0.2, cz + 0.17, white);
+            rect_x(P, X + 0.003, -0.16, cz + 0.02, 0.16, cz + 0.12, blue);
+            rect_x(P, X + 0.003, -0.15, cz - 0.17, -0.07, cz - 0.1, white);
+            rect_x(P, X + 0.003, 0.07, cz - 0.17, 0.15, cz - 0.1, white);
+            break;
+        }
+    }
+    return ms;
+}
+
+// lamp disc facing +x (code in vertex colour: r 1 red, 0.5 amber, 0 green; g 1 = pedestrian lamp)
+MeshSet signal_pole() {
+    MeshSet ms;
+    MeshBuf &M = ms[M_METAL], &D = ms[M_DARK], &L = ms[M_SIGNAL];
+    Col pole{0.2f, 0.21f, 0.23f, 1}, head{0.08f, 0.08f, 0.09f, 1};
+    M.cyl({0, 0}, 0.07, 0.07, 0, 3.7, 10, pole, true);
+    // vehicle head: box with three lamps and visors
+    D.box({-0.12, -0.17, 2.75}, {0.2, 0.17, 3.65}, head);
+    const double zs[3] = {3.4, 3.15, 2.9}, cd[3] = {1.0, 0.5, 0.0};
+    for (int i = 0; i < 3; i++) {
+        fan_x(L, 0.201, 0, zs[i], 0.1, 14, 0, Col{cd[i] == 1.0 ? 1.0f : (cd[i] == 0.5 ? 0.5f : 0.0f), 0, 0, 1});
+        // visor
+        D.box({0.2, -0.13, zs[i] + 0.09}, {0.34, 0.13, zs[i] + 0.12}, head);
+    }
+    // pedestrian head toward the carriageway (-y)
+    D.box({-0.13, -0.2, 2.0}, {0.13, -0.05, 2.6}, head);
+    for (int i = 0; i < 2; i++) {
+        double z = i == 0 ? 2.42 : 2.15;
+        V3 n(0, -1, 0);
+        double y = -0.2005;
+        Col cc{i == 0 ? 1.0f : 0.0f, 1, 0, 1};
+        int ci = L.v({0, y, z}, n, 0.5, 0.5, cc);
+        std::vector<int> ring;
+        for (int k = 0; k < 12; k++) {
+            double a = 2 * PI * k / 12;
+            ring.push_back(L.v({std::cos(a) * 0.075, y, z + std::sin(a) * 0.075}, n, 0, 0, cc));
+        }
+        for (int k = 0; k < 12; k++) L.tri(ci, ring[k], ring[(k + 1) % 12]);
+    }
+    return ms;
+}
+
+MeshSet bench() {
+    MeshSet ms;
+    MeshBuf &W = ms[M_PAINT], &M = ms[M_METAL];
+    Col wood{0.45f, 0.3f, 0.16f, 1}, iron{0.15f, 0.16f, 0.17f, 1};
+    for (int i = 0; i < 4; i++) W.box({-0.25 + i * 0.13, -0.8, 0.44}, {-0.14 + i * 0.13, 0.8, 0.48}, wood);
+    for (int i = 0; i < 3; i++) W.box({-0.3, -0.8, 0.62 + i * 0.12}, {-0.26, 0.8, 0.7 + i * 0.12}, wood);
+    for (double y : {-0.7, 0.7}) {
+        M.box({-0.28, y - 0.025, 0}, {-0.24, y + 0.025, 0.95}, iron);
+        M.box({-0.28, y - 0.025, 0.4}, {0.27, y + 0.025, 0.44}, iron);
+        M.box({0.2, y - 0.025, 0}, {0.26, y + 0.025, 0.44}, iron);
+    }
+    return ms;
+}
+
+MeshSet bin() {
+    MeshSet ms;
+    ms[M_METAL].cyl({0, 0}, 0.2, 0.2, 0.0, 0.8, 12, Col{0.18f, 0.25f, 0.2f, 1}, true);
+    ms[M_DARK].cyl({0, 0}, 0.21, 0.21, 0.8, 0.86, 12, Col{0.06f, 0.06f, 0.07f, 1}, true);
+    return ms;
+}
+
+MeshSet shelter() {
+    MeshSet ms;
+    MeshBuf &M = ms[M_METAL], &G = ms[M_GLASS], &P = ms[M_PAINT];
+    Col fr{0.25f, 0.27f, 0.3f, 1}, roof{0.2f, 0.3f, 0.5f, 1};
+    const double W = 1.55, Dp = 0.7;
+    for (double y : {-W, W}) {
+        M.box({-Dp - 0.04, y - 0.04, 0}, {-Dp + 0.04, y + 0.04, 2.5}, fr);
+        M.box({Dp - 0.04, y - 0.04, 0}, {Dp + 0.04, y + 0.04, 2.5}, fr);
+        G.quad({-Dp, y, 0.3}, {Dp, y, 0.3}, {Dp, y, 2.3}, {-Dp, y, 2.3}, {0, y > 0 ? 1.0 : -1.0, 0}, Col{1, 1, 1, 1});
+        G.quad({Dp, y, 0.3}, {-Dp, y, 0.3}, {-Dp, y, 2.3}, {Dp, y, 2.3}, {0, y > 0 ? -1.0 : 1.0, 0}, Col{1, 1, 1, 1});
+    }
+    G.quad({-Dp, -W, 0.3}, {-Dp, W, 0.3}, {-Dp, W, 2.3}, {-Dp, -W, 2.3}, {1, 0, 0}, Col{1, 1, 1, 1});
+    G.quad({-Dp, W, 0.3}, {-Dp, -W, 0.3}, {-Dp, -W, 2.3}, {-Dp, W, 2.3}, {-1, 0, 0}, Col{1, 1, 1, 1});
+    P.box({-Dp - 0.2, -W - 0.2, 2.5}, {Dp + 0.2, W + 0.2, 2.58}, roof);
+    // bench inside
+    P.box({-0.55, -1.1, 0.45}, {-0.15, 1.1, 0.5}, Col{0.45f, 0.3f, 0.16f, 1});
+    return ms;
+}
+
 }  // namespace
 
 MeshSet model_mesh(int kind, int v) {
@@ -443,6 +654,11 @@ MeshSet model_mesh(int kind, int v) {
         case I_CAR_INTERIOR: return car_interior();
         case I_STEERING_WHEEL: return steering_wheel();
         case I_PERSON: return person();
+        case I_SIGNAL: return signal_pole();
+        case I_SIGN: return sign_post(std::clamp(v, 0, (int)SG_COUNT - 1));
+        case I_BENCH: return bench();
+        case I_BIN: return bin();
+        case I_SHELTER: return shelter();
         default: return MeshSet();
     }
 }

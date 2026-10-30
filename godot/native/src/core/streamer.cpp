@@ -186,7 +186,7 @@ bool Streamer::load_source(int x, int y, std::string &err) {
     overture_features(id, id, layers[0], layers[1], layers[2], 0, *t, &base_src);
     // OSM tags already fetched earlier
     std::string js;
-    if (read_file(cfg_.cache_dir + "/osm/enrich_14_" + std::to_string(x) + "_" + std::to_string(y) + ".json", js) && !js.empty()) {
+    if (read_file(cfg_.cache_dir + "/osm/enrich2_14_" + std::to_string(x) + "_" + std::to_string(y) + ".json", js) && !js.empty()) {
         Json j;
         if (Json::parse(js, j)) merge_osm(*t, j);
         std::lock_guard<std::mutex> l(mu_);
@@ -438,7 +438,7 @@ void Streamer::enrich_worker() {
         }
         Json j;
         if (ok && Json::parse(out, j)) {
-            write_file(cfg_.cache_dir + "/osm/enrich_14_" + std::to_string(x) + "_" + std::to_string(y) + ".json", out);
+            write_file(cfg_.cache_dir + "/osm/enrich2_14_" + std::to_string(x) + "_" + std::to_string(y) + ".json", out);
             std::lock_guard<std::mutex> l(mu_);
             auto it = src_.find(k2(x, y));
             if (it != src_.end()) {

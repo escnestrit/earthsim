@@ -44,6 +44,13 @@ struct V3 {
     }
 };
 
+// characters (code points) in a UTF-8 string
+inline size_t utf8_len(const std::string &s) {
+    size_t n = 0;
+    for (unsigned char ch : s) n += (ch & 0xC0) != 0x80;
+    return n;
+}
+
 using Tags = std::vector<std::pair<std::string, std::string>>;
 
 inline const std::string *tag(const Tags &t, const char *k) {

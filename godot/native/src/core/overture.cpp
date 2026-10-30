@@ -1,4 +1,7 @@
 #include "overture.hpp"
+#include <functional>
+#include <cmath>
+#include "json.hpp"
 #include <algorithm>
 #include <regex>
 #include <set>
@@ -118,6 +121,25 @@ bool whole_flag(const std::string &flags, const char *flag) {
         if (nums.size() < 2 || nums[1] - nums[0] >= 0.8) return true;
     }
     return false;
+}
+
+// [from, to] fractions of a segment's length where `flag` holds (whole segment: {0, 1})
+std::vector<std::pair<double, double>> flag_ranges(const std::string &flags, const char *flag) {
+    std::vector<std::pair<double, double>> out;
+    if (flags.find(flag) == std::string::npos) return out;
+    Json j;
+    if (!Json::parse(flags, j) || j.kind != Json::Arr) return out;
+    for (auto &e : j.a) {
+        const Json *v = e.get("values");
+        if (!v || v->kind != Json::Arr) continue;
+        bool has = false;
+        for (auto &x : v->a) has |= x.kind == Json::Str && x.s == flag;
+        if (!has) continue;
+        const Json *b = e.get("between");
+        if (b && b->kind == Json::Arr && b->a.size() == 2) out.push_back({b->a[0].num(0), b->a[1].num(1)});
+        else out.push_back({0, 1});
+    }
+    return out;
 }
 
 int oneway_of(const std::string &ar) {
@@ -247,6 +269,117 @@ bool area_kind(const std::string &layer, const mvt::Feature &f, AreaKind &k) {
 
 }  // namespace
 
+// Splits roads and paths into bridge / non-bridge runs where `on` holds for points along them (sampled every
+// 3 m); stretches are widened by `extend` metres each way and dropped when shorter than `min_len`.
+void mark_bridges(RawTile &out, const std::function<bool(LL)> &on, double extend, double min_len) {
+    auto split = [&](const std::vector<LL> &pts) {
+        std::vector<LL> d;
+        std::vector<double> cum;
+        for (size_t i = 0; i < pts.size(); i++) {
+            if (i) {
+                double kx = 111320 * std::cos(pts[i].lat * PI / 180);
+                double l = std::hypot((pts[i].lon - pts[i - 1].lon) * kx, (pts[i].lat - pts[i - 1].lat) * 111320);
+                int n = std::max(1, (int)std::ceil(l / 3.0));
+                for (int k = 1; k < n; k++) {
+                    double t = (double)k / n;
+                    d.push_back({pts[i - 1].lat + (pts[i].lat - pts[i - 1].lat) * t, pts[i - 1].lon + (pts[i].lon - pts[i - 1].lon) * t});
+                    cum.push_back(cum.back() + l / n);
+                }
+                d.push_back(pts[i]);
+                cum.push_back(cum.back() + l / n);
+            } else
+                d.push_back(pts[0]), cum.push_back(0);
+        }
+        std::vector<char> w(d.size());
+        bool any = false;
+        for (size_t i = 0; i < d.size(); i++) any |= (w[i] = on(d[i]));
+        std::vector<std::pair<std::vector<LL>, bool>> runs;
+        if (!any) return runs;
+        std::vector<char> b(d.size(), 0);
+        for (size_t i = 0; i < d.size(); i++)
+            if (w[i])
+                for (size_t k = 0; k < d.size(); k++)
+                    if (std::abs(cum[k] - cum[i]) <= extend) b[k] = 1;
+        for (size_t i = 0; i < d.size();) {
+            size_t j = i;
+            while (j < d.size() && b[j] == b[i]) j++;
+            if (b[i] && cum[j - 1] - cum[i] < min_len) std::fill(b.begin() + i, b.begin() + j, 0);
+            i = j;
+        }
+        for (size_t i = 0; i < d.size();) {
+            size_t j = i;
+            while (j < d.size() && b[j] == b[i]) j++;
+            std::vector<LL> run(d.begin() + (i ? i - 1 : 0), d.begin() + j);
+            if (run.size() >= 2) runs.push_back({run, (bool)b[i]});
+            i = j;
+        }
+        return runs;
+    };
+    auto apply = [&](auto &items) {
+        std::remove_reference_t<decltype(items)> res;
+        for (auto &r : items) {
+            if (r.bridge) {
+                res.push_back(r);
+                continue;
+            }
+            auto runs = split(r.pts);
+            bool has = false;
+            for (auto &x : runs) has |= x.second;
+            if (!has) {
+                res.push_back(r);
+                continue;
+            }
+            for (auto &[pts, br] : runs) {
+                auto q = r;
+                q.pts = pts;
+                q.bridge = br;
+                res.push_back(std::move(q));
+            }
+        }
+        items = std::move(res);
+    };
+    apply(out.roads);
+    apply(out.paths);
+}
+
+// Roads and paths crossing water become bridges there (Overture marks bridges by fractions of whole segments,
+// which tiles clip away; the water polygons tell where the crossing really is). The bridge run is extended
+// onto the banks for the abutments.
+static void bridges_over_water(RawTile &out) {
+    struct WRing {
+        std::vector<LL> r;
+        double s, w, n, e;
+    };
+    std::vector<WRing> rings;
+    for (auto &a : out.areas) {
+        if (a.kind != AreaKind::Water || a.rings.empty()) continue;
+        WRing w{a.rings[0], 1e9, 1e9, -1e9, -1e9};
+        for (auto &p : w.r) w.s = std::min(w.s, p.lat), w.n = std::max(w.n, p.lat), w.w = std::min(w.w, p.lon), w.e = std::max(w.e, p.lon);
+        rings.push_back(std::move(w));
+    }
+    if (rings.empty() && out.waterlines.empty()) return;
+    auto pip = [](const std::vector<LL> &r, LL p) {
+        bool in = false;
+        for (size_t i = 0, j = r.size() - 1; i < r.size(); j = i++)
+            if ((r[i].lat > p.lat) != (r[j].lat > p.lat) && p.lon < (r[j].lon - r[i].lon) * (p.lat - r[i].lat) / (r[j].lat - r[i].lat) + r[i].lon) in = !in;
+        return in;
+    };
+    mark_bridges(out, [&](LL p) {
+        for (auto &w : rings)
+            if (p.lat >= w.s && p.lat <= w.n && p.lon >= w.w && p.lon <= w.e && pip(w.r, p)) return true;
+        double kx = 111320 * std::cos(p.lat * PI / 180);
+        for (auto &[pts, wd] : out.waterlines)
+            for (size_t i = 0; i + 1 < pts.size(); i++) {
+                double ax = (pts[i].lon - p.lon) * kx, ay = (pts[i].lat - p.lat) * 111320, bx = (pts[i + 1].lon - p.lon) * kx, by = (pts[i + 1].lat - p.lat) * 111320;
+                double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+                double t = l2 > 0 ? std::clamp(-(ax * dx + ay * dy) / l2, 0.0, 1.0) : 0;
+                double ex = ax + dx * t, ey = ay + dy * t;
+                if (ex * ex + ey * ey < (wd / 2 + 0.5) * (wd / 2 + 0.5)) return true;
+            }
+        return false;
+    }, 10, 24);
+}
+
 void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &buildings, const std::vector<mvt::Layer> &transport,
                        const std::vector<mvt::Layer> &base, double margin_m, RawTile &out, const TileId *base_src) {
     out.tile = tile;
@@ -305,12 +438,59 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
             std::string cls = f.str("class"), sub = f.str("subclass");
             std::string flags = f.str("road_flags");
             if (whole_flag(flags, "is_tunnel") || whole_flag(flags, "is_underground")) continue;
-            bool bridge = whole_flag(flags, "is_bridge");
+            bool whole_bridge = whole_flag(flags, "is_bridge");
             static const std::set<std::string> pathc = {"footway", "pedestrian", "path", "cycleway", "steps", "track", "bridleway", "sidewalk", "crosswalk"};
+            // bridges and tunnels over part of a segment ("between" fractions of its length): split there. The
+            // fractions refer to the whole segment, so only when the tile holds all of it (one part, not clipped).
+            auto br = flag_ranges(flags, "is_bridge"), tu = flag_ranges(flags, "is_tunnel");
+            bool unclipped = f.parts.size() == 1;
+            for (auto &q : f.parts.empty() ? std::vector<std::pair<int, int>>{} : f.parts[0])
+                if (q.first < 0 || q.second < 0 || q.first > (int)L.extent || q.second > (int)L.extent) unclipped = false;
             for (auto &part : f.parts) {
                 if (part.size() < 2) continue;
-                auto pts = cv.line(part);
+                auto full = cv.line(part);
+                // pieces: (points, state) with state 0 road, 1 bridge, 2 tunnel
+                std::vector<std::pair<std::vector<LL>, int>> pieces;
+                if (unclipped && (!br.empty() || !tu.empty())) {
+                    std::vector<double> cum(full.size(), 0);
+                    for (size_t i = 1; i < full.size(); i++)
+                        cum[i] = cum[i - 1] + std::hypot((full[i].lat - full[i - 1].lat) * 111320, (full[i].lon - full[i - 1].lon) * 111320 * std::cos(full[i].lat * PI / 180));
+                    double tot = std::max(cum.back(), 1e-9);
+                    auto state_at = [&](double fr) {
+                        for (auto &r : tu)
+                            if (fr > r.first && fr < r.second) return 2;
+                        for (auto &r : br)
+                            if (fr > r.first && fr < r.second) return 1;
+                        return 0;
+                    };
+                    std::vector<double> cuts = {0, 1};
+                    for (auto *rs : {&br, &tu})
+                        for (auto &r : *rs) cuts.push_back(std::clamp(r.first, 0.0, 1.0)), cuts.push_back(std::clamp(r.second, 0.0, 1.0));
+                    std::sort(cuts.begin(), cuts.end());
+                    auto at = [&](double fr) {
+                        double d = fr * tot;
+                        size_t i = 1;
+                        while (i + 1 < full.size() && cum[i] < d) i++;
+                        double t = std::clamp((d - cum[i - 1]) / std::max(cum[i] - cum[i - 1], 1e-9), 0.0, 1.0);
+                        return LL{full[i - 1].lat + (full[i].lat - full[i - 1].lat) * t, full[i - 1].lon + (full[i].lon - full[i - 1].lon) * t};
+                    };
+                    for (size_t k = 0; k + 1 < cuts.size(); k++) {
+                        double a = cuts[k], b = cuts[k + 1];
+                        if (b - a < 1e-6) continue;
+                        std::vector<LL> pc = {at(a)};
+                        for (size_t i = 0; i < full.size(); i++)
+                            if (cum[i] / tot > a + 1e-9 && cum[i] / tot < b - 1e-9) pc.push_back(full[i]);
+                        pc.push_back(at(b));
+                        int st = state_at((a + b) / 2);
+                        if (!pieces.empty() && pieces.back().second == st) pieces.back().first.insert(pieces.back().first.end(), pc.begin() + 1, pc.end());
+                        else pieces.push_back({pc, st});
+                    }
+                } else
+                    pieces.push_back({full, whole_bridge ? 1 : 0});
+                for (auto &[pts, state] : pieces)
                 for (auto [s, e] : clip_runs_ll(pts, eb)) {
+                    if (state == 2) continue;  // tunnels: not drawn (the terrain stays closed over them)
+                    bool bridge = state == 1;
                     std::vector<LL> run(pts.begin() + s, pts.begin() + e + 1);
                     if (pathc.count(cls)) {
                         // pavements and crossings are drawn with the roads
@@ -336,6 +516,29 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
                     r.oneway = oneway_of(f.str("access_restrictions"));
                     if (hw == "motorway" || hw == "motorway_link") r.oneway = r.oneway ? r.oneway : 1;
                     r.name = f.str("@name");
+                    // whole-segment level (overpasses), speed limit and width from the rules
+                    {
+                        Json j;
+                        auto whole_num = [&](const std::string &txt, const char *key, const char *sub) -> double {
+                            if (txt.empty() || !Json::parse(txt, j) || j.kind != Json::Arr) return NAN;
+                            for (auto &e : j.a) {
+                                if (e.get("between") || e.get("when")) continue;
+                                const Json *v = e.get(key);
+                                if (v && sub) v = v->get(sub);
+                                if (v && v->kind == Json::Num) return v->n;
+                            }
+                            return NAN;
+                        };
+                        double lv = whole_num(f.str("level_rules"), "value", nullptr);
+                        if (!std::isnan(lv)) {
+                            if (lv < 0) continue;  // underground (garages, underpasses)
+                            r.layer = (int)lv;
+                        }
+                        double sp = whole_num(f.str("speed_limits"), "max_speed", "value");
+                        if (!std::isnan(sp)) r.speed = (int)sp;
+                        double wd = whole_num(f.str("width_rules"), "value", nullptr);
+                        if (!std::isnan(wd) && wd >= 3 && wd <= 40) r.width = wd, r.width_from_data = true;
+                    }
                     out.roads.push_back(std::move(r));
                 }
             }
@@ -384,6 +587,7 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
             }
         }
     }
+    bridges_over_water(out);
 }
 
 }  // namespace ec

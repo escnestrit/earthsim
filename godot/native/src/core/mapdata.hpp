@@ -29,6 +29,7 @@ struct RawRoad {
     bool bridge = false;
     int oneway = 0;  // 1 along, -1 against
     int layer = 0;
+    int speed = 0;  // km/h from the data, 0 unknown
     std::string name;
 };
 
@@ -58,6 +59,7 @@ struct RawTile {
     std::vector<RawPoint> points;
     // rivers, canals, streams given as centre lines: (points, width m)
     std::vector<std::pair<std::vector<LL>, double>> waterlines;
+    bool has_osm = false;  // an OSM enrich answer was merged (signals, signs, shops known)
     std::vector<std::string> notes;
 };
 

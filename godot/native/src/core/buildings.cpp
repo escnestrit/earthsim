@@ -1,4 +1,5 @@
 #include "buildings.hpp"
+#include "signage.hpp"
 #include <algorithm>
 
 namespace ec {
@@ -314,7 +315,7 @@ void landmark(const BuildingGeom &b, double base, double h, MeshSet &ms) {
 
 }  // namespace
 
-void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll) {
+void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll, std::vector<Label> *labels) {
     const BuildingInfo &bi = b.info;
     if (b.rings.empty() || b.rings[0].size() < 3) return;
     const Ring &outer = b.rings[0];
@@ -466,8 +467,96 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
         auto P = [&](double s, double z) { V2 q = a + dir * s + o * 0.025; return V3(q.x, q.y, z); };
         C.quad(P(s0, z0), P(s1, z0), P(s1, z1), P(s0, z1), {o.x, o.y, 0}, cl, 0, 0, (s1 - s0) / 3, (z1 - z0) / 3);
     };
+    // mapped shops: a storefront at each place's position, with its name on the sign board
+    if (ground && !b.pois.empty()) {
+        bool cyr = cyrillic_region(b.lat, b.lon);
+        std::vector<std::vector<std::pair<double, double>>> used(outer.size());
+        int made = 0;
+        for (auto &poi : b.pois) {
+            if (made >= 8) break;
+            int wi = -1;
+            double bestd = 25;
+            for (size_t i = 0; i < outer.size(); i++) {
+                double dd = seg_dist(poi.p, outer[i], outer[(i + 1) % outer.size()]);
+                double l0 = (outer[(i + 1) % outer.size()] - outer[i]).len();
+                if (l0 >= 4.5 && dd < bestd) bestd = dd, wi = (int)i;
+            }
+            if (wi < 0) continue;
+            V2 a = outer[wi], cc = outer[(wi + 1) % outer.size()];
+            V2 dd = cc - a;
+            double l = dd.len();
+            V2 dir = dd * (1 / l), o = V2(dd.y, -dd.x) * (1 / l);
+            double wd = std::clamp(std::min(l - 1.2, 6.5), 3.0, 8.0);
+            double s = std::clamp((poi.p - a).dot(dir), 0.6 + wd / 2, std::max(0.6 + wd / 2, l - 0.6 - wd / 2));
+            double s0 = s - wd / 2, s1 = s + wd / 2;
+            bool clash = false;
+            for (auto &iv : used[wi])
+                if (s0 < iv.second + 0.2 && s1 > iv.first - 0.2) clash = true;
+            if (clash) {
+                // slide along the wall to the nearest free stretch
+                bool ok = false;
+                for (double sh = wd + 0.3; sh < l && !ok; sh += wd + 0.3)
+                    for (double sg : {1.0, -1.0}) {
+                        double t0 = s0 + sg * sh, t1 = s1 + sg * sh;
+                        if (t0 < 0.5 || t1 > l - 0.5) continue;
+                        bool c2 = false;
+                        for (auto &iv : used[wi])
+                            if (t0 < iv.second + 0.2 && t1 > iv.first - 0.2) c2 = true;
+                        if (!c2) {
+                            s0 = t0, s1 = t1, ok = true;
+                            break;
+                        }
+                    }
+                if (!ok) continue;
+            }
+            used[wi].push_back({s0, s1});
+            made++;
+            ShopStyle st = shop_style(poi.key, poi.value, poi.name, poi.brand, cyr);
+            auto P = [&](double ss, double z, double off = 0.07) { V2 q = a + dir * ss + o * off; return V3(q.x, q.y, z); };
+            V3 nrm(o.x, o.y, 0);
+            double topz = base + std::min<double>(floor_h, 4.5);
+            double z0 = base + std::max(0.35f, d.plinth_h);
+            // wall panel behind, glazing, door at one end, mullions
+            cover(a, dir, o, s0 - 0.1, s1 + 0.1, z0 - 0.3, topz, mul(wall, 0.9f));
+            double dw = 1.1, ds0 = ((int)(hash01(seed, 300 + made) * 2) ? s1 - dw - 0.15 : s0 + 0.15), ds1 = ds0 + dw;
+            ms[M_GLASS].quad(P(s0 + 0.1, z0), P(s1 - 0.1, z0), P(s1 - 0.1, topz - 0.7), P(s0 + 0.1, topz - 0.7), nrm, Col{1, 1, 1, 1}, 0, 0, (s1 - s0) / 3, 1);
+            ms[M_DARK].quad(P(ds0, z0, 0.09), P(ds1, z0, 0.09), P(ds1, z0 + 2.15, 0.09), P(ds0, z0 + 2.15, 0.09), nrm, Col{1, 1, 1, 1});
+            Col fr{0.22f, 0.23f, 0.25f, 1};
+            for (double ss : {s0 + 0.1, s1 - 0.1, ds0 - 0.04, ds1})
+                ms[M_METAL].quad(P(ss, z0, 0.1), P(ss + 0.05, z0, 0.1), P(ss + 0.05, topz - 0.7, 0.1), P(ss, topz - 0.7, 0.1), nrm, fr);
+            ms[M_METAL].quad(P(s0 + 0.1, topz - 0.75, 0.1), P(s1 - 0.1, topz - 0.75, 0.1), P(s1 - 0.1, topz - 0.7, 0.1), P(s0 + 0.1, topz - 0.7, 0.1), nrm, fr);
+            // sign board with a thin frame
+            double bz0 = topz - 0.68, bz1 = topz - 0.05;
+            ms[M_METAL].quad(P(s0 - 0.05, bz0 - 0.04, 0.085), P(s1 + 0.05, bz0 - 0.04, 0.085), P(s1 + 0.05, bz1 + 0.04, 0.085), P(s0 - 0.05, bz1 + 0.04, 0.085), nrm, mul(st.board, 0.55f));
+            ms[M_PAINT].quad(P(s0, bz0, 0.1), P(s1, bz0, 0.1), P(s1, bz1, 0.1), P(s0, bz1, 0.1), nrm, st.board);
+            double tx0 = s0;
+            if (st.icon == 1) {  // cross
+                double cx = s0 + 0.5, cz = (bz0 + bz1) / 2;
+                ms[M_PAINT].quad(P(cx - 0.22, cz - 0.07, 0.11), P(cx + 0.22, cz - 0.07, 0.11), P(cx + 0.22, cz + 0.07, 0.11), P(cx - 0.22, cz + 0.07, 0.11), nrm, Col{1, 1, 1, 1});
+                ms[M_PAINT].quad(P(cx - 0.07, cz - 0.22, 0.11), P(cx + 0.07, cz - 0.22, 0.11), P(cx + 0.07, cz + 0.22, 0.11), P(cx - 0.07, cz + 0.22, 0.11), nrm, Col{1, 1, 1, 1});
+                tx0 += 0.9;
+            } else if (st.icon == 2) {  // cup
+                double cx = s0 + 0.5, cz = (bz0 + bz1) / 2;
+                ms[M_PAINT].quad(P(cx - 0.14, cz - 0.15, 0.11), P(cx + 0.1, cz - 0.15, 0.11), P(cx + 0.1, cz + 0.12, 0.11), P(cx - 0.14, cz + 0.12, 0.11), nrm, st.text);
+                ms[M_PAINT].quad(P(cx + 0.1, cz - 0.07, 0.11), P(cx + 0.2, cz - 0.07, 0.11), P(cx + 0.2, cz + 0.05, 0.11), P(cx + 0.1, cz + 0.05, 0.11), nrm, st.text);
+                tx0 += 0.9;
+            }
+            // awning over the window
+            if (st.awning_on && wd >= 3.5) {
+                double az = topz - 0.72;
+                V3 p0 = P(s0, az, 0.07), p1 = P(s1, az, 0.07), p2 = P(s1, az - 0.45, 1.0), p3 = P(s0, az - 0.45, 1.0);
+                ms[M_PAINT].quadn(p0, p3, p2, p1, st.awning);
+                ms[M_PAINT].quadn(p0, p1, p2, p3, mul(st.awning, 0.75f));
+            }
+            if (labels) {
+                std::string text = poi.name.empty() ? st.word : poi.name;
+                V2 q = a + dir * ((tx0 + s1) / 2) + o * 0.12;
+                labels->push_back({V3(q.x, q.y, (bz0 + bz1) / 2), std::atan2(o.y, o.x), (s1 - tx0) - 0.3, text, st.text});
+            }
+        }
+    }
     // shop fronts on the ground floor (not on walls with staircase doors: those face the yard)
-    if (ground && d.shops) {
+    if (ground && d.shops && b.pois.empty()) {
         for (size_t i = 0; i < outer.size(); i++) {
             V2 a = outer[i], c = outer[(i + 1) % outer.size()];
             V2 dd = c - a;
@@ -602,6 +691,64 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
         } else {
             V2 cc = e.p + o * 0.65;
             C.obox(cc, yaw, 1.3, w + 1.0, gz + porch + 2.55, gz + porch + 2.7, Col{0.7f, 0.7f, 0.68f, 1}, true);
+        }
+    }
+    // shopping centres and big stores: LED screens and the name in large letters on the main facade
+    bool big_shop = bi.use == Use::Retail && area >= 1200 && bi.min_height < 0.1;
+    bool venue = (b.amenity == "cinema" || b.amenity == "theatre") && area >= 400;
+    if ((big_shop || venue) && h >= 6) {
+        // the facade: the wall with the main door, else the longest
+        int wi = -1;
+        double wl = 0;
+        for (size_t i = 0; i < outer.size(); i++) {
+            V2 a = outer[i], c2 = outer[(i + 1) % outer.size()];
+            double l = (c2 - a).len();
+            bool door = false;
+            for (auto &dr : b.doors)
+                if (dr.kind == "main" && seg_dist(dr.p, a, c2) < 0.5) door = true;
+            double score = l + (door ? 1000 : 0);
+            if (l >= 12 && score > wl) wl = score, wi = (int)i;
+        }
+        if (wi >= 0) {
+            V2 a = outer[wi], c2 = outer[(wi + 1) % outer.size()];
+            double l = (c2 - a).len();
+            V2 dir = (c2 - a) * (1 / l), o(dir.y, -dir.x);
+            V3 nrm(o.x, o.y, 0);
+            auto P = [&](double s, double z, double off) { V2 q = a + dir * s + o * off; return V3(q.x, q.y, z); };
+            double wt = std::min(wall_top, top) - 0.6;
+            uint64_t sd = bi.seed;
+            sd ^= (uint64_t)std::llround(a.x * 10) * 2654435761ull ^ (uint64_t)std::llround(a.y * 10);
+            // one or two screens, to the side of the centre where the name goes
+            double sw = std::min({l * 0.32, 14.0, (wt - base - 3.5) * 1.8});
+            double sh = std::min(sw * 0.56, wt - base - 3.5);
+            if (sw >= 3 && sh >= 1.8) {
+                int count = l > 50 ? 2 : 1;
+                for (int k = 0; k < count; k++) {
+                    double sc = count == 1 ? l * 0.75 : (k == 0 ? l * 0.2 : l * 0.8);
+                    double s0 = std::clamp(sc - sw / 2, 0.5, l - sw - 0.5), s1 = s0 + sw;
+                    double z1 = wt - 0.3, z0 = z1 - sh;
+                    ms[M_DARK].quad(P(s0 - 0.25, z0 - 0.25, 0.12), P(s1 + 0.25, z0 - 0.25, 0.12), P(s1 + 0.25, z1 + 0.25, 0.12), P(s0 - 0.25, z1 + 0.25, 0.12), nrm, Col{1, 1, 1, 1});
+                    // the screen: uv 0..1, colour carries a per-screen seed for the shader's programme
+                    float seed = (float)((sd >> (k * 8)) % 97) / 97.0f;
+                    MeshBuf &S = ms[M_SCREEN];
+                    int i0 = S.v(P(s0, z0, 0.16), nrm, 0, 1, Col{seed, (float)(sw / sh) / 4, 0, 1}), i1 = S.v(P(s1, z0, 0.16), nrm, 1, 1, Col{seed, (float)(sw / sh) / 4, 0, 1});
+                    int i2 = S.v(P(s1, z1, 0.16), nrm, 1, 0, Col{seed, (float)(sw / sh) / 4, 0, 1}), i3 = S.v(P(s0, z1, 0.16), nrm, 0, 0, Col{seed, (float)(sw / sh) / 4, 0, 1});
+                    S.tri(i0, i1, i2);
+                    S.tri(i0, i2, i3);
+                    // depth of the box
+                    ms[M_DARK].quad(P(s0 - 0.25, z1 + 0.25, 0.12), P(s1 + 0.25, z1 + 0.25, 0.12), P(s1 + 0.25, z1 + 0.25, 0.0), P(s0 - 0.25, z1 + 0.25, 0.0), V3(0, 0, 1), Col{1, 1, 1, 1});
+                }
+            }
+            // name in big letters above the entrance
+            std::string nm = b.name;
+            if (labels && !nm.empty() && utf8_len(nm) <= 28) {
+                double lw = std::min(l * 0.45, 3.0 + 1.1 * utf8_len(nm));
+                double lz = std::min(wt - 0.4, base + std::max(5.0, (wt - base) * 0.7));
+                V2 q = a + dir * (l * (big_shop && l > 50 ? 0.5 : 0.3)) + o * 0.2;
+                if (l <= 50 && sw >= 3) q = a + dir * std::max(lw / 2 + 0.5, l * 0.75 - sw / 2 - lw / 2 - 1.0) + o * 0.2;
+                Col lc = (sd % 3 == 0) ? Col{0.95f, 0.15f, 0.15f, 1} : (sd % 3 == 1) ? Col{1, 1, 1, 1} : Col{1.0f, 0.75f, 0.1f, 1};
+                labels->push_back({V3(q.x, q.y, lz), std::atan2(o.y, o.x), lw, nm, lc});
+            }
         }
     }
     landmark(b, base, h, ms);

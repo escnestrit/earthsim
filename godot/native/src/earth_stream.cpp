@@ -1,3 +1,4 @@
+#include <godot_cpp/variant/packed_string_array.hpp>
 #include "earth_stream.h"
 #include "glue.h"
 #include <godot_cpp/classes/http_client.hpp>
@@ -184,6 +185,16 @@ Dictionary EarthStream::poll() {
         inst[in.kind] = a;
     }
     d["instances"] = inst;
+    // text signs: 8 floats each (x, y, z in Godot axes, normal angle, max width, r, g, b) and the strings
+    PackedFloat32Array lab;
+    PackedStringArray lab_text;
+    for (auto &l : c.labels) {
+        lab.append((float)l.p.x), lab.append((float)l.p.z), lab.append((float)-l.p.y), lab.append((float)l.ang);
+        lab.append((float)l.max_w), lab.append(l.c.r), lab.append(l.c.g), lab.append(l.c.b);
+        lab_text.append(String::utf8(l.text.c_str()));
+    }
+    d["labels"] = lab;
+    d["label_text"] = lab_text;
     Array grass;
     for (auto &g : c.grass) {
         PackedFloat32Array a;

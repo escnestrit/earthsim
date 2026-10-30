@@ -1,4 +1,5 @@
 #include "zip.hpp"
+#include <filesystem>
 #include <algorithm>
 #include "../core/compress.hpp"
 
@@ -48,7 +49,12 @@ Zip::~Zip() {
 
 bool Zip::open(const std::string &p, std::string &err) {
     path = p;
+#ifdef _WIN32
+    // paths come in as UTF-8 (Godot strings); the narrow fopen would use the ANSI code page
+    f_ = _wfopen(std::filesystem::u8path(p).wstring().c_str(), L"rb");
+#else
     f_ = fopen(p.c_str(), "rb");
+#endif
     if (!f_) {
         err = p + ": cannot open";
         return false;

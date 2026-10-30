@@ -390,23 +390,81 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
                 V2 v = c.fr.to_local(p.p.lat, p.p.lon);
                 if (v.x > c.x0 - FEATURE_MARGIN && v.x < c.x1 + FEATURE_MARGIN && v.y > c.y0 - FEATURE_MARGIN && v.y < c.y1 + FEATURE_MARGIN) ents.push_back({v, p.kind.substr(9)});
             }
+    // mapped shops and amenities: "poi:<key>=<value>|<name>|<brand>"
+    std::vector<ShopPoi> pois;
+    for (auto &t : tiles)
+        for (auto &p : t->points)
+            if (p.kind.rfind("poi:", 0) == 0) {
+                V2 v = c.fr.to_local(p.p.lat, p.p.lon);
+                if (v.x < c.x0 - FEATURE_MARGIN || v.x > c.x1 + FEATURE_MARGIN || v.y < c.y0 - FEATURE_MARGIN || v.y > c.y1 + FEATURE_MARGIN) continue;
+                std::string k = p.kind.substr(4);
+                size_t eq = k.find('='), b1 = k.find('|'), b2 = k.find('|', b1 == std::string::npos ? 0 : b1 + 1);
+                if (eq == std::string::npos || b1 == std::string::npos) continue;
+                ShopPoi sp;
+                sp.p = v, sp.key = k.substr(0, eq), sp.value = k.substr(eq + 1, b1 - eq - 1);
+                sp.name = b2 == std::string::npos ? k.substr(b1 + 1) : k.substr(b1 + 1, b2 - b1 - 1);
+                sp.brand = b2 == std::string::npos ? "" : k.substr(b2 + 1);
+                pois.push_back(sp);
+            }
     // which outlines are represented by their parts
     std::vector<const BRef *> parts;
     for (auto &b : all)
         if (b.b->part) parts.push_back(&b);
     for (auto &b : all) {
         if (b.b->part || !c.own(b.ctr)) continue;
-        double covered = 0;
+        double covered = 0, part_hmin = 1e9;
         for (auto *p : parts)
-            if (point_in_poly(p->ctr, b.rings)) covered += p->area;
-        // OSM convention (Overture keeps it as has_parts): a building drawn by its parts is not drawn itself
+            if (point_in_poly(p->ctr, b.rings)) {
+                covered += p->area;
+                double hv = 0;
+                if (const std::string *ht = tag(p->b->tags, "height"); ht && parse_num(*ht, hv)) part_hmin = std::min(part_hmin, hv);
+                else if (const std::string *lv = tag(p->b->tags, "building:levels"); lv && parse_num(*lv, hv)) part_hmin = std::min(part_hmin, hv * 3.0);
+            }
+        // OSM convention (Overture keeps it as has_parts): a building drawn by its parts is not drawn itself.
+        // When the parts leave much of the outline uncovered (only a tower or a wing mapped as a part), the
+        // outline is still drawn, no taller than the lowest part, so the building has no holes.
         bool has_parts = tagv(b.b->tags, "earthsim:has_parts") == "yes";
-        if (covered >= 0.4 * b.area || (has_parts && covered > 0.05 * b.area)) continue;
+        if (covered >= 0.75 * b.area) continue;
+        Tags capped;
+        bool cap = (has_parts || covered >= 0.4 * b.area) && covered > 0.02 * b.area;
+        if (cap && part_hmin < 1e8) {
+            capped = b.b->tags;
+            set_tag(capped, "height", std::to_string(std::max(3.0, part_hmin)));
+            for (auto &kv : capped)
+                if (kv.first == "building:levels") kv.second = std::to_string(std::max(1, (int)(part_hmin / 3)));
+        }
         BuildingGeom g;
         g.rings = b.rings;
         double la, lo;
         c.fr.to_latlon(b.ctr, la, lo);
-        g.info = classify(b.b->id, b.b->tags, false, b.rings[0], la, lo);
+        for (auto &sp : pois)
+            if (point_in_poly(sp.p, b.rings) || ring_dist(sp.p, b.rings[0]) < 4.0) g.pois.push_back(sp);
+        // what the building is from what is inside it, when its own tags only say "a building": shops make it
+        // retail (a small one) or keep it housing with shop fronts, offices an office building, a school...
+        Tags tg = capped.empty() ? b.b->tags : capped;
+        {
+            std::string bc = tagv(tg, "building", "yes");
+            if ((bc == "yes" || bc.empty()) && !g.pois.empty() && !tag(tg, "shop") && !tag(tg, "amenity") && !tag(tg, "office")) {
+                int shops = 0, offices = 0, food = 0;
+                std::string first_amenity;
+                for (auto &sp : g.pois) {
+                    if (sp.key == "shop") shops++;
+                    else if (sp.key == "office") offices++;
+                    else if (sp.key == "amenity") {
+                        if (sp.value == "cafe" || sp.value == "restaurant" || sp.value == "fast_food" || sp.value == "bar" || sp.value == "pub" || sp.value == "bank" || sp.value == "pharmacy") food++;
+                        else if (first_amenity.empty()) first_amenity = sp.value;
+                    }
+                }
+                double lv = 0;
+                bool tall = tag(tg, "building:levels") && parse_num(*tag(tg, "building:levels"), lv) && lv > 5;
+                if (!first_amenity.empty() && (first_amenity == "school" || first_amenity == "kindergarten" || first_amenity == "hospital" || first_amenity == "clinic" || first_amenity == "university" || first_amenity == "college" || first_amenity == "place_of_worship" || first_amenity == "cinema" || first_amenity == "theatre"))
+                    set_tag(tg, "amenity", first_amenity);
+                else if (offices >= 2 && offices > shops + food) set_tag(tg, "building", "office");
+                else if (shops + food >= 3 && b.area > 600 && !tall) set_tag(tg, "building", "retail");
+                else if (shops + food >= 1 && b.area < 400 && !tall) set_tag(tg, "building", "retail");
+            }
+        }
+        g.info = classify(b.b->id, tg, false, b.rings[0], la, lo);
         double gmin = 1e300, gmax = -1e300;
         for (auto &p : b.rings[0]) {
             double z = c.ground(p);
@@ -414,6 +472,9 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
         }
         g.base = gmin;
         g.ground_max = gmax;
+        g.lat = la, g.lon = lo;
+        g.name = tagv(b.b->tags, "name");
+        g.amenity = tagv(tg, "amenity");
         // entrances from the data: on the nearest wall within 3 m
         const Ring &o = b.rings[0];
         for (auto &[ep, kind] : ents) {
@@ -469,7 +530,46 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
                 }
             }
         }
-        build_building(g, c.out.ms, c.out.coll);
+        // house number plate (street name above the number) at the street end of the wall nearest a road
+        if (const std::string *hn = tag(b.b->tags, "addr:housenumber"); hn && !hn->empty() && hn->size() < 12 && b.area > 25 && o.size() >= 3) {
+            int wi = -1;
+            double wd = 1e9;
+            for (size_t i = 0; i < o.size(); i++) {
+                V2 a = o[i], e = o[(i + 1) % o.size()];
+                if ((e - a).len() < 3) continue;
+                double d = c.roads.clearance((a + e) * 0.5);
+                if (d < wd) wd = d, wi = (int)i;
+            }
+            if (wi >= 0) {
+                V2 a = o[wi], e = o[(wi + 1) % o.size()], dd = e - a;
+                double l = dd.len();
+                V2 dir = dd * (1 / l), out(dir.y, -dir.x);
+                // nearer the end that is closer to a road (corner plates read from the junction)
+                double sp = c.roads.clearance(a + dir * 1.2) <= c.roads.clearance(e - dir * 1.2) ? 1.0 : l - 1.0;
+                V2 m = a + dir * sp + out * 0.06;
+                double z = std::min(g.base + 2.7, g.base + g.info.height - 0.6);
+                const std::string *st = tag(b.b->tags, "addr:street");
+                double w = st ? 0.75 : 0.42, hh = st ? 0.42 : 0.32;
+                MeshBuf &PM = c.out.ms[M_PAINT];
+                V3 nrm(out.x, out.y, 0);
+                auto Q = [&](double u, double v, double off) { V2 q = m + dir * u + out * off; return V3(q.x, q.y, z + v); };
+                PM.quad(Q(-w / 2 - 0.02, -hh / 2 - 0.02, 0), Q(w / 2 + 0.02, -hh / 2 - 0.02, 0), Q(w / 2 + 0.02, hh / 2 + 0.02, 0), Q(-w / 2 - 0.02, hh / 2 + 0.02, 0), nrm, Col{0.92f, 0.92f, 0.92f, 1});
+                PM.quad(Q(-w / 2, -hh / 2, 0.01), Q(w / 2, -hh / 2, 0.01), Q(w / 2, hh / 2, 0.01), Q(-w / 2, hh / 2, 0.01), nrm, Col{0.08f, 0.22f, 0.5f, 1});
+                std::string text = *hn;
+                if (st) {
+                    std::string sn = *st;
+                    // shorten the usual Russian street words
+                    for (auto [from, to] : std::initializer_list<std::pair<const char *, const char *>>{{"улица ", "ул. "}, {" улица", ""}, {"проспект ", "пр. "}, {" проспект", " пр."}, {"переулок ", "пер. "}, {" переулок", " пер."}, {"бульвар ", "б-р "}, {"площадь ", "пл. "}, {"вуліца ", "вул. "}}) {
+                        size_t k = sn.find(from);
+                        if (k != std::string::npos) sn.replace(k, strlen(from), to);
+                    }
+                    text = sn + "\n" + *hn;
+                }
+                V2 lq = m + out * 0.03;
+                c.out.labels.push_back({V3(lq.x, lq.y, z), std::atan2(out.y, out.x), w - 0.08, text, Col{1, 1, 1, 1}});
+            }
+        }
+        build_building(g, c.out.ms, c.out.coll, &c.out.labels);
         c.out.buildings++;
     }
     for (auto *p : parts) {
@@ -562,8 +662,11 @@ void objects(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles) {
     // scattered trees and bushes on a jittered global grid
     const double CELL = 4.5;
     int i0 = (int)std::floor(c.x0 / CELL), i1 = (int)std::floor(c.x1 / CELL), j0 = (int)std::floor(c.y0 / CELL), j1 = (int)std::floor(c.y1 / CELL);
-    int urban_grass = 0;
-    for (auto &t : tiles) urban_grass += t->buildings.size() > 60;
+    int urban_grass = 0, mapped_trees = 0;
+    for (auto &t : tiles) {
+        urban_grass += t->buildings.size() > 60;
+        for (auto &pt : t->points) mapped_trees += pt.kind == "tree";
+    }
     for (int j = j0; j <= j1; j++)
         for (int i = i0; i <= i1; i++) {
             uint64_t h = mix64(((uint64_t)(uint32_t)i << 32) ^ (uint32_t)j ^ 0x7ee5);
@@ -574,7 +677,7 @@ void objects(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles) {
             uint8_t L = c.layer[tx];
             double prob = 0, conifer = 0.15, bush = 0;
             if (L == L_FOREST) prob = 0.75, conifer = 0.45;
-            else if (L == L_GRASS) prob = urban_grass ? 0.05 : 0.012, bush = 0.35;
+            else if (L == L_GRASS) prob = urban_grass ? (mapped_trees > 40 ? 0.008 : 0.025) : 0.012, bush = 0.45;  // where trees are mapped, few made up
             else if (L == L_FARM) prob = 0.002;
             if (prob <= 0 || hash01(h, 3) >= prob) continue;
             if (blocked(p, 2.0)) continue;
@@ -715,6 +818,9 @@ ChunkOut build_chunk(int cx, int cy, const std::vector<std::shared_ptr<const Raw
         if (in.kind == I_LAMP) prism(p, 0, 0.12, 0, in.p.z - 0.5, in.p.z + 8, 6);
         else if (in.kind == I_TREE || in.kind == I_CONIFER) prism(p, 0, 0.22 * in.scale, 0, in.p.z - 0.5, in.p.z + 4, 6);
         else if (in.kind == I_CAR) prism(p, in.yaw, 4.4, 1.78, in.p.z + 0.15, in.p.z + 1.35, 4);
+        else if (in.kind == I_SIGNAL || in.kind == I_SIGN) prism(p, 0, 0.07, 0, in.p.z - 0.2, in.p.z + 2.7, 5);
+        else if (in.kind == I_BIN) prism(p, 0, 0.2, 0, in.p.z, in.p.z + 0.85, 6);
+        else if (in.kind == I_SHELTER) prism(p, in.yaw, 1.5, 3.2, in.p.z, in.p.z + 2.5, 4);
     }
 
     // terrain meshes from the extended grid, then crop it to the chunk

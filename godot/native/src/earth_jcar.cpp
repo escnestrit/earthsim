@@ -1,4 +1,7 @@
 #include "earth_jcar.h"
+#include "jbeam/jtable.hpp"
+#include "core/json.hpp"
+#include <algorithm>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
@@ -38,22 +41,59 @@ EarthJCar::~EarthJCar() {
 
 String EarthJCar::beamng_vehicles_dir() { return String(ec::find_beamng_vehicles().c_str()); }
 
+// what a BeamNG zip holds, from vehicles/<name>/info.json: drivable cars and trucks only (props, trailers
+// and test rigs are skipped). Reads only the zip's directory and one small file.
+static bool vehicle_info(const std::string &path, std::string &name, std::string &type) {
+    ec::Zip z;
+    std::string err;
+    if (!z.open(path, err)) return false;
+    bool has_jbeam = false;
+    for (auto &e : z.entries) {
+        if (!has_jbeam && e.name.size() > 6 && e.name.compare(e.name.size() - 6, 6, ".jbeam") == 0) has_jbeam = true;
+        // vehicles/<model>/info.json (not the per-config info_*.json)
+        if (e.name.size() < 10 || e.name.compare(e.name.size() - 10, 10, "/info.json") != 0) continue;
+        if (std::count(e.name.begin(), e.name.end(), '/') != 2) continue;
+        std::string txt;
+        if (!z.read(e, txt, err)) continue;
+        ec::Json j;
+        if (!ec::Json::parse(ec::jbeam_normalize(txt), j)) continue;
+        auto str = [&](const char *k) -> std::string {
+            const ec::Json *v = j.get(k);
+            return v && v->kind == ec::Json::Str ? v->s : "";
+        };
+        type = str("Type");
+        std::string brand = str("Brand"), nm = str("Name");
+        if (!nm.empty()) name = brand.empty() ? nm : brand + " " + nm;
+        return true;
+    }
+    return has_jbeam;  // a mod without info.json: offer it anyway
+}
+
 Array EarthJCar::find_vehicles(PackedStringArray dirs) {
     Array out;
-    std::vector<std::string> ds;
-    for (int i = 0; i < dirs.size(); i++) ds.push_back(dirs[i].utf8().get_data());
+    std::vector<std::filesystem::path> ds;
+    for (int i = 0; i < dirs.size(); i++) ds.push_back(std::filesystem::u8path(dirs[i].utf8().get_data()));
     std::string b = ec::find_beamng_vehicles();
-    if (!b.empty()) ds.push_back(b);
+    if (!b.empty()) ds.push_back(std::filesystem::u8path(b));
     std::error_code e;
-    for (auto &d : ds)
-        for (auto &f : std::filesystem::directory_iterator(d, e)) {
-            std::string n = f.path().filename().string();
-            if (f.path().extension() != ".zip" || n == "common.zip") continue;
+    for (size_t di = 0; di < ds.size(); di++) {
+        std::vector<std::filesystem::path> files;
+        for (auto &f : std::filesystem::directory_iterator(ds[di], e))
+            if (f.path().extension() == ".zip" && f.path().filename() != "common.zip") files.push_back(f.path());
+        std::sort(files.begin(), files.end());
+        for (auto &fp : files) {
+            std::string path = fp.u8string();
+            std::string name = fp.stem().u8string(), type;
+            if (!vehicle_info(path, name, type)) continue;
+            if (!type.empty() && type != "Car" && type != "Truck" && type != "Automation") continue;
             Dictionary v;
-            v["path"] = String(f.path().string().c_str());
-            v["name"] = String(f.path().stem().string().c_str());
+            v["path"] = String::utf8(path.c_str());
+            v["name"] = String::utf8(name.c_str());
+            v["type"] = String::utf8(type.c_str());
+            v["mod"] = di + 1 < ds.size() || b.empty();
             out.push_back(v);
         }
+    }
     return out;
 }
 
@@ -71,18 +111,24 @@ void EarthJCar::load(Ref<EarthStream> stream, String path) {
         }
         ec::Library lib;
         lib.add_zip(z, false);
+        // the vehicle's own main part (common.zip, added next, has none worth driving)
+        std::string main;
+        if (auto mt = lib.by_type.find("main"); mt != lib.by_type.end() && !mt->second.empty()) {
+            // prefer the part named like the zip (pickup.zip -> "pickup"), else the shortest name
+            std::string stem = std::filesystem::u8path(load_path_).stem().u8string();
+            for (auto &n : mt->second)
+                if (n == stem) main = n;
+            if (main.empty()) main = *std::min_element(mt->second.begin(), mt->second.end(), [](const std::string &a, const std::string &b) { return a.size() != b.size() ? a.size() < b.size() : a < b; });
+        }
         std::string bdir = ec::find_beamng_vehicles();
         ec::Zip cz;
         ec::Zip *common = nullptr;
-        if (!bdir.empty() && cz.open(bdir + "/common.zip", err)) {
+        if (!bdir.empty() && cz.open((std::filesystem::u8path(bdir) / "common.zip").u8string(), err)) {
             lib.add_zip(cz, true);
             common = &cz;
             notes_.push_back("BeamNG common parts from " + bdir);
         } else
             notes_.push_back("BeamNG installation not found: parts from its common.zip are missing");
-        std::string main;
-        auto it = lib.by_type.find("main");
-        if (it != lib.by_type.end() && !it->second.empty()) main = *std::min_element(it->second.begin(), it->second.end());
         if (main.empty()) {
             load_err_ = "no part with slotType \"main\" in the mod", load_state_ = -1;
             return;

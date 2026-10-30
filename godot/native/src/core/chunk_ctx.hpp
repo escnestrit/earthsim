@@ -66,6 +66,40 @@ struct Ctx {
         fr.to_latlon(p, la, lo);
         return dem.height(la, lo, 0);
     }
+    // ground low-passed over ~35 m: what roads are laid on. The DEM (about 15-20 m cells, with buildings and
+    // trees baked into it in towns) is bumpy at road scale, and roads following it raw drive like waves. Only
+    // a function of position, so neighbouring chunks agree where a road crosses between them.
+    double Gs(V2 p) const {
+        static const double R1 = 9, R2 = 18;
+        double sum = G(p) * 4, w = 4;
+        for (int k = 0; k < 6; k++) {
+            double a = k * PI / 3;
+            sum += G(p + V2(std::cos(a), std::sin(a)) * R1) * 2, w += 2;
+        }
+        for (int k = 0; k < 8; k++) {
+            double a = k * PI / 4 + PI / 8;
+            sum += G(p + V2(std::cos(a), std::sin(a)) * R2), w += 1;
+        }
+        return sum / w;
+    }
+    // a solid box (yawed l x w footprint) in the static collision
+    void coll_prism(V2 p, double yaw, double l, double w, double z0, double z1) {
+        double cs = std::cos(yaw), sn = std::sin(yaw);
+        V3 q[4];
+        for (int k = 0; k < 4; k++) {
+            double a = (k == 0 || k == 3) ? -l / 2 : l / 2, b = k < 2 ? -w / 2 : w / 2;
+            q[k] = V3(p.x + a * cs - b * sn, p.y + a * sn + b * cs, 0);
+        }
+        for (int k = 0; k < 4; k++) {
+            V3 a = q[k], b = q[(k + 1) % 4];
+            V3 a0(a.x, a.y, z0), b0(b.x, b.y, z0), a1(a.x, a.y, z1), b1(b.x, b.y, z1);
+            tri_coll(a0, b0, b1);
+            tri_coll(a0, b1, a1);
+        }
+        V3 t0(q[0].x, q[0].y, z1), t1(q[1].x, q[1].y, z1), t2(q[2].x, q[2].y, z1), t3(q[3].x, q[3].y, z1);
+        tri_coll(t0, t1, t2);
+        tri_coll(t0, t2, t3);
+    }
     bool own(V2 p) const { return p.x >= x0 && p.x < x1 && p.y >= y0 && p.y < y1; }
     bool near(V2 lo, V2 hi, double m) const { return !(hi.x < x0 - m || lo.x > x1 + m || hi.y < y0 - m || lo.y > y1 + m); }
     // ground after flattening and carving

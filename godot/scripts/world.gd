@@ -11,6 +11,11 @@ const I_BUSH := 2
 const I_LAMP := 3
 const I_CAR := 4
 const I_PERSON := 8
+const I_SIGNAL := 9
+const I_SIGN := 10
+const I_BIN := 11
+const I_SHELTER := 12
+const I_BENCH := 5
 
 var stream := EarthStream.new()
 var mats := EarthMaterials.new()
@@ -25,6 +30,9 @@ var traffic_count := 40
 var people_mm: MultiMeshInstance3D
 var people_count := 60
 var lamp_points := {}     # Vector2i -> PackedVector3Array
+var label_data := {}      # Vector2i -> [PackedFloat32Array (8 per label), PackedStringArray]
+var label_pool: Array[Label3D] = []
+var label_t := 0.0
 
 func start(lat: float, lon: float, cache_dir: String, online := true, detail := 700.0, far := 2400.0, enrich := true) -> void:
 	mats.build()
@@ -42,7 +50,7 @@ func start(lat: float, lon: float, cache_dir: String, online := true, detail := 
 		lamp_lights.append(l)
 
 func _build_models() -> void:
-	var variants := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_LAMP: 1, I_CAR: 1}
+	var variants := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_LAMP: 1, I_CAR: 1, I_SIGNAL: 1, I_SIGN: 11, I_BENCH: 1, I_BIN: 1, I_SHELTER: 1}
 	for kind in variants:
 		for v in variants[kind]:
 			var d: Dictionary = EarthCore.model(kind, v)
@@ -116,6 +124,10 @@ func _process(_dt: float) -> void:
 	for k in stream.take_drops():
 		_drop(k)
 	_update_lamp_lights()
+	label_t += _dt
+	if label_t > 0.25:
+		label_t = 0.0
+		_update_labels()
 
 func _drop(k: Vector2i) -> void:
 	if chunks.has(k):
@@ -123,6 +135,7 @@ func _drop(k: Vector2i) -> void:
 		chunks.erase(k)
 		full.erase(k)
 		lamp_points.erase(k)
+		label_data.erase(k)
 
 func _mesh_instance(arrays: Array, mat: Material, name: String) -> MeshInstance3D:
 	var am := ArrayMesh.new()
@@ -138,6 +151,9 @@ func _add_chunk(d: Dictionary) -> void:
 	var is_full: bool = not d["terrain_only"]
 	var old: Node3D = chunks.get(k)
 	lamp_points.erase(k)
+	label_data.erase(k)
+	if d.has("labels") and (d["labels"] as PackedFloat32Array).size() > 0:
+		label_data[k] = [d["labels"], d["label_text"]]
 	var root := Node3D.new()
 	root.name = "chunk_%d_%d" % [k.x, k.y]
 	var size: float = d["size"]
@@ -215,13 +231,15 @@ func _place(root: Node3D, body: StaticBody3D, kind: int, a: PackedFloat32Array, 
 	var count := a.size() / 8
 	if count == 0:
 		return
-	var nvar := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2}.get(kind, 1) as int
+	var nvar := {I_TREE: 4, I_CONIFER: 3, I_BUSH: 2, I_SIGN: 11}.get(kind, 1) as int
 	var per := []
 	for v in nvar:
 		per.append([])
 	for i in count:
 		var o := i * 8
 		var v := int(abs(a[o] * 13.1 + a[o + 2] * 7.7)) % nvar
+		if kind == I_SIGN:
+			v = clampi(int(a[o + 5] + 0.5), 0, nvar - 1)
 		per[v].append(o)
 	for v in nvar:
 		var list: Array = per[v]
@@ -249,6 +267,9 @@ func _place(root: Node3D, body: StaticBody3D, kind: int, a: PackedFloat32Array, 
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		mmi.visibility_range_end = 1400.0 if kind <= I_BUSH else 700.0
+		if kind == I_SIGN or kind == I_SIGNAL or kind == I_BENCH or kind == I_BIN or kind == I_SHELTER:
+			mmi.visibility_range_end = 380.0
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if kind == I_SIGN else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 		if kind == I_BUSH:
 			mmi.visibility_range_end = 400.0
 		root.add_child(mmi)
@@ -304,3 +325,66 @@ func _update_lamp_lights() -> void:
 			l.visible = true
 		else:
 			l.visible = false
+
+# shop names and other text signs: a pool of Label3D nodes assigned to the nearest stored labels
+func _update_labels() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var p := cam.global_position
+	var best := []
+	for key in label_data:
+		var ld: Array = label_data[key]
+		var f: PackedFloat32Array = ld[0]
+		for i in f.size() / 8:
+			var o := i * 8
+			var dx := f[o] - p.x
+			var dz := f[o + 2] - p.z
+			var d2 := dx * dx + dz * dz
+			# big lettering (shopping centres) reads from far; plates and shop boards only up close
+			var reach := clampf(f[o + 4] * 14.0, 45.0, 320.0)
+			if d2 < reach * reach:
+				best.append([d2 / (reach * reach), key, i])
+	best.sort_custom(func(x, y): return x[0] < y[0])
+	while label_pool.size() < 90:
+		var l := Label3D.new()
+		l.font_size = 64
+		l.outline_size = 0
+		l.shaded = false
+		l.double_sided = false
+		l.pixel_size = 0.0075
+		l.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+		l.visible = false
+		add_child(l)
+		label_pool.append(l)
+	for i in label_pool.size():
+		var l := label_pool[i]
+		if i >= best.size():
+			l.visible = false
+			continue
+		var key: Vector2i = best[i][1]
+		var idx: int = best[i][2]
+		var ld: Array = label_data[key]
+		var f: PackedFloat32Array = ld[0]
+		var o := idx * 8
+		var txt: String = (ld[1] as PackedStringArray)[idx]
+		var maxw: float = f[o + 4]
+		var lk := "%d,%d:%d" % [key.x, key.y, idx]
+		if l.text != txt or l.get_meta("lk", "") != lk:
+			l.set_meta("lk", lk)
+			l.text = txt
+			l.pixel_size = 0.0075
+			var ab := l.get_aabb().size
+			# fit the board: no wider than max width, no taller than about half of it
+			var k := 1.0
+			if ab.x > maxw and ab.x > 0.01:
+				k = maxw / ab.x
+			if ab.y * k > maxw * 0.55 and ab.y > 0.01:
+				k = maxw * 0.55 / ab.y
+			l.pixel_size = 0.0075 * k
+		var ang := f[o + 3]
+		var n := Vector3(cos(ang), 0.0, -sin(ang))
+		var xa := Vector3.UP.cross(n).normalized()
+		l.global_transform = Transform3D(Basis(xa, Vector3.UP, n), Vector3(f[o], f[o + 1], f[o + 2]))
+		l.modulate = Color(f[o + 5], f[o + 6], f[o + 7])
+		l.visible = true

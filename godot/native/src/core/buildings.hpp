@@ -14,15 +14,25 @@ struct Door {
     std::string kind;  // staircase, main, service, garage, yes...
 };
 
+// a mapped shop / amenity / office inside the building (from OSM nodes)
+struct ShopPoi {
+    V2 p;
+    std::string key, value, name, brand;  // key: shop, amenity, office, tourism
+};
+
 struct BuildingGeom {
     std::vector<Ring> rings;  // outer CCW, holes CW (local metres)
     BuildingInfo info;
     double base = 0;  // ground height at the building (lowest corner)
     double ground_max = 0;
     std::vector<Door> doors;
+    std::vector<ShopPoi> pois;
+    double lat = 0, lon = 0;  // for the sign language
+    std::string amenity;
+    std::string name;         // OSM name (malls, cinemas... get it in big letters)
 };
 
 // Adds the building to `ms`; collision triangles (walls and roof, xyz floats) to `coll`.
-void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll);
+void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll, std::vector<Label> *labels = nullptr);
 
 }  // namespace ec

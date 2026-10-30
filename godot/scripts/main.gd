@@ -35,15 +35,23 @@ var spawn_ready := false
 var shot_t := -1.0
 var t_since := 0.0
 var fps_acc := 0.0
+const GameMenuScript = preload("res://scripts/game_menu.gd")
+var menu: CanvasLayer
+var settings: ConfigFile
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args() + OS.get_cmdline_args():
 		if a.begins_with("--"):
 			var kv := a.substr(2).split("=", true, 1)
 			args[kv[0]] = kv[1] if kv.size() > 1 else "1"
+	settings = GameMenuScript.load_settings()
 	var lat := float(args.get("lat", "53.9024"))
 	var lon := float(args.get("lon", "27.5618"))
-	hour = float(args.get("time", "13"))
+	if Engine.has_meta("earthsim_teleport"):
+		var tp: Vector2 = Engine.get_meta("earthsim_teleport")
+		lat = tp.x
+		lon = tp.y
+	hour = float(args.get("time", str(settings.get_value("game", "hour", 13.0))))
 	var cache: String = args.get("data", OS.get_environment("EARTHSIM_DATA"))
 	if cache == "":
 		cache = ProjectSettings.globalize_path("user://cache")
@@ -51,8 +59,8 @@ func _ready() -> void:
 	world = EarthWorld.new()
 	world.name = "World"
 	add_child(world)
-	var detail := float(args.get("detail", "700"))
-	var far := float(args.get("far", "2400"))
+	var detail := float(args.get("detail", str(settings.get_value("game", "detail", 700))))
+	var far := float(args.get("far", str(settings.get_value("game", "far", 2400))))
 	if args.has("debugmat"):
 		var cols := [Color.RED, Color.GREEN, Color.YELLOW, Color.MAGENTA, Color.CYAN]
 		var ids: PackedStringArray = (args["debugmat"] as String).split(",")
@@ -73,6 +81,15 @@ func _ready() -> void:
 	headlights.shadow_enabled = true
 	headlights.visible = false
 	add_child(headlights)
+	menu = GameMenuScript.new(self)
+	add_child(menu)
+	for k in ["traffic", "people", "fov", "volume", "gi", "ssr", "shadows", "fog", "hud"]:
+		if settings.has_section_key("game", k):
+			apply_setting(k, settings.get_value("game", k))
+	if args.has("nogi"):
+		env.sdfgi_enabled = false
+	if args.has("menu"):
+		menu.call_deferred("toggle")
 	if args.has("shot"):
 		shot_t = float(args.get("shot-after", "20"))
 	if args.has("cammode"):
@@ -211,6 +228,15 @@ func _setup_car() -> void:
 			if (vehicles[i]["path"] as String).begins_with(mods_dir):
 				_load_vehicle(i)
 				break
+	if Engine.has_meta("earthsim_vehicle"):
+		var vp: String = Engine.get_meta("earthsim_vehicle")
+		for i in vehicles.size():
+			if vehicles[i]["path"] == vp:
+				_load_vehicle(i)
+		if vp == "" and jcar:
+			jcar.queue_free()
+			jcar = null
+			vehicle_i = -1
 	if args.has("car"):
 		var want: String = args["car"]
 		for i in vehicles.size():
@@ -271,6 +297,59 @@ func _poll_vehicle() -> void:
 		jcar.queue_free()
 		jcar = null
 
+func current_vehicle_path() -> String:
+	if vehicle_i >= 0 and vehicle_i < vehicles.size():
+		return vehicles[vehicle_i]["path"]
+	return ""
+
+# -1: the built-in car
+func select_vehicle(i: int) -> void:
+	if i < 0:
+		if jcar:
+			if car == jcar:
+				builtin_car.global_transform = jcar.global_transform
+				car = builtin_car
+				builtin_car.visible = true
+				builtin_car.process_mode = Node.PROCESS_MODE_INHERIT
+				builtin_car.reset()
+			jcar.queue_free()
+			jcar = null
+		vehicle_i = -1
+		_say("Встроенная машина")
+		return
+	if car == jcar and jcar:
+		car = builtin_car
+		builtin_car.visible = true
+		builtin_car.process_mode = Node.PROCESS_MODE_INHERIT
+	_load_vehicle(i)
+
+func apply_setting(key: String, v) -> void:
+	match key:
+		"hour":
+			hour = float(v)
+			_apply_time()
+		"traffic":
+			world.traffic_count = int(v)
+		"people":
+			world.people_count = int(v)
+		"fov":
+			if cam:
+				cam.fov = float(v)
+		"volume":
+			AudioServer.set_bus_volume_db(0, linear_to_db(maxf(float(v), 0.0001)))
+		"gi":
+			env.sdfgi_enabled = bool(v)
+		"ssr":
+			env.ssr_enabled = bool(v)
+		"shadows":
+			sun.shadow_enabled = bool(v)
+		"fog":
+			env.fog_enabled = bool(v)
+		"hud":
+			if hud:
+				hud.visible = bool(v)
+				help.visible = bool(v)
+
 func _next_vehicle() -> void:
 	if vehicles.is_empty():
 		_say("Машины BeamNG не найдены (папка mods рядом с игрой или установленный BeamNG.drive)")
@@ -299,7 +378,7 @@ func _setup_hud() -> void:
 	hud.add_theme_constant_override("outline_size", 4)
 	cl.add_child(hud)
 	help = Label.new()
-	help.text = "WASD / стрелки — ехать, Space — ручник, R — поставить на колёса, C — камера, V — машина BeamNG, L — фары, T — время суток, G — GI вкл/выкл, F1 — помощь"
+	help.text = "Esc — меню (перенос, машины, настройки)   WASD — ехать, Space — ручник, R — на колёса, C — камера, V — машина, L — фары, F1 — скрыть"
 	help.add_theme_font_size_override("font_size", 14)
 	help.add_theme_color_override("font_outline_color", Color.BLACK)
 	help.add_theme_constant_override("outline_size", 4)

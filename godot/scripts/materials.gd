@@ -25,6 +25,8 @@ const M_LEAVES := 31
 const M_CONIFER := 32
 const M_CARPAINT := 33
 const M_TIRE := 34
+const M_SIGNAL := 35
+const M_SCREEN := 36
 const M_FACADE := 100
 const FACADE_STYLES := 13
 
@@ -113,6 +115,7 @@ func build() -> void:
 	mk.uv1_scale = Vector3.ONE / 4.0
 	mats[4] = mk
 	mats[M_GRAVEL] = _orm(T_GRAVEL)
+	mats[5] = _orm(T_GRASS, 3.0)   # grass on kerbed islands and medians
 	mats[M_ROOF_FLAT] = _orm(T_ROOF_FLAT, 4.0)
 	mats[M_ROOF_TILE] = _orm(T_ROOF_TILE)
 	mats[M_ROOF_METAL] = _orm(T_ROOF_METAL)
@@ -151,6 +154,12 @@ func build() -> void:
 	mats[M_CARPAINT] = paint
 	mats[M_TIRE] = _plain(Color(0.06, 0.06, 0.06), 0.85, 0.0, false)
 	mats[M_WATER] = _water()
+	var sig := ShaderMaterial.new()
+	sig.shader = load("res://shaders/signal.gdshader")
+	mats[M_SIGNAL] = sig
+	var scr := ShaderMaterial.new()
+	scr.shader = load("res://shaders/screen.gdshader")
+	mats[M_SCREEN] = scr
 	# facades: 13 styles x 3 layouts
 	for s in FACADE_STYLES:
 		for v in 3:

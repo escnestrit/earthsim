@@ -2,6 +2,7 @@
 #pragma once
 #include "mapdata.hpp"
 #include "mvt.hpp"
+#include <functional>
 
 namespace ec {
 
@@ -21,5 +22,7 @@ void overture_features(TileId tile, TileId src, const std::vector<mvt::Layer> &b
 std::vector<LL> clip_ring_ll(const std::vector<LL> &ring, const Bounds &b);
 std::vector<std::pair<size_t, size_t>> clip_runs_ll(const std::vector<LL> &pts, const Bounds &b);
 bool point_in_ll(const LL &p, const std::vector<LL> &ring);
+// splits roads/paths into bridge runs where `on` holds (widened by `extend` m, at least `min_len` m long)
+void mark_bridges(RawTile &out, const std::function<bool(LL)> &on, double extend, double min_len);
 
 }  // namespace ec

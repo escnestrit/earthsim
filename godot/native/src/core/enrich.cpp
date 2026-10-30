@@ -1,5 +1,6 @@
 // OSM tags (Overpass answer of the enrich query) merged onto the Overture features of a tile.
 #include "enrich.hpp"
+#include "overture.hpp"
 #include <algorithm>
 
 namespace ec {
@@ -7,7 +8,7 @@ namespace ec {
 static const char *OVERRIDE[] = {"height", "building:levels", "min_height", "building:min_level", "roof:levels"};
 static const char *FILL[] = {"roof:shape", "roof:height", "building:colour", "roof:colour", "building:material", "roof:material", "building:series", "start_date",
                              "building:architecture", "amenity", "religion", "denomination", "shop", "office", "tower:type", "tourism", "historic", "man_made",
-                             "name", "building:use", "leisure", "entrance"};
+                             "name", "building:use", "leisure", "entrance", "addr:housenumber", "addr:street", "brand"};
 
 static double ring_area_ll(const std::vector<LL> &r) {
     double a = 0;
@@ -29,9 +30,35 @@ int merge_osm(RawTile &t, const Json &osm) {
     if (!els || els->kind != Json::Arr) return 0;
     Bounds b = tile_bounds(t.tile);
     int changed = 0;
+    t.has_osm = true;
+    // bridges with their geometry: roads running along them become bridges there
+    std::vector<std::vector<LL>> bridges;
+    for (auto &e : els->a) {
+        const Json *g = e.get("geometry"), *tg = e.get("tags");
+        if (!g || g->kind != Json::Arr || !tg || !tg->get("bridge") || !tg->get("highway")) continue;
+        std::vector<LL> line;
+        for (auto &q : g->a) line.push_back({q.get("lat") ? q.get("lat")->num() : 0, q.get("lon") ? q.get("lon")->num() : 0});
+        if (line.size() >= 2) bridges.push_back(std::move(line));
+    }
+    if (!bridges.empty()) {
+        mark_bridges(t, [&](LL p) {
+            double kx = 111320 * std::cos(p.lat * PI / 180);
+            for (auto &l : bridges)
+                for (size_t i = 0; i + 1 < l.size(); i++) {
+                    double ax = (l[i].lon - p.lon) * kx, ay = (l[i].lat - p.lat) * 111320, bx = (l[i + 1].lon - p.lon) * kx, by = (l[i + 1].lat - p.lat) * 111320;
+                    double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+                    double tt = l2 > 0 ? std::clamp(-(ax * dx + ay * dy) / l2, 0.0, 1.0) : 0;
+                    double ex = ax + dx * tt, ey = ay + dy * tt;
+                    if (ex * ex + ey * ey < 4.0 * 4.0) return true;
+                }
+            return false;
+        }, 2, 16);
+        changed++;
+    }
     for (auto &e : els->a) {
         const Json *tags = e.get("tags");
         if (!tags || tags->kind != Json::Obj) continue;
+        if (e.get("geometry")) continue;
         const Json *type = e.get("type");
         bool node = type && type->str() && *type->str() == "node";
         LL p;
@@ -43,9 +70,30 @@ int merge_osm(RawTile &t, const Json &osm) {
             p = {c->get("lat") ? c->get("lat")->num() : 0, c->get("lon") ? c->get("lon")->num() : 0};
         }
         if (node) {
+            if (!(p.lat >= b.s && p.lat < b.n && p.lon >= b.w && p.lon < b.e)) continue;
+            auto nv = [&](const char *k) -> std::string {
+                const Json *v = tags->get(k);
+                return v && v->str() ? *v->str() : std::string();
+            };
             if (const Json *en = tags->get("entrance")) {
-                if (p.lat >= b.s && p.lat < b.n && p.lon >= b.w && p.lon < b.e) t.points.push_back({p, "entrance:" + (en->str() ? *en->str() : std::string("yes"))});
+                t.points.push_back({p, "entrance:" + (en->str() ? *en->str() : std::string("yes"))});
+                continue;
             }
+            std::string hw = nv("highway"), name = nv("name");
+            // street furniture and signs: "signal", "stop", "giveway", "crossing:<kind>", "busstop|name", "sign:<value>|<dir>"
+            if (hw == "traffic_signals") t.points.push_back({p, "signal"});
+            else if (hw == "stop") t.points.push_back({p, "stop"});
+            else if (hw == "give_way") t.points.push_back({p, "giveway"});
+            else if (hw == "crossing") t.points.push_back({p, "crossing:" + (nv("crossing").empty() ? std::string("yes") : nv("crossing"))});
+            else if (hw == "bus_stop") t.points.push_back({p, "busstop|" + name});
+            else if (nv("traffic_sign").find("maxspeed") != std::string::npos) t.points.push_back({p, "sign:maxspeed=" + nv("maxspeed")});
+            else if (!nv("traffic_sign").empty()) t.points.push_back({p, "sign:" + nv("traffic_sign")});
+            else if (nv("amenity") == "bench") t.points.push_back({p, "bench"});
+            else if (nv("amenity") == "waste_basket") t.points.push_back({p, "bin"});
+            else if (!nv("shop").empty()) t.points.push_back({p, "poi:shop=" + nv("shop") + "|" + name + "|" + nv("brand")});
+            else if (!nv("amenity").empty() && (!name.empty() || nv("amenity") == "atm")) t.points.push_back({p, "poi:amenity=" + nv("amenity") + "|" + name + "|" + nv("brand")});
+            else if (!nv("office").empty() && !name.empty()) t.points.push_back({p, "poi:office=" + nv("office") + "|" + name + "|"});
+            else if (!nv("tourism").empty() && !name.empty()) t.points.push_back({p, "poi:tourism=" + nv("tourism") + "|" + name + "|"});
             continue;
         }
         if (tags->get("building")) {
@@ -139,11 +187,13 @@ std::string osm_enrich_query(const Bounds &b) {
     char bb[128];
     snprintf(bb, sizeof bb, "%.6f,%.6f,%.6f,%.6f", b.s, b.w, b.n, b.e);
     std::string B = bb;
-    return "[out:json][timeout:60];(way[\"building\"][\"building:levels\"](" + B + ");way[\"building\"][\"height\"](" + B +
+    return "[out:json][timeout:60];(way[\"building\"][\"building:levels\"](" + B + ");way[\"building\"][\"addr:housenumber\"](" + B + ");way[\"building\"][\"height\"](" + B +
            ");relation[\"building\"][\"building:levels\"](" + B + ");relation[\"building\"][\"height\"](" + B +
            ");way[\"building\"][~\"^(amenity|shop|office|tourism|historic|man_made|name|building:use)$\"~\".\"](" + B +
            ");way[\"building\"~\"^(church|cathedral|chapel|mosque|temple|synagogue|school|university|college|kindergarten|hospital|office|retail|commercial|supermarket|garages|garage|civic|public|government|train_station)$\"](" +
-           B + "););out tags center;node[\"entrance\"](" + B + ");out body;(way[\"highway\"][\"oneway\"](" + B + ");way[\"highway\"][\"lanes\"](" + B +
-           ");way[\"highway\"][\"width\"](" + B + "););out tags center;";
+           B + "););out tags center;node[\"entrance\"](" + B + ");out body;(node[\"highway\"~\"^(traffic_signals|stop|give_way|crossing|bus_stop)$\"](" + B +
+           ");node[\"traffic_sign\"](" + B + ");node[\"shop\"](" + B + ");node[\"amenity\"~\"^(bench|waste_basket|atm|cafe|restaurant|fast_food|bar|pub|pharmacy|bank|post_office|cinema|theatre|fuel|car_wash|clinic|dentist|library|marketplace)$\"](" + B +
+           ");node[\"office\"][\"name\"](" + B + "););out body;(way[\"highway\"][\"oneway\"](" + B + ");way[\"highway\"][\"lanes\"](" + B +
+           ");way[\"highway\"][\"width\"](" + B + "););out tags center;way[\"highway\"][\"bridge\"~\"^(yes|viaduct|movable|cantilever|beam|aqueduct)$\"](" + B + ");out tags geom;";
 }
 }  // namespace ec
