@@ -465,6 +465,97 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             r.sw = std::max(r.sws[0], r.sws[1]);
         }
     }
+    // ---- dual carriageways: a side of a one-way road that runs alongside another road a few metres away gets
+    // a central reservation (kerbed strip, guard rail on fast roads) instead of a sidewalk
+    std::vector<std::array<double, 2>> med(roads.size(), {-1.0, -1.0});
+    {
+        std::vector<std::pair<V2, V2>> bb(roads.size());
+        for (size_t i = 0; i < roads.size(); i++) {
+            V2 lo(1e300, 1e300), hi(-1e300, -1e300);
+            for (auto &q : roads[i].pts) lo = V2(std::min(lo.x, q.p.x), std::min(lo.y, q.p.y)), hi = V2(std::max(hi.x, q.p.x), std::max(hi.y, q.p.y));
+            bb[i] = {lo, hi};
+        }
+        for (size_t ri = 0; ri < roads.size(); ri++) {
+            const Road &r = roads[ri];
+            if (!r.alive || r.oneway == 0 || r.pts.size() < 2 || r.prio < 3) continue;
+            for (int sd = 0; sd < 2; sd++) {
+                double side = sd == 0 ? 1 : -1;
+                int n = 0, hit = 0, near = 0;
+                std::vector<double> gaps, ngaps;
+                for (size_t i = 0; i + 1 < r.pts.size(); i += 2) {
+                    V2 a = r.pts[i].p, b = r.pts[i + 1].p, d = (b - a).norm();
+                    V2 q = (a + b) * 0.5 + d.perp() * (side * (r.hw + 0.2));
+                    n++;
+                    double best = 1e9, nbest = 1e9;
+                    for (size_t oi = 0; oi < roads.size(); oi++) {
+                        if (oi == ri || !roads[oi].alive) continue;
+                        const Road &o = roads[oi];
+                        if (q.x < bb[oi].first.x - 20 || q.x > bb[oi].second.x + 20 || q.y < bb[oi].first.y - 20 || q.y > bb[oi].second.y + 20) continue;
+                        for (size_t k = 0; k + 1 < o.pts.size(); k++) {
+                            V2 e = o.pts[k + 1].p - o.pts[k].p;
+                            double el = e.len();
+                            if (el < 1e-6 || std::abs(d.cross(e * (1 / el))) > 0.35) continue;  // only parallel pieces
+                            double dist = seg_dist(q, o.pts[k].p, o.pts[k + 1].p) - o.hw;
+                            // on our side of the road
+                            V2 mid = (o.pts[k].p + o.pts[k + 1].p) * 0.5;
+                            if ((mid - a).dot(d.perp()) * side <= 0) continue;
+                            // any parallel road alongside: the strip between is paved over when it is narrow
+                            nbest = std::min(nbest, dist);
+                            // a central reservation only between the two carriageways of one road: one-way the
+                            // other way, same class
+                            if (o.oneway == 0 || std::abs(o.prio - r.prio) > 1) continue;
+                            if (d.dot(e * (1 / el)) * r.oneway * o.oneway > -0.5) continue;
+                            best = std::min(best, dist);
+                        }
+                    }
+                    if (best < 14) hit++, gaps.push_back(std::max(0.0, best));
+                    if (nbest < 2.0) near++, ngaps.push_back(std::max(0.0, nbest));
+                }
+                if (n > 0 && hit * 2 > n) {
+                    std::nth_element(gaps.begin(), gaps.begin() + gaps.size() / 2, gaps.end());
+                    med[ri][sd] = gaps[gaps.size() / 2] + 0.2;
+                } else if (n > 0 && near * 2 > n) {
+                    std::nth_element(ngaps.begin(), ngaps.begin() + ngaps.size() / 2, ngaps.end());
+                    med[ri][sd] = std::min(1.9, ngaps[ngaps.size() / 2] + 0.2);  // paved strip, never an island
+                }
+            }
+        }
+    }
+
+    // ---- twin carriageways share one profile: heights come from the ground under each separately and can
+    // differ by most of a metre across a narrow gap. Average with the twin, eased out near the ends, where
+    // junction heights already agree.
+    {
+        std::vector<std::vector<double>> z0(roads.size());
+        for (size_t i = 0; i < roads.size(); i++)
+            for (auto &q : roads[i].pts) z0[i].push_back(q.z);
+        for (size_t ri = 0; ri < roads.size(); ri++) {
+            Road &r = roads[ri];
+            if (!r.alive || r.bridge || r.tunnel || (med[ri][0] < 0 && med[ri][1] < 0) || r.pts.size() < 2) continue;
+            double reach = r.hw + std::max(med[ri][0], med[ri][1]) + 1.0;
+            double L = chain_len(r.pts), s = 0;
+            for (size_t i = 0; i < r.pts.size(); i++) {
+                if (i > 0) s += (r.pts[i].p - r.pts[i - 1].p).len();
+                double ease = std::clamp(std::min(s, L - s) / 30.0, 0.0, 1.0);
+                if (ease <= 0) continue;
+                V2 p = r.pts[i].p;
+                double best = 1e9, zt = 0;
+                for (size_t oi = 0; oi < roads.size(); oi++) {
+                    const Road &o = roads[oi];
+                    if (oi == ri || !o.alive || o.bridge || o.tunnel || o.oneway == 0) continue;
+                    for (size_t k = 0; k + 1 < o.pts.size(); k++) {
+                        V2 a = o.pts[k].p, b = o.pts[k + 1].p, d = b - a;
+                        double l2 = d.dot(d);
+                        if (l2 < 1e-9) continue;
+                        double t = std::clamp((p - a).dot(d) / l2, 0.0, 1.0);
+                        double dist = (a + d * t - p).len() - o.hw;
+                        if (dist < best && dist < reach) best = dist, zt = z0[oi][k] + (z0[oi][k + 1] - z0[oi][k]) * t;
+                    }
+                }
+                if (best < 1e8) r.pts[i].z = z0[ri][i] + ((z0[ri][i] + zt) * 0.5 - z0[ri][i]) * ease * ease * (3 - 2 * ease);
+            }
+        }
+    }
     // ---- flatten the terrain under carriageways and sidewalks (not under bridges)
     {
         HeightGrid &g = c.out.grid;
@@ -498,7 +589,11 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                         int sd = d.x * (p.y - a.y) - d.y * (p.x - a.x) > 0 ? 0 : 1;
                         // beside the carriageway the ground meets the pavement top (just under it, no z-fight),
                         // so pavements never hang above the ground or sink into it, and doors open onto them
-                        if (!r.tunnel && dist > r.hw + 1.2 && r.sws[sd] > 0) zr += zoff(r) + KERB_H - 0.03;  // 1 m grid: keep clear of the asphalt edge
+                        if (!r.tunnel && dist > r.hw + 1.2 && r.sws[sd] > 0 && med[&r - &roads[0]][sd] < 0) zr += zoff(r) + KERB_H - 0.03;  // 1 m grid: keep clear of the asphalt edge
+                        // a narrow gap between twin carriageways is filled with asphalt at road level: keep the
+                        // ground clearly under it (the two roads' profiles differ by centimetres and would cross)
+                        double mg = med[&r - &roads[0]][sd];
+                        if (mg >= 0 && mg < 2.0 && dist > r.hw - 0.3 && dist < r.hw + mg) zr -= 0.15;
                         put(ii, jj, w, zr, dist);
                     }
             }
@@ -550,7 +645,11 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
         if (n.ends.size() >= 2) {
             double rad = 0;
             for (auto &e : n.ends) rad = std::max(rad, roads[e.road].hw);
-            c.stroke(n.p, n.p, rad + 1, [&](int t) { c.layer[t] = L_ASPHALT, c.occ[t] |= O_ROAD; });
+            // only inside the roads' own corridors: at a narrow merge the disc would paint the slope between them
+            c.stroke(n.p, n.p, rad + 1, [&](int t) {
+                V2 q(c.x0 + (t % SPLAT_N) + 0.5, c.y0 + (t / SPLAT_N) + 0.5);
+                if (c.roads.clearance(q) <= 0.6) c.layer[t] = L_ASPHALT, c.occ[t] |= O_ROAD;
+            });
         }
 
     auto free_spot = [&](V2 p, double clear) {
@@ -558,57 +657,6 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
             if (ring_dist(p, br) < clear || point_in_ring(p, br)) return false;
         return true;
     };
-    // ---- dual carriageways: a side of a one-way road that runs alongside another road a few metres away gets
-    // a central reservation (kerbed strip, guard rail on fast roads) instead of a sidewalk
-    std::vector<std::array<double, 2>> med(roads.size(), {-1.0, -1.0});
-    {
-        std::vector<std::pair<V2, V2>> bb(roads.size());
-        for (size_t i = 0; i < roads.size(); i++) {
-            V2 lo(1e300, 1e300), hi(-1e300, -1e300);
-            for (auto &q : roads[i].pts) lo = V2(std::min(lo.x, q.p.x), std::min(lo.y, q.p.y)), hi = V2(std::max(hi.x, q.p.x), std::max(hi.y, q.p.y));
-            bb[i] = {lo, hi};
-        }
-        for (size_t ri = 0; ri < roads.size(); ri++) {
-            const Road &r = roads[ri];
-            if (!r.alive || r.oneway == 0 || r.pts.size() < 2 || r.prio < 3) continue;
-            for (int sd = 0; sd < 2; sd++) {
-                double side = sd == 0 ? 1 : -1;
-                int n = 0, hit = 0;
-                std::vector<double> gaps;
-                for (size_t i = 0; i + 1 < r.pts.size(); i += 2) {
-                    V2 a = r.pts[i].p, b = r.pts[i + 1].p, d = (b - a).norm();
-                    V2 q = (a + b) * 0.5 + d.perp() * (side * (r.hw + 0.2));
-                    n++;
-                    double best = 1e9;
-                    for (size_t oi = 0; oi < roads.size(); oi++) {
-                        if (oi == ri || !roads[oi].alive) continue;
-                        const Road &o = roads[oi];
-                        // only the other carriageway of the same road: one-way the other way, same class
-                        if (o.oneway == 0 || std::abs(o.prio - r.prio) > 1) continue;
-                        if (q.x < bb[oi].first.x - 20 || q.x > bb[oi].second.x + 20 || q.y < bb[oi].first.y - 20 || q.y > bb[oi].second.y + 20) continue;
-                        for (size_t k = 0; k + 1 < o.pts.size(); k++) {
-                            V2 e = o.pts[k + 1].p - o.pts[k].p;
-                            double el = e.len();
-                            if (el < 1e-6 || std::abs(d.cross(e * (1 / el))) > 0.35) continue;  // only parallel pieces
-                            // travelling the opposite way
-                            if (d.dot(e * (1 / el)) * r.oneway * o.oneway > -0.5) continue;
-                            double dist = seg_dist(q, o.pts[k].p, o.pts[k + 1].p) - o.hw;
-                            // on our side of the road
-                            V2 mid = (o.pts[k].p + o.pts[k + 1].p) * 0.5;
-                            if ((mid - a).dot(d.perp()) * side <= 0) continue;
-                            best = std::min(best, dist);
-                        }
-                    }
-                    if (best < 14) hit++, gaps.push_back(std::max(0.0, best));
-                }
-                if (n > 0 && hit * 2 > n) {
-                    std::nth_element(gaps.begin(), gaps.begin() + gaps.size() / 2, gaps.end());
-                    med[ri][sd] = gaps[gaps.size() / 2] + 0.2;
-                }
-            }
-        }
-    }
-
     // ---- meshes
     MeshBuf &AS = c.out.ms[M_ASPHALT], &MK = c.out.ms[M_MARKING], &CU = c.out.ms[M_CURB], &PV = c.out.ms[M_PAVERS], &CO = c.out.ms[M_CONCRETE];
     for (size_t r0i = 0; r0i < roads.size(); r0i++) {
@@ -763,7 +811,8 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                     double e0 = side * (r0.hw - 0.08), e1 = side * (r0.hw - 0.2);
                     strip(MK, std::min(e0, e1), std::max(e0, e1), mz, mz, Col{0.95f, 0.95f, 0.93f, 1}, false, 1);
                     // and asphalt over the gap so no grass shows between them
-                    if (gap > 0.05) strip(AS, side > 0 ? r0.hw : -r0.hw - gap / 2 - 0.05, side > 0 ? r0.hw + gap / 2 + 0.05 : -r0.hw, zo - 0.002, zo - 0.002, ac, true, 4);
+                    // the gap is a median of samples and the two chains bend at different vertices: overlap generously
+                    if (gap > 0.05) strip(AS, side > 0 ? r0.hw - 0.05 : -r0.hw - gap / 2 - 1.2, side > 0 ? r0.hw + gap / 2 + 1.2 : -r0.hw + 0.05, zo - 0.004, zo - 0.004, ac, true, 4);
                     continue;
                 }
                 Col kc{0.78f, 0.78f, 0.76f, 1};
