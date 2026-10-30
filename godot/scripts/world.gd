@@ -143,6 +143,24 @@ func _add_chunk(d: Dictionary) -> void:
 		mi.name = "built"
 		mi.visibility_range_end = 2600.0
 		root.add_child(mi)
+	# grass in 64 m blocks, drawn only near the camera
+	var grass: Array = d.get("grass", [])
+	for gi in grass.size():
+		var buf: PackedFloat32Array = grass[gi]
+		var cnt := buf.size() / 16
+		if cnt == 0:
+			continue
+		var gm := MultiMesh.new()
+		gm.transform_format = MultiMesh.TRANSFORM_3D
+		gm.use_colors = true
+		gm.mesh = mats.grass_mesh
+		gm.instance_count = cnt
+		gm.buffer = buf
+		var gmi := MultiMeshInstance3D.new()
+		gmi.multimesh = gm
+		gmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		gmi.visibility_range_end = 75.0
+		root.add_child(gmi)
 	# placed objects
 	var inst: Dictionary = d["instances"]
 	for kind in inst:

@@ -50,6 +50,8 @@ var layer_normal: Texture2DArray
 var layer_orm: Texture2DArray
 var tex_cache := {}
 var night := 0.0
+var grass_mat: ShaderMaterial
+var grass_mesh: ArrayMesh
 
 func _img(bytes: PackedByteArray, size: int, fmt := Image.FORMAT_RGBA8, mips := true) -> Image:
 	var img := Image.create_from_data(size, size, false, fmt, bytes)
@@ -174,7 +176,34 @@ func build() -> void:
 			mats[M_FACADE + s * 3 + v] = m
 			facade_mats.append(m)
 	_terrain_layers()
+	_grass()
 	print("materials built in ", Time.get_ticks_msec() - t0, " ms")
+
+func _grass() -> void:
+	grass_mat = ShaderMaterial.new()
+	grass_mat.shader = load("res://shaders/grass.gdshader")
+	var d: Dictionary = EarthCore.material_texture(18)
+	var img := Image.create_from_data(d["size"], d["size"], false, Image.FORMAT_RGBA8, d["albedo"])
+	img.generate_mipmaps()
+	grass_mat.set_shader_parameter("blades", ImageTexture.create_from_image(img))
+	# three crossed cards, 0.7 m wide, 0.45 m high
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for k in 3:
+		var a := k * PI / 3.0
+		var dx := Vector3(cos(a), 0, sin(a)) * 0.35
+		var nrm := Vector3(-sin(a), 0, cos(a))
+		var p0 := -dx
+		var p1 := dx
+		var p2 := dx + Vector3(0, 0.45, 0)
+		var p3 := -dx + Vector3(0, 0.45, 0)
+		for v in [[p0, Vector2(0, 1)], [p1, Vector2(1, 1)], [p2, Vector2(1, 0)], [p0, Vector2(0, 1)], [p2, Vector2(1, 0)], [p3, Vector2(0, 0)]]:
+			st.set_normal(nrm)
+			st.set_uv(v[1])
+			st.set_color(Color.WHITE)
+			st.add_vertex(v[0])
+	grass_mesh = st.commit()
+	grass_mesh.surface_set_material(0, grass_mat)
 
 func _water() -> ShaderMaterial:
 	var sm := ShaderMaterial.new()

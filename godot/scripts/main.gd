@@ -174,6 +174,13 @@ func _setup_car() -> void:
 	if args.has("mods"):
 		dirs.append(args["mods"])
 	vehicles = EarthJCar.find_vehicles(dirs)
+	if not args.has("car") and not args.has("builtin"):
+		# a vehicle the player put in the mods folder next to the game is driven by default
+		var mods_dir := dirs[0]
+		for i in vehicles.size():
+			if (vehicles[i]["path"] as String).begins_with(mods_dir):
+				_load_vehicle(i)
+				break
 	if args.has("car"):
 		var want: String = args["car"]
 		for i in vehicles.size():

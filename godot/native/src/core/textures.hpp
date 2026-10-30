@@ -30,7 +30,7 @@ constexpr int GROUND_TEX = 512;
 // G roughness, B metallic). Kinds:
 enum TexKind {
     T_GRASS = 0, T_FOREST_FLOOR, T_SAND, T_ASPHALT, T_PAVERS, T_FARM, T_DIRT, T_PITCH,  // ground-cover layers 0-7
-    T_CONCRETE = 8, T_CURB, T_ROOF_TILE, T_ROOF_METAL, T_ROOF_FLAT, T_BARK, T_LEAVES, T_CONIFER, T_GRAVEL, T_ROCK,
+    T_CONCRETE = 8, T_CURB, T_ROOF_TILE, T_ROOF_METAL, T_ROOF_FLAT, T_BARK, T_LEAVES, T_CONIFER, T_GRAVEL, T_ROCK, T_GRASS_BLADES,
     T_COUNT
 };
 struct MatTex {

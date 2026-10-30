@@ -48,6 +48,9 @@ struct ChunkOut {
     std::vector<float> coll;         // static collision triangles (xyz)
     std::vector<Instance> inst;
     std::vector<LaneSeg> lanes;  // owned road centre-line pieces
+    // grass tufts in 64 m blocks (row-major 4x4): MultiMesh buffers in Godot axes, 16 floats per tuft
+    // (3x4 transform rows, then colour)
+    std::vector<std::vector<float>> grass;
     int buildings = 0, roads = 0;
     std::vector<std::string> notes;
 };

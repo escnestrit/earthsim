@@ -531,6 +531,31 @@ void objects(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles) {
                 c.out.inst.push_back({I_LAMP, {v.x, v.y, c.ground(v)}, yaw, 1, {1, 1, 1, 1}});
             }
         }
+    // grass tufts on lawns, pitches and in forests, up to ~1 per m2
+    c.out.grass.assign(16, {});
+    for (int j = 0; j < SPLAT_N; j++)
+        for (int i = 0; i < SPLAT_N; i++) {
+            int t = j * SPLAT_N + i;
+            uint8_t L = c.layer[t];
+            double dens = L == L_GRASS ? 1.1 : L == L_PITCH ? 0.6 : L == L_FOREST ? 0.35 : L == L_FARM ? 0.2 : 0;
+            if (dens <= 0 || (c.occ[t] & (O_ROAD | O_WALK | O_WATER | O_PATH | O_BUILDING | O_PARKING))) continue;
+            uint64_t h = mix64(((uint64_t)(uint32_t)(c.cx * SPLAT_N + i) << 32) ^ (uint32_t)(c.cy * SPLAT_N + j) ^ 0x6a55);
+            int n = (int)std::floor(dens + hash01(h, 9));
+            for (int k = 0; k < n; k++) {
+                V2 p(c.x0 + i + hash01(h, 1 + k * 4), c.y0 + j + hash01(h, 2 + k * 4));
+                if (c.roads.clearance(p) < 0.6) continue;
+                double z = c.ground(p);
+                double yaw = hash01(h, 3 + k * 4) * 2 * PI, sc = 0.6 + 0.8 * hash01(h, 4 + k * 4);
+                double cs = std::cos(yaw) * sc, sn = std::sin(yaw) * sc;
+                // Godot: x, y up, z = -north; rotation about y
+                float gx = (float)p.x, gy = (float)z, gz = (float)-p.y;
+                float hue = (float)hash01(h, 30 + k);
+                float dry = L == L_FOREST ? 0.2f : 0.0f;
+                std::vector<float> &b = c.out.grass[(j / 64) * 4 + i / 64];
+                b.insert(b.end(), {(float)cs, 0, (float)sn, gx, 0, (float)sc, 0, gy, (float)-sn, 0, (float)cs, gz, 0.85f + 0.3f * hue + dry, 0.9f + 0.2f * hue, 0.8f + 0.2f * hue - dry, 1});
+            }
+        }
+
     // scattered trees and bushes on a jittered global grid
     const double CELL = 4.5;
     int i0 = (int)std::floor(c.x0 / CELL), i1 = (int)std::floor(c.x1 / CELL), j0 = (int)std::floor(c.y0 / CELL), j1 = (int)std::floor(c.y1 / CELL);

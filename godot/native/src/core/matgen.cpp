@@ -143,9 +143,38 @@ MatTex foliage(bool conifer) {
     return finish(f, 1.5f);
 }
 
+// grass blades on a transparent background, bases along the bottom edge
+MatTex blades() {
+    Field f;
+    for (auto &v : f.a) v = 0;
+    for (size_t i = 0; i < f.r.size(); i++) set(f, i, 0.2f, 0.35f, 0.1f);
+    for (int k = 0; k < 140; k++) {
+        float x0 = h01(k, 1, 77) * S, lean = (h01(k, 2, 77) - 0.5f) * 0.5f, hgt = (0.45f + 0.55f * h01(k, 3, 77)) * S * 0.97f;
+        float w0 = 3 + h01(k, 4, 77) * 4, hue = h01(k, 5, 77);
+        for (int y = 0; y < (int)hgt; y++) {
+            float t = y / hgt;
+            float cx = x0 + lean * y + lean * y * t * 0.6f, w = w0 * (1 - t);
+            for (int x = (int)(cx - w - 1); x <= (int)(cx + w + 1); x++) {
+                int xx = ((x % S) + S) % S;
+                if (std::abs(x - cx) > w) continue;
+                int row = S - 1 - y;
+                size_t i = (size_t)row * S + xx;
+                float shade = 0.55f + 0.45f * t;
+                set(f, i, (0.16f + 0.12f * hue) * shade, (0.3f + 0.12f * hue) * shade, (0.08f + 0.04f * hue) * shade);
+                f.a[i] = 1;
+                f.h[i] = 1 - std::abs(x - cx) / std::max(0.5f, w);
+                f.ao[i] = 0.5f + 0.5f * t;
+            }
+        }
+    }
+    for (auto &r : f.rough) r = 0.7f;
+    return finish(f, 1.0f);
+}
+
 }  // namespace
 
 MatTex material_texture(int kind) {
+    if (kind == T_GRASS_BLADES) return blades();
     if (kind == T_LEAVES) return foliage(false);
     if (kind == T_CONIFER) return foliage(true);
     Field f;

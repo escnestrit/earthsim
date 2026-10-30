@@ -184,6 +184,14 @@ Dictionary EarthStream::poll() {
         inst[in.kind] = a;
     }
     d["instances"] = inst;
+    Array grass;
+    for (auto &g : c.grass) {
+        PackedFloat32Array a;
+        a.resize((int64_t)g.size());
+        if (!g.empty()) memcpy(a.ptrw(), g.data(), g.size() * sizeof(float));
+        grass.push_back(a);
+    }
+    d["grass"] = grass;
     d["buildings"] = c.buildings;
     d["roads"] = c.roads;
     return d;
