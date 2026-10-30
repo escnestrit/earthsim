@@ -577,11 +577,15 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                     for (size_t oi = 0; oi < roads.size(); oi++) {
                         if (oi == ri || !roads[oi].alive) continue;
                         const Road &o = roads[oi];
+                        // only the other carriageway of the same road: one-way the other way, same class
+                        if (o.oneway == 0 || std::abs(o.prio - r.prio) > 1) continue;
                         if (q.x < bb[oi].first.x - 20 || q.x > bb[oi].second.x + 20 || q.y < bb[oi].first.y - 20 || q.y > bb[oi].second.y + 20) continue;
                         for (size_t k = 0; k + 1 < o.pts.size(); k++) {
                             V2 e = o.pts[k + 1].p - o.pts[k].p;
                             double el = e.len();
                             if (el < 1e-6 || std::abs(d.cross(e * (1 / el))) > 0.35) continue;  // only parallel pieces
+                            // travelling the opposite way
+                            if (d.dot(e * (1 / el)) * r.oneway * o.oneway > -0.5) continue;
                             double dist = seg_dist(q, o.pts[k].p, o.pts[k + 1].p) - o.hw;
                             // on our side of the road
                             V2 mid = (o.pts[k].p + o.pts[k + 1].p) * 0.5;
@@ -749,7 +753,7 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                 Col kc{0.78f, 0.78f, 0.76f, 1};
                 double half = std::max(0.25, gap / 2 - 0.02);
                 double o0 = side * r0.hw, o1 = side * (r0.hw + half);
-                if (r0.prio >= 7 || gap < 1.2) {
+                if ((r0.prio >= 7 && gap < 3.0) || gap < 1.2) {
                     // fast roads and tight gaps: a concrete barrier (New Jersey profile, roughly), solid in collision
                     double bw = std::min(half, 0.3);
                     double ob = side * (r0.hw + half - bw);

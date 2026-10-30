@@ -34,6 +34,8 @@ public:
     PackedFloat32Array traffic(double dt, Vector3 player, Vector3 player_vel, int count);
     // steps the pedestrians; 9 floats each: x, y, z (Godot), yaw, shirt r, g, b, walk phase, height scale
     PackedFloat32Array people(double dt, Vector3 player, int count);
+    // weather for the tyres: wetness and snow 0..1
+    void set_weather_grip(double wet, double snow);
 
 private:
     std::unique_ptr<ec::Streamer> s_;

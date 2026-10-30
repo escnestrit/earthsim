@@ -25,3 +25,14 @@ common/max_physics_steps_per_frame=12
 [display]
 window/size/viewport_width=1600
 window/size/viewport_height=900
+
+[shader_globals]
+
+wetness={
+"type": "float",
+"value": 0.0
+}
+snow_cover={
+"type": "float",
+"value": 0.0
+}

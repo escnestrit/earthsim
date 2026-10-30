@@ -38,6 +38,8 @@ var fps_acc := 0.0
 const GameMenuScript = preload("res://scripts/game_menu.gd")
 var menu: CanvasLayer
 var settings: ConfigFile
+const WeatherScript = preload("res://scripts/weather.gd")
+var weather: Node3D
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args() + OS.get_cmdline_args():
@@ -81,6 +83,15 @@ func _ready() -> void:
 	headlights.shadow_enabled = true
 	headlights.visible = false
 	add_child(headlights)
+	weather = WeatherScript.new()
+	add_child(weather)
+	weather.setup(env, sun, world.stream, env.sky.sky_material as ShaderMaterial, cam)
+	weather.mats = world.mats
+	weather.base_sun = sun.light_energy
+	weather.set_kind(int(args.get("weather", str(settings.get_value("game", "weather", 0)))))
+	# start with the ground already as the weather left it
+	weather.wet = 1.0 if weather.kind == 3 or weather.kind == 4 else 0.0
+	weather.snow_cover = 1.0 if weather.kind == 6 else 0.0
 	menu = GameMenuScript.new(self)
 	add_child(menu)
 	for k in ["traffic", "people", "fov", "volume", "gi", "ssr", "shadows", "fog", "hud"]:
@@ -195,6 +206,8 @@ func _apply_time() -> void:
 	env.ambient_light_color = Color(0.62, 0.66, 0.72).lerp(Color(0.25, 0.3, 0.45), night)
 	if world:
 		world.mats.set_night(night)
+	if weather:
+		weather.base_sun = sun.light_energy
 
 func _setup_car() -> void:
 	car = EarthCar.new()
@@ -350,6 +363,9 @@ func apply_setting(key: String, v) -> void:
 			sun.shadow_enabled = bool(v)
 		"fog":
 			env.fog_enabled = bool(v)
+		"weather":
+			if weather:
+				weather.set_kind(int(v))
 		"hud":
 			if hud:
 				hud.visible = bool(v)

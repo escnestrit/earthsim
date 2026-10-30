@@ -2,6 +2,7 @@
 // triangles of everything built (roads, kerbs, buildings, bridges, poles), in the local frame (z up).
 // Thread-safe: chunks are added/removed by the streamer while the car queries.
 #pragma once
+#include <atomic>
 #include <map>
 #include <memory>
 #include <shared_mutex>
@@ -44,6 +45,8 @@ struct DynBox {
 
 class CollisionWorld {
 public:
+    // weather: 0 dry .. 1 soaked; snow 0 .. 1 (packed snow on everything): scale every surface's grip
+    std::atomic<float> wet{0}, snow{0};
     void set_dynamic(std::vector<DynBox> boxes);
     void add(std::shared_ptr<ColChunk> c);
     void remove(int cx, int cy);

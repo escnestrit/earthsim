@@ -117,6 +117,9 @@ Surface CollisionWorld::surface(double x, double y, double z, double step) const
             s.grip = 1.0;
         }
     }
+    // wet asphalt keeps about 70 % of its grip, packed snow about 35 %
+    float w = wet.load(std::memory_order_relaxed), sn = snow.load(std::memory_order_relaxed);
+    if (w > 0 || sn > 0) s.grip *= (1.0 - 0.3 * w) * (1.0 - 0.65 * sn);
     return s;
 }
 

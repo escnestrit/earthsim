@@ -313,6 +313,25 @@ func _add_slider(parent: Control, key: String, label: String, lo: float, hi: flo
 		main.apply_setting(key, x))
 	controls[key] = s
 
+func _add_option(parent: Control, key: String, label: String, items: Array, def: int) -> void:
+	var h := HBoxContainer.new()
+	parent.add_child(h)
+	var l := Label.new()
+	l.text = label
+	l.custom_minimum_size = Vector2(230, 0)
+	h.add_child(l)
+	var o := OptionButton.new()
+	for it in items:
+		o.add_item(it)
+	o.selected = int(cfg.get_value("game", key, def))
+	o.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	o.item_selected.connect(func(x):
+		cfg.set_value("game", key, x)
+		cfg.save("user://settings.cfg")
+		main.apply_setting(key, x))
+	h.add_child(o)
+	controls[key] = o
+
 func _add_check(parent: Control, key: String, label: String, def: bool) -> void:
 	var c := CheckBox.new()
 	c.text = label
@@ -332,6 +351,7 @@ func _build_settings() -> void:
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sc.add_child(vb)
 	_add_slider(vb, "hour", "Время суток", 0, 23.75, 0.25, main.hour, "%.2f ч")
+	_add_option(vb, "weather", "Погода", preload("res://scripts/weather.gd").KINDS, 0)
 	_add_slider(vb, "traffic", "Машин в потоке", 0, 120, 1, 40, "%d")
 	_add_slider(vb, "people", "Пешеходов", 0, 200, 1, 60, "%d")
 	_add_slider(vb, "fov", "Угол обзора", 50, 100, 1, 70, "%d°")

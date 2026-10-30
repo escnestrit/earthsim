@@ -271,6 +271,18 @@ func get_mat(id: int) -> Material:
 		return mats[id]
 	return mats.get(M_CONCRETE)
 
+# rain: paving and concrete darken and turn glossy (0 dry .. 1 soaked)
+func set_wet(w: float) -> void:
+	for id in [M_ASPHALT, M_PAVERS, M_CURB, M_CONCRETE, 4, M_ROOF_FLAT, M_ROOF_TILE, M_ROOF_METAL]:
+		if not mats.has(id):
+			continue
+		var m: BaseMaterial3D = mats[id]
+		if not m.has_meta("dry_rough"):
+			m.set_meta("dry_rough", m.roughness)
+			m.set_meta("dry_col", m.albedo_color)
+		m.roughness = lerpf(m.get_meta("dry_rough"), 0.18, w)
+		m.albedo_color = (m.get_meta("dry_col") as Color) * lerpf(1.0, 0.7, w)
+
 # 0 = day, 1 = night: lit windows and lamps
 func set_night(k: float) -> void:
 	night = k

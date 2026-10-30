@@ -24,7 +24,7 @@ var full := {}           # Vector2i -> bool (has detail)
 var models := {}         # "kind:variant" -> ArrayMesh
 var focus := Vector3.ZERO
 var budget_ms := 6.0
-var lamp_lights: Array[OmniLight3D] = []
+var lamp_lights: Array[SpotLight3D] = []
 var traffic_mm: MultiMeshInstance3D
 var traffic_count := 40
 var people_mm: MultiMeshInstance3D
@@ -39,10 +39,14 @@ func start(lat: float, lon: float, cache_dir: String, online := true, detail := 
 	_build_models()
 	DirAccess.make_dir_recursive_absolute(cache_dir)
 	stream.start(lat, lon, cache_dir, online, detail, far, enrich)
-	for i in 24:
-		var l := OmniLight3D.new()
-		l.light_color = Color(1.0, 0.8, 0.55)
-		l.omni_range = 18.0
+	# street lamps light pools on the ground below them: downward spot lights on the nearest lamps
+	for i in 48:
+		var l := SpotLight3D.new()
+		l.light_color = Color(1.0, 0.86, 0.68) if i % 3 else Color(0.92, 0.94, 1.0)
+		l.spot_range = 22.0
+		l.spot_angle = 68.0
+		l.spot_attenuation = 0.7
+		l.rotation = Vector3(-PI / 2, 0, 0)
 		l.light_energy = 0.0
 		l.shadow_enabled = false
 		l.visible = false
@@ -322,7 +326,7 @@ func _update_lamp_lights() -> void:
 		var l := lamp_lights[i]
 		if i < best.size():
 			l.global_position = best[i][1] - Vector3(0, 0.4, 0)
-			l.light_energy = 2.5 * mats.night
+			l.light_energy = 6.0 * mats.night
 			l.visible = true
 		else:
 			l.visible = false

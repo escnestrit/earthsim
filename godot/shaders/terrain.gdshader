@@ -24,6 +24,9 @@ float vnoise(vec2 p) {
 	return mix(mix(hash12(i), hash12(i + vec2(1, 0)), f.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), f.x), f.y);
 }
 
+global uniform float wetness;
+global uniform float snow_cover;
+
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
@@ -64,12 +67,28 @@ void fragment() {
 	float patch = smoothstep(0.35, 0.75, vnoise(wpos.xz * 0.045 + 3.0) * 0.7 + vnoise(wpos.xz * 0.2) * 0.3);
 	alb = mix(alb, alb * vec3(1.35, 1.1, 0.75), patch * veg * 0.6);
 	alb *= 0.88 + 0.24 * n2;
+	float rough = max(orm.g, 0.88);
+	// rain: everything darkens, hard surfaces turn glossy, puddles gather in the dips of the noise
+	float paved = w[3] + w[4];
+	if (wetness > 0.001) {
+		alb *= mix(1.0, mix(0.72, 0.55, paved), wetness);
+		float puddle = smoothstep(0.62, 0.7, vnoise(wpos.xz * 0.11 + 5.0)) * paved * smoothstep(0.4, 1.0, wetness);
+		rough = mix(rough, mix(0.35, 0.05, puddle), wetness * mix(0.4, 1.0, paved));
+		nrm = mix(nrm, vec3(0.5, 0.5, 1.0), puddle);
+	}
+	// snow: white on everything that faces up, thinner on roads (traffic keeps them darker)
+	if (snow_cover > 0.001) {
+		float up = smoothstep(0.6, 0.9, (INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y);
+		float cover = snow_cover * up * mix(1.0, 0.45 + 0.3 * vnoise(wpos.xz * 0.3), paved);
+		alb = mix(alb, vec3(0.92, 0.94, 0.97), clamp(cover * 1.2, 0.0, 1.0));
+		rough = mix(rough, 0.75, cover);
+	}
 	ALBEDO = alb;
 	NORMAL_MAP = nrm;
 	NORMAL_MAP_DEPTH = 1.0;
 	AO = orm.r;
 	AO_LIGHT_AFFECT = 0.5;
-	ROUGHNESS = max(orm.g, 0.88);
+	ROUGHNESS = rough;
 	METALLIC = 0.0;
 	SPECULAR = 0.12;
 }

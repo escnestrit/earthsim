@@ -278,7 +278,15 @@ PackedFloat32Array EarthStream::people(double dt, Vector3 p, int count) {
     return a;
 }
 
+void EarthStream::set_weather_grip(double wet, double snow) {
+    if (!s_) return;
+    auto c = s_->collision();
+    c->wet = (float)wet;
+    c->snow = (float)snow;
+}
+
 void EarthStream::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_weather_grip", "wet", "snow"), &EarthStream::set_weather_grip);
     ClassDB::bind_method(D_METHOD("people", "dt", "player", "count"), &EarthStream::people);
     ClassDB::bind_method(D_METHOD("traffic", "dt", "player", "player_vel", "count"), &EarthStream::traffic);
     ClassDB::bind_method(D_METHOD("nearest_road", "pos", "radius"), &EarthStream::nearest_road);
