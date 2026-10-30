@@ -35,10 +35,14 @@ void SoftBody::clear_forces() {
 
 void SoftBody::beam_forces(double dt) {
     f_.assign(nodes.size(), V3());
+    hot_.resize(nodes.size());
+    for (size_t i = 0; i < nodes.size(); i++) hot_[i] = {nodes[i].p, nodes[i].v, nodes[i].m};
     double plastic = 0;
+    const Hot *H = hot_.data();
+    V3 *F = f_.data();
     for (auto &be : beams) {
         if (be.broken) continue;
-        const SNode &na = nodes[be.a], &nb = nodes[be.b];
+        const Hot &na = H[be.a], &nb = H[be.b];
         V3 d = nb.p - na.p;
         double len2 = d.dot(d);
         if (len2 < 1e-18) continue;
@@ -85,8 +89,8 @@ void SoftBody::beam_forces(double dt) {
             else if (len > st.max_len) fsum += st.k * (len - st.max_len) + st.c * std::max(vrel, 0.0);
         }
         V3 fv = dir * fsum;
-        f_[be.a] = f_[be.a] + fv;
-        f_[be.b] = f_[be.b] - fv;
+        F[be.a] = F[be.a] + fv;
+        F[be.b] = F[be.b] - fv;
     }
     for (size_t i = 0; i < nodes.size(); i++) nodes[i].f = nodes[i].f + f_[i];
     plastic_work += plastic;
@@ -146,9 +150,24 @@ static V3 friction(V3 vt, double fn, double mu, double m, double dt) {
 
 void SoftBody::contacts(const CollisionWorld &w, double dt) {
     double peak = 0;
-    for (auto &n : nodes) {
+    gc_.resize(nodes.size());
+    for (size_t ni = 0; ni < nodes.size(); ni++) {
+        SNode &n = nodes[ni];
         if (!n.hit_ground) continue;
-        Surface s = w.surface(n.p.x, n.p.y, n.p.z - n.radius, 0.35);
+        GroundCache &g = gc_[ni];
+        double dx = n.p.x - g.x, dy = n.p.y - g.y;
+        // far above the cached ground: nothing to do
+        if (dx * dx + dy * dy < 0.0025 && g.age < 8 && std::abs(n.p.z - g.zq) < 0.05) {
+            g.age++;
+        } else {
+            g.s = w.surface(n.p.x, n.p.y, n.p.z - n.radius, 0.35);
+            g.x = n.p.x, g.y = n.p.y, g.zq = n.p.z, g.age = 0;
+        }
+        Surface s = g.s;
+        if (s.found) {
+            // the cached plane, evaluated where the node is now
+            s.height += (-(n.p.x - g.x) * s.normal.x - (n.p.y - g.y) * s.normal.y) / std::max(0.2, s.normal.z);
+        }
         if (!s.found) continue;
         double depth = n.radius - (n.p - V3(n.p.x, n.p.y, s.height)).dot(s.normal);
         if (depth <= 0) continue;

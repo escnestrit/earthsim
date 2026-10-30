@@ -74,6 +74,18 @@ public:
 
 private:
     std::vector<V3> f_;
+    struct Hot {
+        V3 p, v;
+        double m;
+    };
+    std::vector<Hot> hot_;
+    // ground under each node, refreshed when the node has moved or after a while
+    struct GroundCache {
+        double x = 1e30, y = 1e30, zq = 0;
+        Surface s;
+        int age = 0;
+    };
+    std::vector<GroundCache> gc_;
     std::vector<Hit> hits_;
 };
 
