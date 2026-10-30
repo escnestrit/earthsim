@@ -151,6 +151,11 @@ struct Ctx {
     }
 };
 
+constexpr double KERB_H = 0.15;  // pavement top above the carriageway
+
+// chunk.cpp: ground floor level of a building footprint (also reports the lowest/highest ground under it)
+double floor_level(const Ctx &c, const Ring &ring, double &gmin, double &gmax);
+
 // roads.cpp
 void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles);
 

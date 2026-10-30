@@ -43,6 +43,13 @@ struct ChunkOut {
     int cx = 0, cy = 0;
     double x0 = 0, y0 = 0;
     HeightGrid grid;                 // (GRID_N+1)^2 heights, 1 m
+    // quality counters for tests (tests/test_quality.cpp)
+    struct Qa {
+        int bld = 0, bld_low = 0;    // buildings checked / with a floor below the pavement beside them
+        double bld_worst = 0;        // metres the worst floor is below
+        int pave = 0, pave_bad = 0;  // pavement back-edge samples / where the ground misses it (a retaining wall)
+        double pave_worst = 0;
+    } qa;
     MeshBuf terrain_hi, terrain_lo;  // 1 m and 4 m terrain meshes
     std::vector<uint8_t> splat0, splat1;  // SPLAT_N^2 RGBA, row 0 = south
     std::vector<uint8_t> layer;           // SPLAT_N^2 dominant ground-cover layer (grip)

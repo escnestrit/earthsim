@@ -19,3 +19,12 @@ set_target_properties(earthcore PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURR
 foreach(cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
   set_target_properties(earthcore PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${cfg} ${CMAKE_CURRENT_SOURCE_DIR}/../bin RUNTIME_OUTPUT_DIRECTORY_${cfg} ${CMAKE_CURRENT_SOURCE_DIR}/../bin)
 endforeach()
+
+# Quality checks over real data (pure C++ core, no Godot): cmake -DEARTHSIM_TESTS=ON, then run
+#   test_quality <cache dir>   (the game's cache: %APPDATA%/Godot/app_userdata/BeamNG.Earth (earthsim)/cache)
+option(EARTHSIM_TESTS "build quality tests" OFF)
+if(EARTHSIM_TESTS)
+  file(GLOB CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/phys/collide.cpp)
+  add_executable(test_quality tests/test_quality.cpp ${CORE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz/miniz.c ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd/zstddeclib.c)
+  target_compile_options(test_quality PRIVATE -O2)
+endif()

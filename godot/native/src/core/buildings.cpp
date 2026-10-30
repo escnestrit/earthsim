@@ -374,7 +374,7 @@ static void monument(const BuildingGeom &b, MeshSet &ms, std::vector<float> &col
         if (r.size() < 3 || std::abs(signed_area(r)) < 1.0) break;
         steps.push_back(r);
     }
-    double z = base - 0.3;
+    double z = std::min(base, b.ground_min) - 0.3;
     for (size_t sidx = 0; sidx < steps.size(); sidx++) {
         double z1 = base + 0.2 * (sidx + 1);
         walls({steps[sidx]}, z, z1, base, M_CONCRETE, granite, 3, seed, ms, coll);
@@ -435,7 +435,7 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
         // a piece of a monument: dressed stone, and a slender top piece ends in a pyramidion
         const Ring &o = b.rings[0];
         double ar = std::abs(signed_area(o));
-        double z0 = bi.min_height > 0.1 ? b.base + bi.min_height : b.base - 0.5, z1 = b.base + bi.height;
+        double z0 = bi.min_height > 0.1 ? b.base + bi.min_height : std::min(b.base, b.ground_min) - 0.5, z1 = b.base + bi.height;
         Col stone = hash01(bi.seed, 7) < 0.6 ? Col{0.78f, 0.76f, 0.72f, 1} : Col{0.45f, 0.4f, 0.38f, 1};
         walls(b.rings, z0, z1, b.base, M_CONCRETE, stone, 3, bi.seed, ms, coll);
         bool slender = (z1 - z0) > 3 * std::sqrt(std::max(ar, 0.5));
@@ -455,7 +455,7 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
     double area = ring_area(outer);
     double base = b.base;
     double h = bi.height;
-    double z_bot = bi.min_height > 0.1 ? base + bi.min_height : base - 1.5;  // into the ground on slopes
+    double z_bot = bi.min_height > 0.1 ? base + bi.min_height : std::min(base, b.ground_min) - 1.5;  // into the ground on slopes
     double top = base + h;
     int fm = facade_mat(bi.d.style, bi.d.variant);
     Col wall = bi.d.colour;
@@ -537,7 +537,7 @@ void build_building(const BuildingGeom &b, MeshSet &ms, std::vector<float> &coll
                 if (dd.len() < 0.5) continue;
                 V2 o = V2(dd.y, -dd.x).norm() * 0.05;
                 V3 nrm(o.x * 20, o.y * 20, 0);
-                C.quad({a.x + o.x, a.y + o.y, base - 1.5}, {c.x + o.x, c.y + o.y, base - 1.5}, {c.x + o.x, c.y + o.y, base + d.plinth_h}, {a.x + o.x, a.y + o.y, base + d.plinth_h}, nrm, mul(wall, 0.55f), 0, 0, dd.len() / 3, (d.plinth_h + 1.5) / 3);
+                C.quad({a.x + o.x, a.y + o.y, std::min(base, b.ground_min) - 1.5}, {c.x + o.x, c.y + o.y, std::min(base, b.ground_min) - 1.5}, {c.x + o.x, c.y + o.y, base + d.plinth_h}, {a.x + o.x, a.y + o.y, base + d.plinth_h}, nrm, mul(wall, 0.55f), 0, 0, dd.len() / 3, (d.plinth_h + base - std::min(base, b.ground_min) + 1.5) / 3);
             }
     }
     // parapet with a cap round flat roofs

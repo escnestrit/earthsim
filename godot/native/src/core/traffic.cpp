@@ -142,6 +142,8 @@ bool Traffic::spawn(V3 player) {
         while (c.route.size() < 40 && extend(c)) {}
         V2 dir;
         c.pos = route_point(c, 0, c.lane, &dir);
+        // the edge midpoint was far enough, but a long edge can still pass by the player
+        if (std::hypot(c.pos.x - player.x, c.pos.y - player.y) < 100) continue;
         c.yaw = std::atan2(dir.y, dir.x);
         c.id = next_id_++;
         cars_.push_back(c);

@@ -1,6 +1,7 @@
 // Road network of a chunk: pieces joined into chains, junctions with rounded kerbs, carriageways that sit on
 // terrain flattened under them, raised sidewalks with kerbs, markings and zebra crossings, bridges with
 // parapets and piers, street lamps.
+#include <cstdio>
 #include <array>
 #include <algorithm>
 #include <map>
@@ -493,7 +494,12 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                         if (dist > R) continue;
                         double w = dist <= core ? 1 : 1 - (dist - core) / FALL;
                         w = w * w * (3 - 2 * w);
-                        put(ii, jj, w, r.pts[i].z + (r.pts[i + 1].z - r.pts[i].z) * t, dist);
+                        double zr = r.pts[i].z + (r.pts[i + 1].z - r.pts[i].z) * t;
+                        int sd = d.x * (p.y - a.y) - d.y * (p.x - a.x) > 0 ? 0 : 1;
+                        // beside the carriageway the ground meets the pavement top (just under it, no z-fight),
+                        // so pavements never hang above the ground or sink into it, and doors open onto them
+                        if (!r.tunnel && dist > r.hw + 1.2 && r.sws[sd] > 0) zr += zoff(r) + KERB_H - 0.03;  // 1 m grid: keep clear of the asphalt edge
+                        put(ii, jj, w, zr, dist);
                     }
             }
         }
@@ -814,7 +820,46 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                     strip(CU, o1, o0, 0.15 + zo, 0.15 + zo, kc, true, 1);
                     strip(PV, o2, o1, 0.15 + zo, 0.15 + zo, pc, true, 3);
                 }
-                face(CU, o2, -0.4, 0.15 + zo, side > 0 ? 1 : -1, kc, false);
+                // back edge: where the ground behind meets the pavement, a short face into it; where it does not
+                // (two roads at different heights side by side, ramps), a retaining wall up or down to the ground,
+                // with a parapet over a drop. Never a gap, never pavement buried in the slope.
+                {
+                    std::vector<double> gb(P.size());
+                    std::vector<uint8_t> ob(P.size());
+                    for (size_t i = 0; i < P.size(); i++) {
+                        V3 q = Q(i, o2 + side * 0.6, 0);
+                        gb[i] = c.ground({q.x, q.y});
+                        ob[i] = c.texel({q.x, q.y}) < 0 ? 255 : c.occ_at({q.x, q.y});
+                    }
+                    Col wc{0.66f, 0.65f, 0.62f, 1};
+                    for (size_t i = 0; i + 1 < P.size(); i++) {
+                        if (!c.own((pp[i] + pp[i + 1]) * 0.5)) continue;
+                        double t0 = P[i].z + zo + KERB_H, t1 = P[i + 1].z + zo + KERB_H;
+                        double d0 = gb[i] - t0, d1 = gb[i + 1] - t1;  // + ground above the pavement
+                        double lo0 = std::min(t0, gb[i]) - 0.3, lo1 = std::min(t1, gb[i + 1]) - 0.3;
+                        double hi0 = std::max(t0, gb[i] + 0.05), hi1 = std::max(t1, gb[i + 1] + 0.05);
+                        bool inside = (ob[i] & O_BUILDING) && (ob[i + 1] & O_BUILDING) && ob[i] != 255;  // backs onto a wall anyway
+                        bool drop = !inside && (d0 < -0.6 || d1 < -0.6), wall = !inside && std::max(std::abs(d0), std::abs(d1)) > 0.2;
+                        if (drop) hi0 = std::max(hi0, t0 + 0.4), hi1 = std::max(hi1, t1 + 0.4);
+                        V3 qa0 = Q(i, o2, 0), qb0 = Q(i + 1, o2, 0);
+                        V3 a(qa0.x, qa0.y, lo0), b(qb0.x, qb0.y, lo1), d(qb0.x, qb0.y, hi1), e(qa0.x, qa0.y, hi0);
+                        if (side > 0) std::swap(a, b), std::swap(d, e);
+                        (wall ? CO : CU).quadn(a, b, d, e, wall ? wc : kc, 0, 0, s[i + 1] / 2 - s[i] / 2, (hi0 - lo0) / 2);
+                        if (wall) {
+                            c.tri_coll(a, b, d), c.tri_coll(a, d, e);
+                            // the wall's cap, 0.3 m thick, on the far side
+                            V3 fa = Q(i, o2 + side * 0.3, 0), fb = Q(i + 1, o2 + side * 0.3, 0);
+                            V3 c0(qa0.x, qa0.y, hi0), c1(qb0.x, qb0.y, hi1), c2(fb.x, fb.y, hi1), c3(fa.x, fa.y, hi0);
+                            if (side > 0) CO.quadn(c1, c0, c3, c2, mul_col(wc, 1.05f));
+                            else CO.quadn(c0, c1, c2, c3, mul_col(wc, 1.05f));
+                        }
+                        if (i % 2 == 0 && !(ob[i] & (O_ROAD | O_BUILDING | O_WATER))) {
+                            c.out.qa.pave++;
+                            if (wall) c.out.qa.pave_bad++;
+                            c.out.qa.pave_worst = std::max(c.out.qa.pave_worst, std::abs(d0));
+                        }
+                    }
+                }
                 // walking line in the middle of the sidewalk
                 double om = side * (r0.hw + std::min(swd * 0.55, 4.0));
                 for (size_t i = 0; i + 1 < P.size(); i++) {

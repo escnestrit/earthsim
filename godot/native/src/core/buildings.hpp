@@ -23,8 +23,8 @@ struct ShopPoi {
 struct BuildingGeom {
     std::vector<Ring> rings;  // outer CCW, holes CW (local metres)
     BuildingInfo info;
-    double base = 0;  // ground height at the building (lowest corner)
-    double ground_max = 0;
+    double base = 0;  // ground floor level: the pavement at the street front (lowest corner when off-street)
+    double ground_min = 1e300, ground_max = 0;  // ground_min: unset = base
     std::vector<Door> doors;
     std::vector<ShopPoi> pois;
     double lat = 0, lon = 0;  // for the sign language

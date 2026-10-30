@@ -382,6 +382,43 @@ struct BRef {
     double area;
 };
 
+}  // namespace
+
+// Ground floor level of a building. On a street the entrances open onto the pavement, so the floor is level
+// with the highest pavement along the street front (shop windows are never below it). Off the street the floor
+// sits at the median ground, and walls/plinth go down to the lowest corner. Shared with the quality test.
+double floor_level(const Ctx &c, const Ring &ring, double &gmin, double &gmax) {
+    Ring loop = ring;
+    if (loop.size() < 3) return gmin = gmax = 0;
+    loop.push_back(loop.front());
+    gmin = 1e300, gmax = -1e300;
+    double front = -1e300;
+    std::vector<double> zs;
+    double sa = signed_area(ring) >= 0 ? 1 : -1;
+    for (size_t k = 0; k + 1 < loop.size(); k++) {
+        V2 e = loop[k + 1] - loop[k];
+        double el = e.len();
+        if (el < 1e-6) continue;
+        V2 out = V2(e.y, -e.x) * (sa / el);  // CCW ring: outside is to the right
+        for (double t = 0; t < el; t += 2) {
+            V2 p = loop[k] + e * (t / el);
+            double z = c.ground(p);
+            gmin = std::min(gmin, z), gmax = std::max(gmax, z);
+            zs.push_back(z);
+            // pavement (or the street itself) just outside the wall: the ground there is already at pavement
+            // level (roads.cpp flattens it so), and the floor must not be below it
+            V2 q = p + out * 1.5;
+            if ((c.occ_at(q) & (O_WALK | O_ROAD)) || c.roads.clearance(q) < 6) front = std::max(front, c.ground(q) + 0.03);
+        }
+    }
+    if (zs.empty()) return gmin = gmax = 0;
+    if (front > -1e299) return std::max(front, gmin);
+    std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
+    return zs[zs.size() / 2];
+}
+
+namespace {
+
 void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles, std::vector<BRef> &all) {
     // entrances
     std::vector<std::pair<V2, std::string>> ents;
@@ -466,13 +503,27 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
             }
         }
         g.info = classify(b.b->id, tg, false, b.rings[0], la, lo);
-        double gmin = 1e300, gmax = -1e300;
-        for (auto &p : b.rings[0]) {
-            double z = c.ground(p);
-            gmin = std::min(gmin, z), gmax = std::max(gmax, z);
+        g.base = floor_level(c, b.rings[0], g.ground_min, g.ground_max);
+        if (c.own(b.ctr)) {
+            // QA: the pavement just outside the walls must not be above the floor
+            Ring loop = b.rings[0];
+            loop.push_back(loop.front());
+            double worst = 0, sa = signed_area(b.rings[0]) >= 0 ? 1 : -1;
+            for (size_t k = 0; k + 1 < loop.size(); k++) {
+                V2 e = loop[k + 1] - loop[k];
+                double el = e.len();
+                if (el < 0.5) continue;
+                V2 out = V2(e.y, -e.x) * (sa / el);
+                for (double t = 0.5; t < el; t += 2) {
+                    V2 q = loop[k] + e * (t / el) + out * 1.5;
+                    if (!(c.occ_at(q) & O_WALK)) continue;
+                    worst = std::max(worst, c.ground(q) + 0.03 - g.base);
+                }
+            }
+            c.out.qa.bld++;
+            if (worst > 0.05) c.out.qa.bld_low++;
+            c.out.qa.bld_worst = std::max(c.out.qa.bld_worst, worst);
         }
-        g.base = gmin;
-        g.ground_max = gmax;
         g.lat = la, g.lon = lo;
         g.name = tagv(b.b->tags, "name");
         g.amenity = tagv(tg, "amenity");
@@ -580,13 +631,11 @@ void buildings(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles,
         double la, lo;
         c.fr.to_latlon(p->ctr, la, lo);
         g.info = classify(p->b->id, p->b->tags, true, p->rings[0], la, lo);
-        // parts stand on the lowest ground under the building they belong to
-        double gmin = 1e300;
+        // parts stand on the floor level of the building they belong to
         const BRef *host = nullptr;
         for (auto &b : all)
             if (!b.b->part && point_in_poly(p->ctr, b.rings) && (!host || b.area < host->area)) host = &b;
-        for (auto &q : (host ? host->rings[0] : p->rings[0])) gmin = std::min(gmin, c.ground(q));
-        g.base = gmin;
+        g.base = floor_level(c, host ? host->rings[0] : p->rings[0], g.ground_min, g.ground_max);
         // parts of a monument (an obelisk drawn as base and shaft parts) are stone, not floors with windows
         if (host) {
             double ha = std::abs(signed_area(host->rings[0]));
