@@ -251,7 +251,23 @@ PackedFloat32Array EarthStream::traffic(double dt, Vector3 p, Vector3 v, int cou
     return a;
 }
 
+PackedFloat32Array EarthStream::people(double dt, Vector3 p, int count) {
+    PackedFloat32Array a;
+    if (!s_) return a;
+    auto &ws = s_->people_step(dt, ec::V3(p.x, -p.z, p.y), count);
+    a.resize((int64_t)ws.size() * 9);
+    float *f = a.ptrw();
+    for (size_t i = 0; i < ws.size(); i++) {
+        auto &w = ws[i];
+        float *o = f + i * 9;
+        o[0] = (float)w.pos.x, o[1] = (float)w.pos.z, o[2] = (float)-w.pos.y, o[3] = (float)w.yaw;
+        o[4] = w.col.r, o[5] = w.col.g, o[6] = w.col.b, o[7] = (float)std::fmod(w.phase, 6.283185307), o[8] = (float)w.scale;
+    }
+    return a;
+}
+
 void EarthStream::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("people", "dt", "player", "count"), &EarthStream::people);
     ClassDB::bind_method(D_METHOD("traffic", "dt", "player", "player_vel", "count"), &EarthStream::traffic);
     ClassDB::bind_method(D_METHOD("nearest_road", "pos", "radius"), &EarthStream::nearest_road);
     ClassDB::bind_method(D_METHOD("collision_ready", "pos"), &EarthStream::collision_ready);

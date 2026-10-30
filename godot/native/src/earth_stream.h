@@ -32,6 +32,8 @@ public:
     Dictionary nearest_road(Vector3 pos, double radius);
     // steps the traffic; returns 8 floats per car: x, y, z (Godot), yaw, pitch, r, g, b
     PackedFloat32Array traffic(double dt, Vector3 player, Vector3 player_vel, int count);
+    // steps the pedestrians; 9 floats each: x, y, z (Godot), yaw, shirt r, g, b, walk phase, height scale
+    PackedFloat32Array people(double dt, Vector3 player, int count);
 
 private:
     std::unique_ptr<ec::Streamer> s_;

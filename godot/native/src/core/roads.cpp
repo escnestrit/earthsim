@@ -561,6 +561,12 @@ void build_roads(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tile
                     strip(PV, o2, o1, 0.15 + zo, 0.15 + zo, pc, true, 3);
                 }
                 face(CU, o2, -0.4, 0.15 + zo, side > 0 ? 1 : -1, kc, false);
+                // walking line in the middle of the sidewalk
+                double om = side * (r0.hw + r0.sw * 0.55);
+                for (size_t i = 0; i + 1 < P.size(); i++) {
+                    if (!c.own((pp[i] + pp[i + 1]) * 0.5)) continue;
+                    c.out.walks.push_back({Q(i, om, 0.15 + zo), Q(i + 1, om, 0.15 + zo)});
+                }
             }
         }
         // markings

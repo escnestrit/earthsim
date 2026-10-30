@@ -10,6 +10,7 @@ const I_CONIFER := 1
 const I_BUSH := 2
 const I_LAMP := 3
 const I_CAR := 4
+const I_PERSON := 8
 
 var stream := EarthStream.new()
 var mats := EarthMaterials.new()
@@ -21,6 +22,8 @@ var budget_ms := 6.0
 var lamp_lights: Array[OmniLight3D] = []
 var traffic_mm: MultiMeshInstance3D
 var traffic_count := 40
+var people_mm: MultiMeshInstance3D
+var people_count := 60
 var lamp_points := {}     # Vector2i -> PackedVector3Array
 
 func start(lat: float, lon: float, cache_dir: String, online := true, detail := 700.0, far := 2400.0, enrich := true) -> void:
@@ -70,6 +73,34 @@ func update_traffic(dt: float, player: Vector3, vel: Vector3) -> void:
 		mm2.set_instance_color(i, Color(a[o + 5], a[o + 6], a[o + 7]))
 	# the multimesh's bounds must follow the cars
 	traffic_mm.custom_aabb = AABB(player - Vector3(600, 300, 600), Vector3(1200, 600, 1200))
+
+func update_people(dt: float, player: Vector3) -> void:
+	if people_mm == null:
+		var d: Dictionary = EarthCore.model(I_PERSON, 0)
+		var am := ArrayMesh.new()
+		var sm := ShaderMaterial.new()
+		sm.shader = load("res://shaders/person.gdshader")
+		for mat in d:
+			am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, d[mat])
+			am.surface_set_material(am.get_surface_count() - 1, sm)
+		people_mm = MultiMeshInstance3D.new()
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_custom_data = true
+		mm.mesh = am
+		people_mm.multimesh = mm
+		add_child(people_mm)
+	var a: PackedFloat32Array = stream.people(dt, player, people_count)
+	var n := a.size() / 9
+	var mm2 := people_mm.multimesh
+	if mm2.instance_count != n:
+		mm2.instance_count = n
+	for i in n:
+		var o := i * 9
+		var b := Basis(Vector3.UP, a[o + 3]).scaled(Vector3.ONE * a[o + 8])
+		mm2.set_instance_transform(i, Transform3D(b, Vector3(a[o], a[o + 1], a[o + 2])))
+		mm2.set_instance_custom_data(i, Color(a[o + 4], a[o + 5], a[o + 6], a[o + 7]))
+	people_mm.custom_aabb = AABB(player - Vector3(400, 200, 400), Vector3(800, 400, 800))
 
 func ground(x: float, z: float) -> float:
 	return stream.ground(x, z)

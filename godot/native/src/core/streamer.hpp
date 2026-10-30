@@ -13,6 +13,7 @@
 #include "pmtiles.hpp"
 #include "../phys/collide.hpp"
 #include "traffic.hpp"
+#include "people.hpp"
 
 namespace ec {
 
@@ -57,6 +58,7 @@ public:
     bool nearest_road(double x, double y, double radius, V3 &pos, double &heading);
     // advance the traffic around the player (main thread); cars also become obstacles for the soft bodies
     const std::vector<TrafficCar> &traffic_step(double dt, V3 player, V3 player_vel, int count);
+    const std::vector<Walker> &people_step(double dt, V3 player, int count);
     // blocks until terrain at (x, y) is loaded or `timeout_s` passes
     bool wait_ground(double x, double y, double timeout_s);
 
@@ -97,6 +99,9 @@ private:
     std::map<Key, std::vector<LaneSeg>> lanes_;
     int lanes_version_ = 0, traffic_version_ = -1;
     Traffic traffic_;
+    std::map<Key, std::vector<std::pair<V3, V3>>> walks_;
+    int walks_version_ = 0, crowd_version_ = -1;
+    Crowd crowd_;
     std::set<uint64_t> src_pending_, dem_pending_, enrich_pending_, enrich_done_;
     std::set<uint64_t> dem_ok_;
     std::deque<NetJob> net_q_;

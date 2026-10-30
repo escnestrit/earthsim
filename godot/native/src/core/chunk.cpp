@@ -353,6 +353,7 @@ void paths(Ctx &c, const std::vector<std::shared_ptr<const RawTile>> &tiles) {
                 V3 a(p[i].x - n[i].x * hw * sc[i], p[i].y - n[i].y * hw * sc[i], z[i]), b(p[i + 1].x - n[i + 1].x * hw * sc[i + 1], p[i + 1].y - n[i + 1].y * hw * sc[i + 1], z[i + 1]);
                 V3 d(p[i + 1].x + n[i + 1].x * hw * sc[i + 1], p[i + 1].y + n[i + 1].y * hw * sc[i + 1], z[i + 1]), e(p[i].x + n[i].x * hw * sc[i], p[i].y + n[i].y * hw * sc[i], z[i]);
                 M.quad(a, b, d, e, {0, 0, 1}, col, -hw / 2, s[i] / 2, hw / 2, s[i + 1] / 2);
+                c.out.walks.push_back({V3(p[i].x, p[i].y, z[i]), V3(p[i + 1].x, p[i + 1].y, z[i + 1])});
                 c.tri_coll(a, b, d);
                 c.tri_coll(a, d, e);
                 if (rp.bridge) {

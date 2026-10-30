@@ -246,6 +246,8 @@ void Streamer::schedule_locked() {
                 coll_->remove(it->first.x, it->first.y);
                 lanes_.erase(it->first);
                 lanes_version_++;
+                walks_.erase(it->first);
+                walks_version_++;
                 if (!it->second.queued) {
                     it = chunks_.erase(it);
                     continue;
@@ -379,6 +381,8 @@ void Streamer::build_worker() {
             std::lock_guard<std::mutex> l(mu_);
             lanes_[job.first] = out->lanes;
             lanes_version_++;
+            walks_[job.first] = out->walks;
+            walks_version_++;
         }
         {
             std::lock_guard<std::mutex> l(mu_);
@@ -537,6 +541,22 @@ const std::vector<TrafficCar> &Streamer::traffic_step(double dt, V3 player, V3 p
         if (std::hypot(c.pos.x - player.x, c.pos.y - player.y) < 60) boxes.push_back({V3(c.pos.x, c.pos.y, c.pos.z + 0.75), c.yaw, 2.2, 0.9, 0.7});
     coll_->set_dynamic(std::move(boxes));
     return traffic_.cars();
+}
+
+const std::vector<Walker> &Streamer::people_step(double dt, V3 player, int count) {
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (crowd_version_ != walks_version_) {
+            std::vector<std::pair<V3, V3>> all;
+            for (auto &[k, v] : walks_)
+                if (std::hypot((k.x + 0.5) * CHUNK - player.x, (k.y + 0.5) * CHUNK - player.y) < crowd_.radius + 300) all.insert(all.end(), v.begin(), v.end());
+            crowd_.set_walks(all);
+            crowd_version_ = walks_version_;
+        }
+    }
+    crowd_.target = count;
+    crowd_.step(dt, player);
+    return crowd_.walkers();
 }
 
 std::string Streamer::status() {

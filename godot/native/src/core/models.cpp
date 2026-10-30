@@ -395,6 +395,42 @@ MeshSet steering_wheel() {
     return ms;
 }
 
+
+// a pedestrian, 1.75 m: uv.x tags the swinging limbs (1/2 legs, 3/4 arms) for the walk shader; uv.y is a material
+// code (the shirt, built with colour alpha 0, takes the instance tint)
+MeshSet person() {
+    MeshSet ms;
+    MeshBuf &D = ms[M_PAINT];
+    Col skin{0.78f, 0.6f, 0.48f, 1}, pants{0.16f, 0.17f, 0.22f, 1}, shirt{1, 1, 1, 0}, hair{0.12f, 0.09f, 0.07f, 1}, shoe{0.08f, 0.08f, 0.08f, 1};
+    auto tag = [&](size_t from, float part) {
+        for (size_t i = from; i < D.verts(); i++) {
+            const float *c = &D.col[i * 4];
+            // material code for the shader: 0 skin, 1 shirt, 2 trousers, 3 shoes, 4 hair
+            float code = c[3] < 0.5f ? 1 : c[0] == pants.r ? 2 : c[0] == shoe.r ? 3 : c[0] == hair.r ? 4 : 0;
+            D.uv[i * 2] = part, D.uv[i * 2 + 1] = code;
+        }
+    };
+    for (int s = 0; s < 2; s++) {
+        double y = s ? -0.1 : 0.1;
+        size_t f = D.verts();
+        D.obox({0.0, y}, 0, 0.15, 0.13, 0.08, 0.92, pants, true);
+        D.obox({0.04, y}, 0, 0.26, 0.11, 0.0, 0.08, shoe, true);
+        tag(f, s ? 2.0f : 1.0f);
+        f = D.verts();
+        double ya = s ? -0.255 : 0.255;
+        D.obox({0.0, ya}, 0, 0.1, 0.09, 1.02, 1.45, shirt, true);
+        D.obox({0.0, ya}, 0, 0.08, 0.07, 0.8, 1.02, skin, true);
+        tag(f, s ? 4.0f : 3.0f);
+    }
+    size_t f = D.verts();
+    D.obox({0.0, 0}, 0, 0.22, 0.4, 0.9, 1.47, shirt, true);
+    D.cyl({0.0, 0}, 0.05, 0.05, 1.47, 1.54, 8, skin, false);
+    D.obox({0.01, 0}, 0, 0.2, 0.17, 1.54, 1.76, skin, true);
+    D.obox({-0.01, 0}, 0, 0.21, 0.18, 1.72, 1.79, hair, false);
+    tag(f, 0.0f);
+    return ms;
+}
+
 }  // namespace
 
 MeshSet model_mesh(int kind, int v) {
@@ -406,6 +442,7 @@ MeshSet model_mesh(int kind, int v) {
         case I_CAR: return car(v == 0);
         case I_CAR_INTERIOR: return car_interior();
         case I_STEERING_WHEEL: return steering_wheel();
+        case I_PERSON: return person();
         default: return MeshSet();
     }
 }

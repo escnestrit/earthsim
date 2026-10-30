@@ -364,6 +364,7 @@ func _process(dt: float) -> void:
 		var cv := (car.global_position - last_car_pos) / maxf(dt, 1e-4)
 		last_car_pos = car.global_position
 		world.update_traffic(dt, car.global_position, cv)
+		world.update_people(dt, car.global_position)
 	fps_acc = lerpf(fps_acc, 1.0 / maxf(dt, 1e-4), 0.05)
 	var ll := world.stream.latlon(car.global_position)
 	var gear_s: String = "R" if car.gear() < 0 else str(car.gear())
@@ -372,7 +373,7 @@ func _process(dt: float) -> void:
 	if car_msg_t > 0.0:
 		hud.text += "\n" + car_msg
 	if shot_t > 0.0 and int(t_since / 5.0) != int((t_since - dt) / 5.0):
-		print("t=%.0f fps=%d car %s %.0f km/h dmg %.2f | %s" % [t_since, fps_acc, car.global_position, car.speed_kmh(), car.damage(), world.stream.status()])
+		print("t=%.0f fps=%d car %s %.0f km/h dmg %.2f | %s | mem %d MB, vram %d MB" % [t_since, fps_acc, car.global_position, car.speed_kmh(), car.damage(), world.stream.status(), OS.get_static_memory_usage() >> 20, int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)) >> 20])
 	if shot_t > 0.0 and t_since > shot_t:
 		shot_t = -1.0
 		await RenderingServer.frame_post_draw
