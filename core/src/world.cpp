@@ -295,7 +295,9 @@ static double terrain_ctx(const World &w, V2 p, const Ctx &c, bool *hole, int *k
         if (hole && G - h.tunnel_z < 6.4) *hole = true;
         return G;
     }
-    if (h.kind == 1) return h.bridge ? std::min(G, h.z - 1.7) : h.z - 0.5;
+    // under the carriageway the ground is hidden; on the margin of a road without pavement it is the
+    // shoulder, flush with the road (the cover pass below keeps it under the asphalt edge)
+    if (h.kind == 1) return h.bridge ? std::min(G, h.z - 1.7) : h.z - (h.margin ? 0.05 : 0.3);
     if (h.kind == 2) return h.bridge ? std::min(G, h.z - 1.9) : h.z - 0.03;
     if (h.dist < 30 && !h.bridge) {
         double target = h.znear - 0.03;

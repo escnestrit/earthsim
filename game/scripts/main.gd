@@ -826,6 +826,8 @@ func _world_test(dt: float) -> void:
 		var g: float = world.ground_height(car.global_position)
 		var clear: float = car.global_position.y - g
 		var ok := n >= 20 and clear > -0.3 and clear < 2.0
+		var pf: Dictionary = streamer.prof
+		print("[prof] per chunk: mesh %.1f ms, collision %.1f ms, props %.1f ms" % [pf["mesh"] / pf["n"], pf["col"] / pf["n"], pf["inst"] / pf["n"]])
 		print("[test] world: %d chunks loaded in %.1f s, last build %.0f ms, worst apply %.0f ms, car clearance %.2f m -> %s" % [n, _test_t, streamer.stats["build_ms"], streamer.stats["max_apply_ms"], clear, "PASS" if ok else "FAIL"])
 		get_tree().quit(0 if ok else 1)
 	elif _test_t > 240.0:
@@ -855,6 +857,8 @@ func _autodrive(dt: float) -> void:
 		car.input_brake = 1.0
 	else:
 		var tgt: Vector3 = f["target"]
+		if float(f.get("width", 7.0)) < 6.0:
+			tgt = f["centre"]
 		var to := tgt - car.global_position
 		to.y = 0.0
 		var ang := fwd.signed_angle_to(to.normalized(), Vector3.UP)  # + = target to the left
@@ -867,6 +871,17 @@ func _autodrive(dt: float) -> void:
 		var kmh: float = car.speed * 3.6
 		car.input_throttle = clampf((v - kmh) * 0.15, 0.0, 1.0)
 		car.input_brake = clampf((kmh - v - 4.0) * 0.1, 0.0, 1.0)
+		if args.has("verbose") and absf(car.speed) < 0.3 and _ad["t"] > 3.0:
+			var sp := get_world_3d().direct_space_state
+			for hgt in [-0.25, 0.0, 0.3, 0.7]:
+				for side in [-0.9, 0.0, 0.9]:
+					var from: Vector3 = car.global_transform * Vector3(side, hgt, -1.8)
+					var q := PhysicsRayQueryParameters3D.create(from, from + fwd * 2.0)
+					q.exclude = [car.get_rid()]
+					var r := sp.intersect_ray(q)
+					if not r.is_empty():
+						print("[ad] hit h=%.2f side=%.1f at %s surface=%s collider=%s shape=%d" % [hgt, side, r["position"], r["collider"].get_meta("surface", -1), r["collider"].get_parent().name, r["shape"]])
+			print("[ad] t=%.1f spd=%.2f thr=%.2f brk=%.2f ang=%.2f to=%.1f tgt=%s rpm=%.0f gear=%d omega=%s" % [_ad["t"], car.speed, car.input_throttle, car.input_brake, ang, to.length(), tgt, car.rpm, car.gear, [car.wheels[2].omega, car.wheels[3].omega]])
 	_ad["dist"] += car.global_position.distance_to(_ad["last"])
 	_ad["last"] = car.global_position
 	var tel: Dictionary = car.telemetry()
@@ -878,6 +893,7 @@ func _autodrive(dt: float) -> void:
 	else:
 		_ad["stuck"] = 0.0
 	if _ad["stuck"] > 4.0:
+		print("[autodrive] stuck at %s (lat/lon %s), speed %.1f, gear %d, contacts %d" % [car.global_position, world.world_to_latlon(car.global_position), car.speed, car.gear, car.telemetry()["contacts"]])
 		_ad["resets"] += 1
 		_ad["stuck"] = 0.0
 		_spawn(car.global_position + fwd * 30.0)
@@ -886,6 +902,8 @@ func _autodrive(dt: float) -> void:
 	if int(_ad["t"] * 2.0) != int((_ad["t"] - dt) * 2.0):
 		var g: float = world.ground_height(car.global_position)
 		var clear: float = car.global_position.y - g
+		if clear < 0.15:
+			print("[autodrive] low clearance %.2f at %s t=%.1f" % [clear, car.global_position, _ad["t"]])
 		_ad["min_clear"] = minf(_ad["min_clear"], clear)
 		_ad["max_clear"] = maxf(_ad["max_clear"], clear)
 		if clear < -1.5:

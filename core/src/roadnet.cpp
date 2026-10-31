@@ -562,12 +562,74 @@ void RoadNet::profiles(const Region &R) {
         log.push_back("clearance pass " + std::to_string(iter) + ": raised " + std::to_string(raised) + " bridges");
         relax();
     }
+    merge_overlaps();
+}
+
+// Where a minor road's carriageway overlaps a more important one at about the same level (shallow
+// merges, service roads running alongside a street), the minor road takes the major road's height
+// and only climbs away once they separate. Ends stay at their node heights.
+void RoadNet::merge_overlaps() {
+    int changed = 0;
+    std::vector<int> cand;
+    for (size_t i = 0; i < edges.size(); i++) {
+        RoadEdge &e = edges[i];
+        if (e.bridge || e.tunnel || e.level) continue;
+        size_t n = e.ps.size();
+        if (n < 3) continue;
+        std::vector<double> delta(n, NAN);
+        bool any = false;
+        for (size_t k = 1; k + 1 < n; k++) {
+            V2 p = e.at(e.ps[k]);
+            query(p, e.half() + 12, cand);
+            double best = NAN, bd = 1e9;
+            for (int j : cand) {
+                if (j == int(i)) continue;
+                const RoadEdge &f = edges[j];
+                if (f.prio <= e.prio || f.bridge || f.tunnel || f.level) continue;
+                double fd = 1e18, acc = 0, arc = 0;
+                for (size_t q = 0; q + 1 < f.pts.size(); q++) {
+                    double t, sl = dist(f.pts[q], f.pts[q + 1]);
+                    double d = seg_dist(p, f.pts[q], f.pts[q + 1], &t);
+                    if (d < fd) fd = d, arc = acc + t * sl;
+                    acc += sl;
+                }
+                if (fd > e.half() + f.half() + 0.5) continue;
+                double zf = f.z_at(arc);
+                if (std::fabs(zf - e.pz[k]) > 2.5) continue;  // different levels: a crossing, not a merge
+                if (fd < bd) bd = fd, best = zf;
+            }
+            if (!std::isnan(best)) delta[k] = best - e.pz[k], any = true;
+        }
+        if (!any) continue;
+        // spread each constrained delta along the edge, fading at 6% grade; ends fixed
+        std::vector<double> out(n, 0.0);
+        for (size_t k = 1; k + 1 < n; k++) {
+            double v = 0, wbest = 0;
+            for (size_t c = 1; c + 1 < n; c++) {
+                if (std::isnan(delta[c])) continue;
+                double ds = std::fabs(e.ps[k] - e.ps[c]);
+                double fade = std::fabs(delta[c]) / 0.06 + 4.0;
+                double w = ds == 0 ? 1.0 : std::max(0.0, 1.0 - ds / fade);
+                if (w > wbest) wbest = w, v = delta[c] * w;
+            }
+            out[k] = v;
+        }
+        // keep the ends at the nodes: blend the correction out over the first/last 6 m
+        for (size_t k = 1; k + 1 < n; k++) {
+            double de = std::min(e.ps[k], e.len - e.ps[k]);
+            bool hard = !std::isnan(delta[k]);
+            double fe = hard ? 1.0 : clampd(de / 6.0, 0.0, 1.0);
+            e.pz[k] += out[k] * fe;
+        }
+        changed++;
+    }
+    log.push_back("merge overlaps: " + std::to_string(changed) + " minor roads levelled with the roads they overlap");
 }
 
 }  // namespace es
 
 namespace es {
-bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit) const {
+bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit, V2 *centre, double *width) const {
     RoadHit hit = nearest(p, 25);
     if (hit.edge < 0) return false;
     int ei = hit.edge;
@@ -588,6 +650,8 @@ bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit) con
             double off = e.oneway ? std::max(0.0, e.half() - 1.8) : std::min(e.half() * 0.5, 2.0);
             target = c - perp(t) * off;
             if (speed_limit) *speed_limit = e.speed;
+            if (centre) *centre = c;
+            if (width) *width = e.width;
             return true;
         }
         left -= room;
@@ -612,6 +676,8 @@ bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit) con
             // dead end: stop at the end
             target = nodes[node].p;
             if (speed_limit) *speed_limit = 0;
+            if (centre) *centre = target;
+            if (width) *width = 0;
             return true;
         }
         ei = best, dir = bdir;

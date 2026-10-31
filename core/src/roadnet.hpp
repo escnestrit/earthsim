@@ -63,7 +63,7 @@ struct RoadNet {
     // Point `ahead` metres further along the road the vehicle at p (heading h) is on, keeping to the
     // right-hand lane; at junctions the straightest allowed continuation is taken. Returns false if
     // no road is near. `speed_limit` receives the limit of the edge at the target (km/h).
-    bool follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit = nullptr) const;
+    bool follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit = nullptr, V2 *centre = nullptr, double *width = nullptr) const;
 
   private:
     double cell = 32;
@@ -72,6 +72,7 @@ struct RoadNet {
     void index();
     void profiles(const Region &R);
     void medians();
+    void merge_overlaps();
 };
 
 double road_default_width(const std::string &cls, const std::string &subclass, int oneway);

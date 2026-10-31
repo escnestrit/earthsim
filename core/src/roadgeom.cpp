@@ -232,7 +232,12 @@ void RoadGeom::emit_junction(int n, V2 o, Mesh *mats) const {
             // no pavement: low skirt so the carriageway edge never floats
             if (!bridge && !tunnel) {
                 std::vector<V3> top, bot;
-                for (auto &p : C.kerb) top.push_back(v3(p.xy(), p.z, o)), bot.push_back(v3(p.xy(), p.z - 0.6, o));
+                for (size_t q = 0; q < C.kerb.size(); q++) {
+                    V3 p = C.kerb[q];
+                    // outward = away from the junction centre
+                    V2 out = norm(p.xy() - J.centre.xy());
+                    top.push_back(v3(p.xy(), p.z, o)), bot.push_back(v3(p.xy() + out * 1.2, p.z - 0.6, o));
+                }
                 std::vector<V2> u1, u2;
                 double acc = 0;
                 for (size_t q = 0; q < top.size(); q++) {
@@ -315,7 +320,9 @@ void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats) const {
             V2 q = p.xy() + out * (sw * S[k].miter);
             ot[k] = {q.x, q.y, p.z + KERB_H};
             ob[k] = {q.x, q.y, p.z - (bridge ? 1.4 : 0.45)};
-            sk[k] = {p.x, p.y, p.z - (bridge ? 1.4 : 0.6)};
+            // bridges: vertical deck side; roads: a sloped shoulder down to the ground (drivable)
+            V2 sq = bridge ? p.xy() : p.xy() + out * (1.2 * S[k].miter);
+            sk[k] = {sq.x, sq.y, p.z - (bridge ? 1.4 : 0.6)};
             ua[k] = {S[k].s, 0}, ub[k] = {S[k].s, KERB_H};
         }
         if (tunnel) {
@@ -508,6 +515,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
         if (bd < h + 1.0) {
             if (best.kind != 1 || (best.bridge && !br) || (!br && z < best.z)) {
                 best.kind = 1, best.z = z, best_road_d = bd, best.bridge = br;
+                best.margin = bd >= h && sw <= 0;
             }
         } else if (sw > 0 && bd < h + sw + 0.3) {
             if (best.kind == 0 || (best.kind == 2 && bd - h < best_pave_d)) best.kind = 2, best.z = z + KERB_H, best.bridge = br, best_pave_d = bd - h;
@@ -550,6 +558,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
                         if (dist(q.xy(), p) < bdd) bdd = dist(q.xy(), p), z = q.z;
                 }
                 best.kind = 1, best.z = z, best.bridge = br;
+                best.margin = !in;
                 best_road_d = 0;
             }
             continue;

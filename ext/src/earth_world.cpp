@@ -1,4 +1,5 @@
 #include "earth_world.h"
+#include <cmath>
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/array.hpp>
@@ -141,11 +142,70 @@ static Dictionary to_dict(const es::ChunkData *c) {
         inst.push_back(f);
     }
     d["inst"] = inst;
+    // ready-made MultiMesh buffers (TRANSFORM_3D rows + optional colour + optional custom data)
+    Dictionary mm;
+    auto make = [&](int kind, int variant_sel, bool colors, bool custom) {
+        PackedFloat32Array b;
+        int stride = 12 + (colors ? 4 : 0) + (custom ? 4 : 0);
+        int count = 0;
+        for (auto &I : c->inst[kind])
+            if (variant_sel < 0 || (variant_sel == 3) == (I.variant == 3)) count++;
+        b.resize(int64_t(count) * stride);
+        float *p = b.ptrw();
+        static const float tint[4][3] = {{0.85f, 1.0f, 0.8f}, {1.0f, 1.0f, 1.0f}, {0.75f, 0.9f, 0.7f}, {1.05f, 0.95f, 0.75f}};
+        for (auto &I : c->inst[kind]) {
+            if (!(variant_sel < 0 || (variant_sel == 3) == (I.variant == 3))) continue;
+            Vector3 g = G(I.p.x, I.p.y, I.p.z);
+            float cy = float(std::cos(I.yaw)), sy = float(std::sin(I.yaw)), sc = float(I.scale);
+            // Basis(UP, yaw) scaled: x = (cos, 0, -sin), y = (0, 1, 0), z = (sin, 0, cos) as columns
+            p[0] = cy * sc, p[1] = 0, p[2] = sy * sc, p[3] = g.x;
+            p[4] = 0, p[5] = sc, p[6] = 0, p[7] = g.y;
+            p[8] = -sy * sc, p[9] = 0, p[10] = cy * sc, p[11] = g.z;
+            p += 12;
+            if (colors) {
+                auto &t = tint[I.variant & 3];
+                p[0] = t[0], p[1] = t[1], p[2] = t[2], p[3] = 1, p += 4;
+            }
+            if (custom) {
+                // traffic lights: perpendicular approaches run opposite phases of the 40 s cycle
+                bool ns = std::fabs(std::cos(I.yaw)) > 0.7071;
+                p[0] = ns ? 0.0f : 20.0f, p[1] = p[2] = p[3] = 0, p += 4;
+            }
+        }
+        Dictionary e;
+        e["buffer"] = b;
+        e["count"] = count;
+        e["colors"] = colors;
+        e["custom"] = custom;
+        return e;
+    };
+    mm["tree_broad"] = make(es::I_TREE, 0, true, false);
+    mm["tree_conifer"] = make(es::I_TREE, 3, true, false);
+    mm["lamp"] = make(es::I_LAMP, -1, false, false);
+    mm["signal"] = make(es::I_SIGNAL, -1, false, true);
+    mm["bench"] = make(es::I_BENCH, -1, false, false);
+    d["mm"] = mm;
     // ground heights for fast queries: (TN+1)^2 from south-west, plus grid geometry
     PackedFloat32Array gh;
     gh.resize(int64_t(c->ground.size()));
     for (size_t i = 0; i < c->ground.size(); i++) gh.ptrw()[i] = c->ground[i];
     d["ground"] = gh;
+    // height map for collision (Godot HeightMapShape3D: centred, rows along +Z = south),
+    // in units of one terrain cell so the shape can be scaled uniformly
+    bool holes = false;
+    for (auto h : c->hole) holes |= h != 0;
+    d["has_holes"] = holes;
+    if (!c->ground.empty() && !holes) {
+        int n = es::TN + 1;
+        PackedFloat32Array hm;
+        hm.resize(int64_t(n) * n);
+        float *ph = hm.ptrw();
+        for (int zi = 0; zi < n; zi++)
+            for (int xi = 0; xi < n; xi++) ph[zi * n + xi] = c->ground[size_t(es::TN - zi) * n + xi] / float(es::TCELL);
+        d["hm"] = hm;
+        d["hm_size"] = n;
+        d["hm_scale"] = es::TCELL;
+    }
     d["buildings"] = c->stats_buildings;
     d["edges"] = c->stats_edges;
     return d;
@@ -208,10 +268,13 @@ Dictionary EarthWorld::region_info() const {
 Dictionary EarthWorld::follow(const Vector3 &p, const Vector3 &heading, double ahead) const {
     Dictionary d;
     if (!w) return d;
-    es::V2 t;
+    es::V2 t, c;
     int lim = 0;
-    if (!w->net.follow(L(p), es::V2{heading.x, -heading.z}, ahead, t, &lim)) return d;
+    double wd = 0;
+    if (!w->net.follow(L(p), es::V2{heading.x, -heading.z}, ahead, t, &lim, &c, &wd)) return d;
     d["target"] = G(t.x, t.y, p.y);
+    d["centre"] = G(c.x, c.y, p.y);
+    d["width"] = wd;
     d["limit"] = lim;
     return d;
 }

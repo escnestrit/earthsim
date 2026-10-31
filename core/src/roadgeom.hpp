@@ -37,6 +37,7 @@ struct Junction {
 
 struct SurfaceHit {
     int kind = 0;        // 0 none, 1 carriageway (incl. 1 m margin), 2 pavement
+    bool margin = false; // kind 1: the point is in the 1 m margin just outside the carriageway
     double z = 0;        // surface height (kind > 0)
     double dist = 1e9;   // kind 0: distance to the nearest hard surface
     double znear = 0;    // kind 0: height of that surface's edge

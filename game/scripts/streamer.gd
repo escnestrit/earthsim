@@ -157,6 +157,11 @@ func _apply_finished() -> void:
 		var t := Time.get_ticks_usec()
 		chunks[k] = _make_node(d)
 		var ms := (Time.get_ticks_usec() - t) / 1000.0
+		# one chunk per frame keeps the frame time flat while streaming
+		stats["max_apply_ms"] = max(stats["max_apply_ms"], ms)
+		stats["built"] += 1
+		stats["build_ms"] = d["ms"]
+		break
 		stats["built"] += 1
 		stats["build_ms"] = d["ms"]
 		stats["max_apply_ms"] = max(stats["max_apply_ms"], ms)
@@ -187,7 +192,33 @@ func _make_far(d: Dictionary) -> Node3D:
 	add_child(n)
 	return n
 
+var prof := {"mesh": 0.0, "col": 0.0, "inst": 0.0, "n": 0}
+var _trunk := CylinderShape3D.new()
+var _pole := CylinderShape3D.new()
+
+func _init() -> void:
+	_trunk.radius = 0.3
+	_trunk.height = 4.0
+	_pole.radius = 0.13
+	_pole.height = 6.0
+
+# trunks and poles are solid: shapes added straight to one static body per chunk
+func _prop_collision(n: Node3D, inst: Array) -> void:
+	var body := StaticBody3D.new()
+	body.set_meta("surface", 2)
+	n.add_child(body)
+	var rid := body.get_rid()
+	var groups := [[PropsScript.I_TREE, _trunk, 2.0], [PropsScript.I_LAMP, _pole, 3.0], [PropsScript.I_SIGNAL, _pole, 1.5]]
+	for g in groups:
+		var f: PackedFloat32Array = inst[g[0]]
+		var sh: Shape3D = g[1]
+		for i in f.size() / 6:
+			var sc := f[i * 6 + 4] if g[0] == PropsScript.I_TREE else 1.0
+			var p := Vector3(f[i * 6], f[i * 6 + 1] + g[2] * sc, f[i * 6 + 2])
+			PhysicsServer3D.body_add_shape(rid, sh.get_rid(), Transform3D(Basis().scaled(Vector3(sc, sc, sc)), p))
+
 func _make_node(d: Dictionary) -> Node3D:
+	var t0 := Time.get_ticks_usec()
 	var n := Node3D.new()
 	n.name = "chunk_%d_%d" % [d["cx"], d["cy"]]
 	n.position = d["origin"]
@@ -201,7 +232,27 @@ func _make_node(d: Dictionary) -> Node3D:
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
 		n.add_child(mi)
+	var t1 := Time.get_ticks_usec()
+	var use_hm: bool = d.has("hm")
+	if use_hm:
+		var hb := StaticBody3D.new()
+		hb.set_meta("surface", 1)
+		var hpm := PhysicsMaterial.new()
+		hpm.friction = 0.75
+		hb.physics_material_override = hpm
+		var hs := HeightMapShape3D.new()
+		hs.map_width = d["hm_size"]
+		hs.map_depth = d["hm_size"]
+		hs.map_data = d["hm"]
+		var hcs := CollisionShape3D.new()
+		hcs.shape = hs
+		var sc: float = d["hm_scale"]
+		hcs.scale = Vector3(sc, sc, sc)
+		hb.add_child(hcs)
+		n.add_child(hb)
 	for g in [["col_road", 0, 1.0], ["col_ground", 1, 0.75], ["col_solid", 2, 0.6]]:
+		if use_hm and g[0] == "col_ground":
+			continue
 		var faces: PackedVector3Array = d[g[0]]
 		if faces.size() < 3:
 			continue
@@ -216,6 +267,7 @@ func _make_node(d: Dictionary) -> Node3D:
 		cs.shape = shape
 		body.add_child(cs)
 		n.add_child(body)
+	var t2 := Time.get_ticks_usec()
 	var inst: Array = d["inst"]
 	# lamp positions (world) for the night light pool
 	var lp: PackedFloat32Array = inst[PropsScript.I_LAMP]
@@ -223,53 +275,39 @@ func _make_node(d: Dictionary) -> Node3D:
 	for i in lp.size() / 6:
 		lamps.append(Vector3(lp[i * 6], lp[i * 6 + 1], lp[i * 6 + 2]) + n.position)
 	n.set_meta("lamps", lamps)
-	for kind in min(inst.size(), props.meshes.size()):
-		var all: PackedFloat32Array = inst[kind]
-		if props.meshes[kind] == null:
-			continue
-		# trees: variant 3 is a conifer, the rest broadleaf
-		var groups := [[all, props.meshes[kind]]]
-		if kind == PropsScript.I_TREE:
-			var broad := PackedFloat32Array()
-			var con := PackedFloat32Array()
-			for i in all.size() / 6:
-				var dst := con if int(all[i * 6 + 5]) == 3 else broad
-				for j in 6:
-					dst.append(all[i * 6 + j])
-			groups = [[broad, props.meshes[kind]], [con, props.conifer]]
-		for grp in groups:
-			_add_instances(n, kind, grp[0], grp[1])
+	_prop_collision(n, inst)
+	var mm: Dictionary = d["mm"]
+	# near: detailed meshes; far: cheap ones (switch ~250 m from the chunk centre)
+	_mm(n, mm["tree_broad"], props.meshes[PropsScript.I_TREE], 0.0, 260.0)
+	_mm(n, mm["tree_broad"], props.tree_lo, 240.0, 1000.0)
+	_mm(n, mm["tree_conifer"], props.conifer, 0.0, 260.0)
+	_mm(n, mm["tree_conifer"], props.conifer_lo, 240.0, 1000.0)
+	_mm(n, mm["lamp"], props.meshes[PropsScript.I_LAMP], 0.0, 450.0)
+	_mm(n, mm["signal"], props.meshes[PropsScript.I_SIGNAL], 0.0, 450.0)
+	_mm(n, mm["bench"], props.meshes[PropsScript.I_BENCH], 0.0, 200.0)
 	add_child(n)
+	var t3 := Time.get_ticks_usec()
+	prof["mesh"] += (t1 - t0) / 1000.0
+	prof["col"] += (t2 - t1) / 1000.0
+	prof["inst"] += (t3 - t2) / 1000.0
+	prof["n"] += 1
 	return n
 
-func _add_instances(n: Node3D, kind: int, f: PackedFloat32Array, mesh: Mesh) -> void:
-		var count := f.size() / 6
-		if count == 0:
-			return
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = kind == PropsScript.I_TREE
-		mm.use_custom_data = kind == PropsScript.I_SIGNAL
-		mm.mesh = mesh
-		mm.instance_count = count
-		for i in count:
-			var p := Vector3(f[i * 6], f[i * 6 + 1], f[i * 6 + 2])
-			var yaw := f[i * 6 + 3]
-			var sc := f[i * 6 + 4]
-			var b := Basis(Vector3.UP, yaw).scaled(Vector3.ONE * sc)
-			mm.set_instance_transform(i, Transform3D(b, p))
-			if mm.use_colors:
-				var v := int(f[i * 6 + 5])
-				var tints := [Color(0.85, 1.0, 0.8), Color(1.0, 1.0, 1.0), Color(0.75, 0.9, 0.7), Color(1.05, 0.95, 0.75)]
-				mm.set_instance_color(i, tints[v % 4])
-			if mm.use_custom_data:
-				# perpendicular approaches get opposite phases of the 40 s cycle
-				var ns: bool = abs(cos(yaw)) > 0.7071
-				mm.set_instance_custom_data(i, Color(0.0 if ns else 20.0, 0, 0, 0))
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		if kind == PropsScript.I_TREE:
-			mmi.visibility_range_end = 900.0
-		elif kind != PropsScript.I_TREE:
-			mmi.visibility_range_end = 450.0
-		n.add_child(mmi)
+func _mm(n: Node3D, e: Dictionary, mesh: Mesh, vis_begin: float, vis_end: float) -> void:
+	var count: int = e["count"]
+	if count == 0 or mesh == null:
+		return
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = e["colors"]
+	mm.use_custom_data = e["custom"]
+	mm.mesh = mesh
+	mm.instance_count = count
+	mm.buffer = e["buffer"]
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.visibility_range_begin = vis_begin
+	mmi.visibility_range_end = vis_end
+	if vis_begin > 0.0:
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	n.add_child(mmi)

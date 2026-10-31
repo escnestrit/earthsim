@@ -9,6 +9,8 @@ const I_COUNT := 6
 
 var meshes: Array[Mesh] = []
 var conifer: Mesh
+var tree_lo: Mesh      # far versions: one blob crown / one cone
+var conifer_lo: Mesh
 var lamp_head_mat: StandardMaterial3D
 var signal_mat: ShaderMaterial
 
@@ -16,6 +18,8 @@ func _init() -> void:
 	meshes.resize(I_COUNT)
 	meshes[I_TREE] = _tree()
 	conifer = _conifer()
+	tree_lo = _tree_lo()
+	conifer_lo = _conifer_lo()
 	meshes[I_LAMP] = _lamp()
 	meshes[I_SIGNAL] = _signal()
 	meshes[I_BENCH] = _bench()
@@ -113,6 +117,44 @@ func _tree() -> Mesh:
 	var leaf := ShaderMaterial.new()
 	leaf.shader = load("res://shaders/foliage.gdshader")
 	m.surface_set_material(1, leaf)
+	return m
+
+func _tree_lo() -> Mesh:
+	var trunk := SurfaceTool.new()
+	trunk.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_cyl(trunk, Vector3.ZERO, 0.25, 0.15, 5.0, 5)
+	var crown := SurfaceTool.new()
+	crown.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	sm.radial_segments = 8
+	sm.rings = 4
+	var arr := sm.get_mesh_arrays()
+	var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+	var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+	for t in range(0, idx.size(), 3):
+		for k in [0, 1, 2]:
+			var q: Vector3 = v[idx[t + k]]
+			crown.set_normal(q.normalized())
+			crown.add_vertex(Vector3(0, 7.2, 0) + Vector3(q.x * 3.2, q.y * 2.9, q.z * 3.2))
+	var m := trunk.commit()
+	m.surface_set_material(0, meshes[I_TREE].surface_get_material(0))
+	crown.commit(m)
+	m.surface_set_material(1, meshes[I_TREE].surface_get_material(1))
+	return m
+
+func _conifer_lo() -> Mesh:
+	var trunk := SurfaceTool.new()
+	trunk.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_cyl(trunk, Vector3.ZERO, 0.2, 0.1, 2.0, 4)
+	var crown := SurfaceTool.new()
+	crown.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_cyl(crown, Vector3(0, 1.5, 0), 2.6, 0.05, 10.5, 7)
+	var m := trunk.commit()
+	m.surface_set_material(0, conifer.surface_get_material(0))
+	crown.commit(m)
+	m.surface_set_material(1, conifer.surface_get_material(1))
 	return m
 
 func _conifer() -> Mesh:
