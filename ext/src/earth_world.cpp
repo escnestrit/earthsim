@@ -31,6 +31,10 @@ void EarthWorld::_bind_methods() {
     ClassDB::bind_method(D_METHOD("road_at", "pos"), &EarthWorld::road_at);
     ClassDB::bind_method(D_METHOD("region_info"), &EarthWorld::region_info);
     ClassDB::bind_method(D_METHOD("follow", "pos", "heading", "ahead"), &EarthWorld::follow);
+    ClassDB::bind_method(D_METHOD("edge_info", "e"), &EarthWorld::edge_info);
+    ClassDB::bind_method(D_METHOD("lane_pose", "e", "s", "dir", "lane_off"), &EarthWorld::lane_pose);
+    ClassDB::bind_method(D_METHOD("next_edge", "e", "dir", "rnd"), &EarthWorld::next_edge);
+    ClassDB::bind_method(D_METHOD("traffic_spawns", "centre", "rmin", "rmax", "count", "seed"), &EarthWorld::traffic_spawns);
 }
 
 bool EarthWorld::load(const String &dir) {
@@ -278,4 +282,116 @@ Dictionary EarthWorld::follow(const Vector3 &p, const Vector3 &heading, double a
     d["width"] = wd;
     d["limit"] = lim;
     return d;
+}
+
+Dictionary EarthWorld::edge_info(int e) const {
+    Dictionary d;
+    if (!w || e < 0 || e >= int(w->net.edges.size())) return d;
+    auto &E = w->net.edges[e];
+    d["len"] = E.len;
+    d["speed"] = E.speed;
+    d["oneway"] = E.oneway;
+    d["lanes"] = E.lanes;
+    d["width"] = E.width;
+    d["prio"] = E.prio;
+    d["a"] = E.a;
+    d["b"] = E.b;
+    d["signals_a"] = w->net.nodes[E.a].signals;
+    d["signals_b"] = w->net.nodes[E.b].signals;
+    d["trim_a"] = E.trim_a;
+    d["trim_b"] = E.trim_b;
+    return d;
+}
+
+// Position on the lane: dir +1 travels a->b. lane_off > 0 is to the right of travel.
+Dictionary EarthWorld::lane_pose(int e, double s, int dir, double lane_off) const {
+    Dictionary d;
+    if (!w || e < 0 || e >= int(w->net.edges.size())) return d;
+    auto &E = w->net.edges[e];
+    s = es::clampd(s, 0, E.len);
+    es::V2 t;
+    es::V2 c = E.at(s, &t);
+    t = t * double(dir);
+    es::V2 p = c - es::perp(t) * lane_off;
+    double z = E.z_at(s);
+    // pitch from the profile
+    double s2 = es::clampd(s + dir * 2.0, 0, E.len);
+    double slope = (E.z_at(s2) - z) / std::max(0.5, std::fabs(s2 - s));
+    d["pos"] = G(p.x, p.y, z);
+    d["yaw"] = std::atan2(-t.x, t.y);
+    d["slope"] = slope;
+    return d;
+}
+
+// Next edge at the end of e (travelling dir): straight-ish continuations preferred, oneways respected.
+Dictionary EarthWorld::next_edge(int e, int dir, double rnd) const {
+    Dictionary d;
+    if (!w || e < 0) return d;
+    auto &N = w->net;
+    auto &E = N.edges[e];
+    int node = dir > 0 ? E.b : E.a;
+    es::V2 tin;
+    E.at(dir > 0 ? E.len : 0.0, &tin);
+    tin = tin * double(dir);
+    std::vector<std::pair<double, std::pair<int, int>>> opts;
+    double tot = 0;
+    for (int nj : N.nodes[node].edges) {
+        if (nj == e) continue;
+        auto &F = N.edges[nj];
+        int fd = F.a == node ? 1 : -1;
+        if (F.oneway && F.oneway != fd) continue;
+        if (F.prio < 3 || F.tunnel || F.len < 3) continue;
+        es::V2 q = F.at(fd > 0 ? std::min(F.len, 8.0) : std::max(0.0, F.len - 8.0));
+        double c = es::dot(es::norm(q - N.nodes[node].p), tin);
+        if (c < -0.3) continue;  // no U-turns / very sharp turns
+        int far = fd > 0 ? F.b : F.a;
+        double wgt = (c > 0.8 ? 3.0 : 1.0) * (N.nodes[far].edges.size() <= 1 ? 0.1 : 1.0) * (F.prio >= E.prio ? 1.5 : 1.0);
+        opts.push_back({wgt, {nj, fd}});
+        tot += wgt;
+    }
+    if (opts.empty()) return d;
+    double x = rnd * tot;
+    for (auto &o : opts) {
+        if (x <= o.first) {
+            d["edge"] = o.second.first;
+            d["dir"] = o.second.second;
+            return d;
+        }
+        x -= o.first;
+    }
+    d["edge"] = opts.back().second.first;
+    d["dir"] = opts.back().second.second;
+    return d;
+}
+
+Array EarthWorld::traffic_spawns(const Vector3 &centre, double rmin, double rmax, int count, int seed) const {
+    Array out;
+    if (!w) return out;
+    auto &N = w->net;
+    std::vector<int> cand;
+    es::V2 c = L(centre);
+    N.query(c, rmax, cand);
+    std::vector<int> good;
+    for (int e : cand) {
+        auto &E = N.edges[e];
+        if (E.prio < 4 || E.tunnel || E.bridge || E.level || E.len < 30) continue;
+        double d = es::dist(E.at(E.len * 0.5), c);
+        if (d < rmin || d > rmax) continue;
+        good.push_back(e);
+    }
+    if (good.empty()) return out;
+    uint64_t h = uint64_t(seed) * 2654435761ULL + 12345;
+    for (int i = 0; i < count; i++) {
+        h = es::hash32(h + i * 7919);
+        int e = good[h % good.size()];
+        auto &E = N.edges[e];
+        int dir = E.oneway ? E.oneway : ((h >> 8) & 1 ? 1 : -1);
+        double s = E.trim_a + 4 + es::hash01(h * 31) * std::max(1.0, E.len - E.trim_a - E.trim_b - 8);
+        Dictionary d;
+        d["edge"] = e;
+        d["dir"] = dir;
+        d["s"] = s;
+        out.push_back(d);
+    }
+    return out;
 }

@@ -37,6 +37,11 @@ class EarthWorld : public RefCounted {
     Vector2 world_to_latlon(const Vector3 &p) const;
     Dictionary road_at(const Vector3 &p) const;
     Dictionary follow(const Vector3 &p, const Vector3 &heading, double ahead) const;
+    // traffic helpers (road graph access)
+    Dictionary edge_info(int e) const;
+    Dictionary lane_pose(int e, double s, int dir, double lane_off) const;
+    Dictionary next_edge(int e, int dir, double rnd) const;
+    Array traffic_spawns(const Vector3 &centre, double rmin, double rmax, int count, int seed) const;
     Dictionary region_info() const;
 };
 

@@ -19,6 +19,7 @@ const CameraScript := preload("res://scripts/camera_rig.gd")
 const AudioScript := preload("res://scripts/car_audio.gd")
 const MenuScript := preload("res://scripts/menu.gd")
 const ControlsScript := preload("res://scripts/controls.gd")
+const TrafficScript := preload("res://scripts/traffic.gd")
 
 var args := {}
 var world: EarthWorld
@@ -41,6 +42,7 @@ var _head_light: SpotLight3D
 var _lights_on := false
 var menu
 var controls
+var traffic
 var monitor: Label
 var _lamp_lights: Array[OmniLight3D] = []
 var _lamp_t := 0.0
@@ -70,6 +72,13 @@ func _ready() -> void:
 	controls = ControlsScript.new()
 	controls.load_config()
 	_setup_lamp_lights()
+	if not args.has("notraffic") and args.get("test", "") in ["", "traffic"]:
+		traffic = Node3D.new()
+		traffic.set_script(TrafficScript)
+		add_child(traffic)
+		traffic.setup(world, car)
+		if args.has("traffic"):
+			traffic.max_cars = int(args["traffic"])
 	if not args.has("test") and not args.has("shot") and DisplayServer.get_name() != "headless":
 		var au := AudioStreamPlayer.new()
 		au.set_script(AudioScript)
@@ -588,6 +597,8 @@ func _process(dt: float) -> void:
 		_world_test(dt)
 	if args.get("test", "") == "crash":
 		_crash_test(dt)
+	if args.get("test", "") == "traffic":
+		_traffic_test(dt)
 	if args.get("test", "") == "city" or args.has("autodrive"):
 		_autodrive(dt)
 
@@ -976,3 +987,32 @@ func _crash_test(dt: float) -> void:
 				get_tree().quit(0)
 		else:
 			get_tree().quit(0 if ok else 1)
+
+# --------------------------------------------------------------- traffic test
+
+var _tt := 0.0
+var _tt_dist := {}
+var _tt_maxv := 0.0
+var _tt_stops := 0
+
+func _traffic_test(dt: float) -> void:
+	if not spawned:
+		return
+	car.input_brake = 1.0
+	_tt += dt
+	for c in traffic.cars:
+		var id := (c["body"] as Node).get_instance_id()
+		_tt_dist[id] = _tt_dist.get(id, 0.0) + float(c["speed"]) * dt
+		_tt_maxv = maxf(_tt_maxv, c["speed"])
+	if int(_tt / 20.0) != int((_tt - dt) / 20.0):
+		for i in mini(4, traffic.cars.size()):
+			var cp: Vector3 = traffic.cars[i]["pos"]
+			print("[traffic] car %d at %s, %.0f m from player, %.0f km/h, height above road %.2f" % [i, cp, cp.distance_to(car.global_position), float(traffic.cars[i]["speed"]) * 3.6, cp.y - world.ground_height(cp)])
+	if _tt > 60.0:
+		var moving := 0
+		for k in _tt_dist:
+			if _tt_dist[k] > 50.0:
+				moving += 1
+		var ok: bool = traffic.cars.size() >= 10 and moving >= 8
+		print("[test] traffic: %d cars, %d drove > 50 m, max speed %.0f km/h -> %s" % [traffic.cars.size(), moving, _tt_maxv * 3.6, "PASS" if ok else "FAIL"])
+		get_tree().quit(0 if ok else 1)

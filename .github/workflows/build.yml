@@ -63,6 +63,8 @@ jobs:
         run: timeout 400 ./godot --headless --path game -- --test=city --duration=60 --radius=500 --data=$PWD/data
       - name: Crash test (deformation)
         run: timeout 300 ./godot --headless --path game -- --test=crash
+      - name: Traffic test
+        run: timeout 300 ./godot --headless --path game -- --test=traffic --data=$PWD/data
 
   windows:
     runs-on: windows-latest
@@ -149,7 +151,8 @@ jobs:
             @('--headless','--','--test=drive'),
             @('--headless','--','--test=crash'),
             @('--headless','--','--test=world'),
-            @('--headless','--','--test=city','--duration=60','--radius=500')
+            @('--headless','--','--test=city','--duration=60','--radius=500'),
+            @('--headless','--','--test=traffic')
           )
           $i = 0
           foreach ($a in $tests) {

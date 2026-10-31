@@ -2,6 +2,7 @@
 // green 0-16, amber 16-19, red 19-37, red+amber 37-40.
 shader_type spatial;
 render_mode cull_back;
+global uniform float signal_time;  // driven by the traffic system so lights and cars agree
 
 varying float lamp;
 varying float phase;
@@ -12,7 +13,7 @@ void vertex() {
 }
 
 void fragment() {
-	float t = mod(TIME + phase, 40.0);
+	float t = mod(signal_time + phase, 40.0);
 	int k = int(lamp + 0.5);
 	bool on = false;
 	if (k == 0) on = t >= 19.0;

@@ -57,3 +57,7 @@ detail_radius={
 "type": "float",
 "value": 0.0
 }
+signal_time={
+"type": "float",
+"value": 0.0
+}
