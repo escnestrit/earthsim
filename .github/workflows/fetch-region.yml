@@ -1,0 +1,44 @@
+name: fetch-region
+# Downloads open map data (Overture Maps tiles + terrain) for every region listed in regions.txt that
+# has no data-<name> branch yet, then rebuilds the game. Edit regions.txt on GitHub to add a city.
+on:
+  push:
+    branches: [v2]
+    paths: [regions.txt, tools/fetch_region.py]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pmtiles requests
+      - name: Fetch new regions
+        run: |
+          fetched=0
+          while read -r name lat lon radius; do
+            case "$name" in ''|'#'*) continue;; esac
+            if git ls-remote --exit-code --heads origin "data-$name" > /dev/null; then
+              echo "region $name: data already present"; continue
+            fi
+            echo "region $name: fetching $lat $lon r=$radius"
+            rm -rf "/tmp/r_$name"
+            python3 tools/fetch_region.py "$lat" "$lon" "${radius:-2500}" "/tmp/r_$name" map
+            (cd "/tmp/r_$name" && git init -q -b "data-$name" && git config user.name github-actions \
+              && git config user.email github-actions@users.noreply.github.com && git add -A \
+              && git commit -q -m "Map data for $name" \
+              && git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "data-$name")
+            echo "::notice::region $name fetched"
+            fetched=1
+          done < regions.txt
+          echo "fetched=$fetched" >> "$GITHUB_OUTPUT"
+        id: f
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Rebuild the game with the new regions
+        if: steps.f.outputs.fetched == '1'
+        run: gh workflow run build.yml --ref v2 -R "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

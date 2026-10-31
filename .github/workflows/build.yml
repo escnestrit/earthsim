@@ -7,6 +7,9 @@ on:
   push:
     branches: [v2]
   workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -116,10 +119,15 @@ jobs:
           ./godot --headless --path game --import || true
           ./godot --headless --path game --export-release "Windows Desktop" ../dist/earthsim.exe
           cp game/bin/*.dll dist/
-      - name: Bundle Minsk data and docs
+      - name: Bundle map regions and docs
         run: |
-          git fetch --depth 1 origin data-minsk
-          mkdir -p dist/data && git archive FETCH_HEAD | tar -x -C dist/data
+          # every data-<name> branch becomes data/<name> (Minsk is the default region)
+          for b in $(git ls-remote --heads origin 'data-*' | sed 's#.*refs/heads/##'); do
+            n="${b#data-}"
+            git fetch --depth 1 origin "$b"
+            mkdir -p "dist/data/$n" && git archive FETCH_HEAD | tar -x -C "dist/data/$n"
+            echo "bundled region $n"
+          done
           cp README.md dist/README.md
           cp ATTRIBUTION.md dist/ATTRIBUTION.md
           ls -la dist

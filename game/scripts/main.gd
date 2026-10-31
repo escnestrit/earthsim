@@ -88,6 +88,8 @@ func _ready() -> void:
 	if args.has("rain"):
 		set_wet(1.0)
 
+var regions := []        # names of the regions found next to the exe (data/<name>/region.json)
+
 func _find_data() -> String:
 	var c := []
 	if args.has("data"):
@@ -98,8 +100,25 @@ func _find_data() -> String:
 	c.append(ProjectSettings.globalize_path("res://").path_join("../data"))
 	c.append(ProjectSettings.globalize_path("res://").path_join("../data_local"))
 	for d in c:
-		if FileAccess.file_exists(String(d).path_join("region.json")):
-			return d
+		var dir := String(d)
+		if FileAccess.file_exists(dir.path_join("region.json")):
+			return dir
+		# several regions: data/<name>/region.json
+		var da := DirAccess.open(dir)
+		if da == null:
+			continue
+		regions = []
+		for sub in da.get_directories():
+			if FileAccess.file_exists(dir.path_join(sub).path_join("region.json")):
+				regions.append(sub)
+		if regions.is_empty():
+			continue
+		regions.sort()
+		var want: String = args.get("region", "minsk")
+		if not regions.has(want):
+			want = regions[0]
+		args["region"] = want
+		return dir.path_join(want)
 	return ""
 
 func _setup_world() -> void:
@@ -425,6 +444,11 @@ func _setup_menu() -> void:
 	menu.time_changed.connect(set_time)
 	menu.rain_changed.connect(func(on): set_wet(1.0 if on else 0.0))
 	menu.radius_changed.connect(func(r): streamer.radius = r)
+	menu.set_regions(regions, args.get("region", ""))
+	menu.region_chosen.connect(func(name):
+		# a new region is a new world: restart the game with it
+		OS.create_process(OS.get_executable_path(), ["--", "--region=" + name])
+		get_tree().quit())
 
 func _teleport(lat: float, lon: float) -> void:
 	var p: Vector3 = world.latlon_to_world(lat, lon)

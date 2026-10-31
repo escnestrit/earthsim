@@ -5,6 +5,7 @@ signal teleport(lat: float, lon: float)
 signal time_changed(hour: float)
 signal rain_changed(on: bool)
 signal radius_changed(r: float)
+signal region_chosen(name: String)
 
 const PLACES := [
 	["Площадь Победы", 53.9083, 27.5751],
@@ -23,6 +24,8 @@ var panel: PanelContainer
 var time_slider: HSlider
 var radius_slider: HSlider
 var rain_box: CheckBox
+var region_box: HBoxContainer
+var region_label: Label
 
 func _ready() -> void:
 	layer = 10
@@ -42,6 +45,14 @@ func _ready() -> void:
 	title.text = "BeamNG.Earth — Минск"
 	title.add_theme_font_size_override("font_size", 24)
 	v.add_child(title)
+	region_label = Label.new()
+	region_label.text = "Регион"
+	region_label.add_theme_font_size_override("font_size", 16)
+	region_label.visible = false
+	v.add_child(region_label)
+	region_box = HBoxContainer.new()
+	region_box.visible = false
+	v.add_child(region_box)
 	var tp := Label.new()
 	tp.text = "Телепорт"
 	tp.add_theme_font_size_override("font_size", 16)
@@ -93,6 +104,20 @@ func _slider(parent: Container, label: String, a: float, b: float, step: float, 
 	parent.add_child(s)
 	l.text = label
 	return s
+
+func set_regions(names: Array, current: String) -> void:
+	for c in region_box.get_children():
+		c.queue_free()
+	if names.size() < 2:
+		return
+	region_label.visible = true
+	region_box.visible = true
+	for n in names:
+		var b := Button.new()
+		b.text = String(n).capitalize()
+		b.disabled = n == current
+		b.pressed.connect(func(): region_chosen.emit(n))
+		region_box.add_child(b)
 
 func show_menu(hour: float, radius: float, wet: bool) -> void:
 	time_slider.set_value_no_signal(hour)
