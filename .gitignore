@@ -1,0 +1,8 @@
+build/
+Build/
+unreal/Binaries/
+unreal/Intermediate/
+unreal/Saved/
+unreal/DerivedDataCache/
+unreal/.vs/
+*.sln
