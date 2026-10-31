@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cmath>
 #include "world.hpp"
 #include <array>
 #include <cstdio>
@@ -227,6 +229,13 @@ void World::prepare_buildings() {
         static const std::vector<uint32_t> flatr = {0x4A4A4A, 0x555555, 0x5E5E5E, 0x505452};
         static const std::vector<uint32_t> pitchr = {0x8B3A2B, 0x7A3B2E, 0x5C6B5C, 0x6E6E6E, 0x4E5A66};
         b.roof = r.roof_color ? r.roof_color : pick(pitched ? pitchr : flatr, h >> 7);
+        {
+            // data colours are swatches; real roofs are weathered: darken and desaturate a little
+            uint32_t c = b.roof;
+            double rr = ((c >> 16) & 255), gg = ((c >> 8) & 255), bb = (c & 255), l = (rr + gg + bb) / 3;
+            auto f = [&](double v) { return uint32_t(std::clamp((l + (v - l) * 0.7) * 0.8, 0.0, 255.0)); };
+            b.roof = (f(rr) << 16) | (f(gg) << 8) | f(bb) | 0x1000000u;
+        }
         by_id[r.id] = int(buildings.size());
         buildings.push_back(std::move(b));
     }
@@ -378,7 +387,14 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
         rh = std::min(rh, b.height * 0.6);
     }
     double eave = top - rh;
+    double rim = pitched ? 0.0 : (b.height > 6 ? 0.45 : 0.2);  // parapet of flat roofs
+    double wall_top = pitched ? eave : top + rim;
     size_t wall_start = W.idx.size();
+    struct Seg {
+        V2 a, c;
+        double u0;
+    };
+    std::vector<Seg> outer_walls;
     for (auto &ring : r.rings) {
         std::vector<const Poly *> loops = {&ring.outer};
         for (auto &h : ring.holes) loops.push_back(&h);
@@ -396,14 +412,64 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
                 V3 n = norm(V3(perp(c - a) * -1.0, 0));  // outward for CCW outer and CW holes
                 int i0 = W.vert(lv(a, bottom, o), n, {acc, bottom - base}, {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
                 int i1 = W.vert(lv(c, bottom, o), n, {acc + l, bottom - base}, {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
-                int i2 = W.vert(lv(c, eave, o), n, {acc + l, eave - base}, {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
-                int i3 = W.vert(lv(a, eave, o), n, {acc, eave - base}, {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
+                int i2 = W.vert(lv(c, wall_top, o), n, {acc + l, wall_top - base}, {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
+                int i3 = W.vert(lv(a, wall_top, o), n, {acc, wall_top - base}, {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
                 W.quad(i0, i1, i2, i3);
+                if (rim > 0) {
+                    // parapet: 25 cm thick wall around the flat roof (top + inner face; the outer face is the wall)
+                    V2 in = perp(c - a) / std::max(l, 1e-6) * 0.25;  // towards the roof (left of travel)
+                    V2 ai = a + in, ci = c + in;
+                    V3 ni = n * -1.0;
+                    V3 rc2 = rc * 0.85;
+                    int j0 = Rf.vert(lv(ci, top, o), ni, {acc + l, 0}, {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
+                    int j1 = Rf.vert(lv(ai, top, o), ni, {acc, 0}, {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
+                    int j2 = Rf.vert(lv(ai, top + rim, o), ni, {acc, rim}, {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
+                    int j3 = Rf.vert(lv(ci, top + rim, o), ni, {acc + l, rim}, {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
+                    Rf.quad(j0, j1, j2, j3);
+                    add_quad(Rf, lv(a, top + rim, o), lv(c, top + rim, o), lv(ci, top + rim, o), lv(ai, top + rim, o), {0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
+                }
+                if (lp == &ring.outer) outer_walls.push_back({a, c, acc});
                 acc += l;
             }
         }
     }
     collect(W, out.col_solid, wall_start);
+    // balconies on residential blocks: slab + parapet boxes in every other window bay
+    if ((b.style == 0 || b.style == 1) && b.min_h < 0.3) {
+        int floors = int((eave - base) / b.floor_h);
+        double bay = b.style == 0 ? 3.0 : 2.7;
+        uint64_t hb = hash_str(r.id.data(), r.id.size());
+        bool glazed = hash01(hb * 7) < 0.55;
+        int pattern = int(hash32(hb * 11) % 3);  // which bays get balconies
+        if (floors >= 3)
+            for (auto &sg : outer_walls) {
+                double l = dist(sg.a, sg.c);
+                if (l < 9) continue;
+                V2 dir = (sg.c - sg.a) / l, out = perp(dir) * -1.0;
+                // bays are aligned to the facade shader's grid (u from the ring start)
+                int k0 = int(std::ceil(sg.u0 / bay)), k1 = int(std::floor((sg.u0 + l) / bay)) - 1;
+                for (int k = k0; k <= k1; k++) {
+                    if ((k + pattern) % 3 == 0) continue;
+                    double uc = (k + 0.5) * bay - sg.u0;
+                    if (uc < 1.6 || uc > l - 1.6) continue;
+                    V2 m = sg.a + dir * uc;
+                    for (int f = 1; f < floors; f++) {
+                        double z0 = base + f * b.floor_h;
+                        double hw = bay * 0.46, dp = 1.05, ph = glazed ? b.floor_h * 0.92 : 1.05;
+                        V2 p0 = m - dir * hw, p1 = m + dir * hw, q0 = p0 + out * dp, q1 = p1 + out * dp;
+                        V3 bc = fc * 0.93;
+                        V2 uv2{b.floor_h, glazed ? 8.0 : 7.0};
+                        // front, sides (facing out), slab underside, top of the parapet
+                        add_quad(W, lv(q0, z0 - 0.15, o), lv(q1, z0 - 0.15, o), lv(q1, z0 + ph, o), lv(q0, z0 + ph, o), {0, 0}, {hw * 2, 0}, {hw * 2, ph + 0.15}, {0, ph + 0.15}, uv2, float(bc.x), float(bc.y), float(bc.z), seed);
+                        add_quad(W, lv(p0, z0 - 0.15, o), lv(q0, z0 - 0.15, o), lv(q0, z0 + ph, o), lv(p0, z0 + ph, o), {0, 0}, {dp, 0}, {dp, ph + 0.15}, {0, ph + 0.15}, uv2, float(bc.x), float(bc.y), float(bc.z), seed);
+                        add_quad(W, lv(q1, z0 - 0.15, o), lv(p1, z0 - 0.15, o), lv(p1, z0 + ph, o), lv(q1, z0 + ph, o), {0, 0}, {dp, 0}, {dp, ph + 0.15}, {0, ph + 0.15}, uv2, float(bc.x), float(bc.y), float(bc.z), seed);
+                        add_quad(W, lv(p0, z0 - 0.15, o), lv(p1, z0 - 0.15, o), lv(q1, z0 - 0.15, o), lv(q0, z0 - 0.15, o), {0, 0}, {1, 0}, {1, 1}, {0, 1}, {b.floor_h, 9.0}, float(bc.x), float(bc.y), float(bc.z), seed);
+                        if (glazed || f == floors - 1)
+                            add_quad(W, lv(q0, z0 + ph, o), lv(q1, z0 + ph, o), lv(p1, z0 + ph, o), lv(p0, z0 + ph, o), {0, 0}, {1, 0}, {1, 1}, {0, 1}, {b.floor_h, 9.0}, float(bc.x), float(bc.y), float(bc.z), seed);
+                    }
+                }
+            }
+    }
     if (!pitched) {
         for (auto &ring : r.rings) flat_poly(Rf, ring.outer, ring.holes, top, o, rc, 0);
         // a thin parapet line look is left to the shader; flat roofs of tall buildings get a roof box
@@ -690,6 +756,13 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
         }
         return false;
     };
+    std::vector<const std::vector<V2> *> near_paths;
+    for (auto &r : region.roads) {
+        if (r.kind != RoadKind::Path) continue;
+        Rect bb;
+        for (auto &q : r.pts) bb.add(q);
+        if (bb.overlaps(rect.grown(3))) near_paths.push_back(&r.pts);
+    }
     auto place_tree = [&](V2 p, uint64_t h, double sc) {
         int kd = 0;
         bool hl = false;
@@ -738,9 +811,16 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
         }
     }
     for (auto *a : ctx.areas) {
-        double step = a->kind == AreaKind::Forest ? 7.0 : a->kind == AreaKind::Park ? 13.0 : a->kind == AreaKind::Cemetery ? 11.0 : 0;
+        double step = 0, dens = 0;
+        switch (a->kind) {
+            case AreaKind::Forest: step = 7.0, dens = 0.85; break;
+            case AreaKind::Park: step = 12.0, dens = 0.5; break;
+            case AreaKind::Cemetery: step = 10.0, dens = 0.5; break;
+            case AreaKind::Grass: step = 15.0, dens = 0.3; break;
+            case AreaKind::Residential: step = 13.0, dens = 0.32; break;  // Minsk courtyards are full of trees
+            default: break;
+        }
         if (step <= 0) continue;
-        double dens = a->kind == AreaKind::Forest ? 0.85 : 0.45;
         Rect bb;
         for (auto &p : a->ring.outer) bb.add(p);
         double x0 = std::floor(std::max(bb.mn.x, rect.mn.x) / step) * step, y0 = std::floor(std::max(bb.mn.y, rect.mn.y) / step) * step;
@@ -754,8 +834,32 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
                 for (auto &hh : a->ring.holes)
                     if (point_in_poly(hh, p)) in_hole = true;
                 if (in_hole || in_building(p)) continue;
+                // keep clear of footpaths
+                bool on_path = false;
+                for (auto *pl : near_paths)
+                    for (size_t k = 0; k + 1 < pl->size() && !on_path; k++)
+                        if (seg_dist(p, (*pl)[k], (*pl)[k + 1]) < 2.5) on_path = true;
+                if (on_path) continue;
                 place_tree(p, h, a->kind == AreaKind::Forest ? 1.15 : 1.0);
             }
+    }
+    // street trees: a row behind the pavement of urban streets
+    for (int ei : es_) {
+        auto &e = net.edges[ei];
+        if (e.prio < 4 || e.prio > 8 || e.bridge || e.tunnel || e.level) continue;
+        for (double side : {1.0, -1.0}) {
+            double sw = e.sw(side);
+            if (sw <= 0) continue;
+            for (double s = e.trim_a + 6; s < e.len - e.trim_b - 6; s += 10) {
+                V2 d;
+                V2 c = e.at(s, &d);
+                V2 p = c + perp(d) * (side * (e.half() + sw + 1.6));
+                if (!inside(p)) continue;
+                uint64_t h = hash32(uint64_t(int64_t(p.x * 7) + 1000000) * 2654435761ULL ^ uint64_t(int64_t(p.y * 7) + 1000000));
+                if (hash01(h) > 0.55 || in_building(p)) continue;
+                place_tree(p, h, 0.85);
+            }
+        }
     }
     return out;
 }

@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cmath>
 #include "region.hpp"
 #include <cstdio>
 #include <filesystem>

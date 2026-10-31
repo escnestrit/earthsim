@@ -20,6 +20,30 @@ void fragment() {
 	float seed = COLOR.a;
 	vec3 wall = COLOR.rgb;
 	float x = UV.x, y = UV.y;
+	if (style >= 7) {
+		// balconies: 7 open (railing panel), 8 glazed, 9 slab
+		vec3 c = wall * (0.9 + 0.1 * vnoise(vec2(x, y) * 3.0));
+		float r = 0.85;
+		vec3 e = vec3(0.0);
+		if (style == 8 && y > 1.15) {
+			float fx = fract(x / 0.9);
+			float fr = min(min(fx, 1.0 - fx) * 0.9, min(y - 1.15, fh * 0.92 + 0.15 - y));
+			float frame = 1.0 - smoothstep(0.03, 0.06, fr);
+			float cell = h21(vec2(floor(x / 0.9) + seed * 17.0, floor(wpos.y / fh)));
+			c = mix(mix(vec3(0.1, 0.12, 0.14), vec3(0.3, 0.33, 0.36), cell * 0.5), vec3(0.88, 0.88, 0.86), frame);
+			r = mix(0.08, 0.5, frame);
+			e = vec3(1.0, 0.8, 0.55) * step(0.82, cell) * night * 1.2 * (1.0 - frame);
+		} else if (style == 7) {
+			float bars = step(0.5, fract(x / 0.12)) * step(0.1, y) * step(y, 0.95);
+			c = mix(c, c * 0.75, bars * 0.5);
+		} else if (style == 9) {
+			c *= 0.8;
+		}
+		apply_wet(c, r, 0.4);
+		ALBEDO = c;
+		ROUGHNESS = r;
+		EMISSION = e;
+	} else {
 	float n = fbm(vec2(x, y) * 0.8 + seed * 50.0);
 	wall *= 0.9 + 0.15 * n;
 	float rough = 0.85;
@@ -85,4 +109,5 @@ void fragment() {
 	ROUGHNESS = rough;
 	METALLIC = metal;
 	EMISSION = emit;
+	}
 }

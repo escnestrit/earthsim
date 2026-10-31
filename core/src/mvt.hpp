@@ -1,5 +1,6 @@
 // Mapbox Vector Tile (protobuf) decoder. Self-contained, no allocation tricks.
 #pragma once
+#include <cstdlib>
 #include <cstdint>
 #include <string>
 #include <string_view>

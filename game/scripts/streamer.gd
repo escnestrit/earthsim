@@ -136,15 +136,33 @@ func _make_node(d: Dictionary) -> Node3D:
 		n.add_child(body)
 	var inst: Array = d["inst"]
 	for kind in min(inst.size(), props.meshes.size()):
-		var f: PackedFloat32Array = inst[kind]
-		var count := f.size() / 6
-		if count == 0 or props.meshes[kind] == null:
+		var all: PackedFloat32Array = inst[kind]
+		if props.meshes[kind] == null:
 			continue
+		# trees: variant 3 is a conifer, the rest broadleaf
+		var groups := [[all, props.meshes[kind]]]
+		if kind == PropsScript.I_TREE:
+			var broad := PackedFloat32Array()
+			var con := PackedFloat32Array()
+			for i in all.size() / 6:
+				var dst := con if int(all[i * 6 + 5]) == 3 else broad
+				for j in 6:
+					dst.append(all[i * 6 + j])
+			groups = [[broad, props.meshes[kind]], [con, props.conifer]]
+		for grp in groups:
+			_add_instances(n, kind, grp[0], grp[1])
+	add_child(n)
+	return n
+
+func _add_instances(n: Node3D, kind: int, f: PackedFloat32Array, mesh: Mesh) -> void:
+		var count := f.size() / 6
+		if count == 0:
+			return
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.use_colors = kind == PropsScript.I_TREE
 		mm.use_custom_data = kind == PropsScript.I_SIGNAL
-		mm.mesh = props.meshes[kind]
+		mm.mesh = mesh
 		mm.instance_count = count
 		for i in count:
 			var p := Vector3(f[i * 6], f[i * 6 + 1], f[i * 6 + 2])
@@ -167,5 +185,3 @@ func _make_node(d: Dictionary) -> Node3D:
 		elif kind != PropsScript.I_TREE:
 			mmi.visibility_range_end = 450.0
 		n.add_child(mmi)
-	add_child(n)
-	return n

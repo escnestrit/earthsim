@@ -1,3 +1,4 @@
+#include <cmath>
 #include "roadgeom.hpp"
 
 namespace es {

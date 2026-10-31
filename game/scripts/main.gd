@@ -92,6 +92,7 @@ func _setup_world() -> void:
 	var focus := Vector3.ZERO
 	if args.has("lat") and args.has("lon"):
 		focus = world.latlon_to_world(float(args["lat"]), float(args["lon"]))
+	focus.y = world.ground_height(focus)
 	streamer.focus = focus
 
 func _fatal(msg: String) -> void:
@@ -218,7 +219,7 @@ func _setup_car() -> void:
 	if args.has("view"):
 		var v: PackedStringArray = String(args["view"]).split(",")
 		cam.target = null
-		cam.position = Vector3(float(v[0]), float(v[1]), float(v[2]))
+		cam.position = Vector3(float(v[0]), float(v[1]), float(v[2])) + streamer.focus
 		cam.rotation = Vector3(deg_to_rad(float(v[4])), deg_to_rad(float(v[3])), 0)
 		cam.far = 4000.0
 

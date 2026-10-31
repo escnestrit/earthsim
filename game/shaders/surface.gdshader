@@ -19,11 +19,11 @@ void fragment() {
 	vec3 col;
 	float rough = 0.85;
 	if (kind == 0) {
-		vec2 g = w / vec2(0.5, 0.5);
+		vec2 g = w / vec2(0.3, 0.3);
 		vec2 f = abs(fract(g) - 0.5);
-		float groove = smoothstep(0.44, 0.49, max(f.x, f.y));
-		vec3 base = vec3(0.52, 0.5, 0.47) * (0.85 + 0.25 * h21(floor(g))) * (0.85 + 0.3 * n);
-		col = mix(base, base * 0.55, groove);
+		float groove = smoothstep(0.43, 0.49, max(f.x, f.y));
+		vec3 base = vec3(0.46, 0.44, 0.41) * (0.9 + 0.15 * h21(floor(g))) * (0.85 + 0.3 * n);
+		col = mix(base, base * 0.7, groove);
 	} else if (kind == 1) {
 		col = vec3(0.58, 0.58, 0.56) * (0.85 + 0.3 * vnoise(w * 6.0 + wpos.y));
 		rough = 0.7;

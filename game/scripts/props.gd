@@ -8,12 +8,14 @@ const I_BENCH := 3
 const I_COUNT := 6
 
 var meshes: Array[Mesh] = []
+var conifer: Mesh
 var lamp_head_mat: StandardMaterial3D
 var signal_mat: ShaderMaterial
 
 func _init() -> void:
 	meshes.resize(I_COUNT)
 	meshes[I_TREE] = _tree()
+	conifer = _conifer()
 	meshes[I_LAMP] = _lamp()
 	meshes[I_SIGNAL] = _signal()
 	meshes[I_BENCH] = _bench()
@@ -94,22 +96,43 @@ static func _blob(st: SurfaceTool, c: Vector3, r: Vector3, seed: int) -> void:
 func _tree() -> Mesh:
 	var trunk := SurfaceTool.new()
 	trunk.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_cyl(trunk, Vector3.ZERO, 0.22, 0.14, 4.2, 7)
+	_cyl(trunk, Vector3.ZERO, 0.28, 0.17, 4.6, 8)
+	_cyl(trunk, Vector3(0, 4.4, 0), 0.12, 0.06, 2.2, 6)
 	var crown := SurfaceTool.new()
 	crown.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_blob(crown, Vector3(0, 6.2, 0), Vector3(3.0, 2.8, 3.0), 3)
-	_blob(crown, Vector3(1.2, 7.6, 0.6), Vector3(2.0, 1.9, 2.0), 7)
-	_blob(crown, Vector3(-1.0, 7.9, -0.8), Vector3(1.9, 1.8, 1.9), 11)
+	var blobs := [[Vector3(0, 6.6, 0), Vector3(2.6, 2.3, 2.6)], [Vector3(1.6, 7.4, 0.7), Vector3(1.8, 1.7, 1.8)],
+		[Vector3(-1.4, 7.8, -0.9), Vector3(1.9, 1.7, 1.8)], [Vector3(0.4, 8.9, -0.3), Vector3(1.6, 1.4, 1.6)],
+		[Vector3(-0.8, 6.0, 1.5), Vector3(1.6, 1.4, 1.5)], [Vector3(1.0, 5.7, -1.6), Vector3(1.5, 1.3, 1.5)]]
+	var seed := 3
+	for b in blobs:
+		_blob(crown, b[0], b[1], seed)
+		seed += 4
 	var m := trunk.commit()
-	m.surface_set_material(0, _mat(Color(0.28, 0.22, 0.17), 0.95))
+	m.surface_set_material(0, _mat(Color(0.25, 0.21, 0.17), 0.95))
 	crown.commit(m)
-	var leaf := StandardMaterial3D.new()
-	leaf.vertex_color_use_as_albedo = true
-	leaf.albedo_color = Color(0.32, 0.45, 0.2)
-	leaf.roughness = 0.9
-	leaf.backlight_enabled = true
-	leaf.backlight = Color(0.15, 0.2, 0.05)
+	var leaf := ShaderMaterial.new()
+	leaf.shader = load("res://shaders/foliage.gdshader")
 	m.surface_set_material(1, leaf)
+	return m
+
+func _conifer() -> Mesh:
+	var trunk := SurfaceTool.new()
+	trunk.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_cyl(trunk, Vector3.ZERO, 0.2, 0.1, 3.0, 6)
+	var crown := SurfaceTool.new()
+	crown.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# stacked drooping cones
+	for k in 6:
+		var y := 1.6 + k * 1.75
+		var r := 2.6 - k * 0.38
+		_cyl(crown, Vector3(0, y, 0), r, 0.15, 2.6, 9)
+	var m := trunk.commit()
+	m.surface_set_material(0, _mat(Color(0.25, 0.2, 0.16), 0.95))
+	crown.commit(m)
+	var needles := ShaderMaterial.new()
+	needles.shader = load("res://shaders/foliage.gdshader")
+	needles.set_shader_parameter("base_color", Vector3(0.1, 0.2, 0.12))
+	m.surface_set_material(1, needles)
 	return m
 
 func _lamp() -> Mesh:

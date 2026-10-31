@@ -1,3 +1,5 @@
+#include <functional>
+#include <cmath>
 #include "roadnet.hpp"
 #include <map>
 #include <queue>

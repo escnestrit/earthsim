@@ -6,6 +6,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# godot-cpp links the static MSVC runtime; everything else must match
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
 
 option(ES_EXTENSION "build the Godot extension (needs godot-cpp)" ON)
 option(ES_TOOLS "build tests and dev tools" ON)

@@ -72,8 +72,11 @@ jobs:
       - name: Build earthsim.dll
         shell: bash
         run: |
-          cmake -S . -B build -DES_TOOLS=OFF
-          cmake --build build --config Release --target earthsim --parallel 4
+          cmake -S . -B build -DES_TOOLS=OFF > cmake.log 2>&1 || { tail -40 cmake.log | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
+          if ! cmake --build build --config Release --target earthsim --parallel 4 > build.log 2>&1; then
+            grep -E "error|LNK|fatal" build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
           ls -la game/bin
       - uses: actions/upload-artifact@v4
         with:
