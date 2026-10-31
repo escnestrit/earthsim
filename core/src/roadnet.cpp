@@ -565,3 +565,58 @@ void RoadNet::profiles(const Region &R) {
 }
 
 }  // namespace es
+
+namespace es {
+bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit) const {
+    RoadHit hit = nearest(p, 25);
+    if (hit.edge < 0) return false;
+    int ei = hit.edge;
+    V2 d;
+    edges[ei].at(hit.s, &d);
+    int dir = dot(d, h) >= 0 ? 1 : -1;  // travelling a->b (+1) or b->a (-1)
+    double s = hit.s, left = ahead;
+    for (int guard = 0; guard < 16; guard++) {
+        const RoadEdge &e = edges[ei];
+        double room = dir > 0 ? e.len - s : s;
+        if (left <= room) {
+            double st = s + dir * left;
+            V2 t;
+            V2 c = e.at(st, &t);
+            t = t * double(dir);
+            // right-hand lane centre: a quarter of the width right of the centre on two-way roads,
+            // on one-way roads the rightmost lane
+            double off = e.oneway ? std::max(0.0, e.half() - 1.8) : std::min(e.half() * 0.5, 2.0);
+            target = c - perp(t) * off;
+            if (speed_limit) *speed_limit = e.speed;
+            return true;
+        }
+        left -= room;
+        int node = dir > 0 ? e.b : e.a;
+        V2 tin;
+        e.at(dir > 0 ? e.len : 0.0, &tin);
+        tin = tin * double(dir);
+        // straightest allowed continuation
+        int best = -1, bdir = 1;
+        double bd = -2;
+        for (int nj : nodes[node].edges) {
+            if (nj == ei) continue;
+            const RoadEdge &f = edges[nj];
+            int fd = f.a == node ? 1 : -1;
+            if (f.oneway && f.oneway != fd) continue;
+            if (f.prio < 2) continue;
+            V2 q = f.at(fd > 0 ? std::min(f.len, 8.0) : std::max(0.0, f.len - 8.0));
+            double dd = dot(norm(q - nodes[node].p), tin);
+            if (dd > bd) bd = dd, best = nj, bdir = fd;
+        }
+        if (best < 0) {
+            // dead end: stop at the end
+            target = nodes[node].p;
+            if (speed_limit) *speed_limit = 0;
+            return true;
+        }
+        ei = best, dir = bdir;
+        s = dir > 0 ? 0 : edges[ei].len;
+    }
+    return false;
+}
+}  // namespace es

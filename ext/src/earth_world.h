@@ -33,6 +33,7 @@ class EarthWorld : public RefCounted {
     Vector3 latlon_to_world(double lat, double lon) const;
     Vector2 world_to_latlon(const Vector3 &p) const;
     Dictionary road_at(const Vector3 &p) const;
+    Dictionary follow(const Vector3 &p, const Vector3 &heading, double ahead) const;
     Dictionary region_info() const;
 };
 

@@ -26,6 +26,7 @@ void EarthWorld::_bind_methods() {
     ClassDB::bind_method(D_METHOD("world_to_latlon", "pos"), &EarthWorld::world_to_latlon);
     ClassDB::bind_method(D_METHOD("road_at", "pos"), &EarthWorld::road_at);
     ClassDB::bind_method(D_METHOD("region_info"), &EarthWorld::region_info);
+    ClassDB::bind_method(D_METHOD("follow", "pos", "heading", "ahead"), &EarthWorld::follow);
 }
 
 bool EarthWorld::load(const String &dir) {
@@ -179,5 +180,16 @@ Dictionary EarthWorld::region_info() const {
     d["max"] = G(w->region.bounds.mx.x, w->region.bounds.mn.y, 0);
     d["roads"] = int64_t(w->net.edges.size());
     d["buildings"] = int64_t(w->buildings.size());
+    return d;
+}
+
+Dictionary EarthWorld::follow(const Vector3 &p, const Vector3 &heading, double ahead) const {
+    Dictionary d;
+    if (!w) return d;
+    es::V2 t;
+    int lim = 0;
+    if (!w->net.follow(L(p), es::V2{heading.x, -heading.z}, ahead, t, &lim)) return d;
+    d["target"] = G(t.x, t.y, p.y);
+    d["limit"] = lim;
     return d;
 }

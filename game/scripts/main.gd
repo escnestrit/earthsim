@@ -280,6 +280,8 @@ func _process(dt: float) -> void:
 		_drive_test(dt)
 	if args.get("test", "") == "world":
 		_world_test(dt)
+	if args.get("test", "") == "city" or args.has("autodrive"):
+		_autodrive(dt)
 
 func _update_wheels() -> void:
 	if car == null or not car.ready_to_drive:
@@ -506,3 +508,66 @@ func _world_test(dt: float) -> void:
 	elif _test_t > 240.0:
 		print("[test] world: FAIL timeout, %d chunks" % streamer.chunks.size())
 		get_tree().quit(1)
+
+# --------------------------------------------------------------- autopilot / city driving test
+
+var _ad := {}
+
+func _autodrive(dt: float) -> void:
+	if not spawned:
+		_test_t += dt
+		if _test_t > 120.0 and args.get("test", "") == "city":
+			print("[test] city: FAIL world/spawn not ready")
+			get_tree().quit(1)
+		return
+	if _ad.is_empty():
+		_ad = {"t": 0.0, "dist": 0.0, "last": car.global_position, "air": 0.0, "min_clear": 99.0, "max_clear": -99.0, "fell": false, "resets": 0, "stuck": 0.0, "max_roll": 0.0}
+	_ad["t"] += dt
+	var fwd := -car.global_transform.basis.z
+	var look := clampf(absf(car.speed) * 1.1, 7.0, 30.0)
+	var f: Dictionary = world.follow(car.global_position, fwd, look)
+	var want_kmh := float(args.get("speed", "50"))
+	if f.is_empty():
+		car.input_throttle = 0.0
+		car.input_brake = 1.0
+	else:
+		var tgt: Vector3 = f["target"]
+		var to := tgt - car.global_position
+		to.y = 0.0
+		var ang := fwd.signed_angle_to(to.normalized(), Vector3.UP)  # + = target to the left
+		car.steer_direct = true
+		car.input_steer = clampf(-ang * 2.2, -1.0, 1.0)
+		var lim := float(f["limit"]) if int(f["limit"]) > 0 else want_kmh
+		var v := minf(want_kmh, lim + 5.0)
+		# slow down for curves
+		v = minf(v, lerpf(v, 22.0, clampf(absf(ang) * 2.5, 0.0, 1.0)))
+		var kmh: float = car.speed * 3.6
+		car.input_throttle = clampf((v - kmh) * 0.15, 0.0, 1.0)
+		car.input_brake = clampf((kmh - v - 4.0) * 0.1, 0.0, 1.0)
+	_ad["dist"] += car.global_position.distance_to(_ad["last"])
+	_ad["last"] = car.global_position
+	var tel: Dictionary = car.telemetry()
+	if tel["contacts"] < 3:
+		_ad["air"] += dt
+	_ad["max_roll"] = maxf(_ad["max_roll"], absf(car.global_transform.basis.x.y))
+	if absf(car.speed) < 0.5:
+		_ad["stuck"] += dt
+	else:
+		_ad["stuck"] = 0.0
+	if _ad["stuck"] > 4.0:
+		_ad["resets"] += 1
+		_ad["stuck"] = 0.0
+		_spawn(car.global_position + fwd * 30.0)
+	if int(_ad["t"] / 10.0) != int((_ad["t"] - dt) / 10.0):
+		print("[autodrive] t=%.0f s dist=%.0f m speed=%.0f km/h pos=%s chunks=%d" % [_ad["t"], _ad["dist"], car.speed * 3.6, car.global_position, streamer.chunks.size()])
+	if int(_ad["t"] * 2.0) != int((_ad["t"] - dt) * 2.0):
+		var g: float = world.ground_height(car.global_position)
+		var clear: float = car.global_position.y - g
+		_ad["min_clear"] = minf(_ad["min_clear"], clear)
+		_ad["max_clear"] = maxf(_ad["max_clear"], clear)
+		if clear < -1.5:
+			_ad["fell"] = true
+	if args.get("test", "") == "city" and _ad["t"] > float(args.get("duration", "90")):
+		var ok: bool = not _ad["fell"] and _ad["dist"] > 400.0 and _ad["air"] < 2.0 and _ad["max_roll"] < 0.5
+		print("[test] city: drove %.0f m in %.0f s, wheels off the ground %.2f s, clearance %.2f..%.2f m, max roll %.2f, resets %d -> %s" % [_ad["dist"], _ad["t"], _ad["air"], _ad["min_clear"], _ad["max_clear"], _ad["max_roll"], _ad["resets"], "PASS" if ok else "FAIL"])
+		get_tree().quit(0 if ok else 1)

@@ -56,6 +56,8 @@ jobs:
         run: timeout 300 ./godot --headless --path game -- --test=drive
       - name: World test (streaming)
         run: timeout 300 ./godot --headless --path game -- --test=world --data=$PWD/data
+      - name: City driving test (autopilot through Minsk)
+        run: timeout 400 ./godot --headless --path game -- --test=city --duration=60 --radius=500 --data=$PWD/data
 
   windows:
     runs-on: windows-latest
@@ -118,3 +120,33 @@ jobs:
         with:
           name: earthsim-windows
           path: dist/
+
+  windows-smoke:
+    # run the exported game on Windows, headless: proves the exe, the DLL and the data work together
+    needs: export
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: earthsim-windows
+          path: dist
+      - name: Contents
+        shell: bash
+        run: |
+          cd dist
+          for f in *; do echo "::notice::$(du -sh "$f")"; done
+      - name: Drive test (exe)
+        shell: bash
+        run: |
+          cd dist
+          timeout 300 ./earthsim.console.exe --headless -- --test=drive 2>&1 | tee drive.log
+          grep "\[test\]" drive.log | while IFS= read -r l; do echo "::notice::$l"; done
+          grep -q "PASS" drive.log
+      - name: World + city test (exe)
+        shell: bash
+        run: |
+          cd dist
+          timeout 300 ./earthsim.console.exe --headless -- --test=world 2>&1 | tee world.log
+          timeout 400 ./earthsim.console.exe --headless -- --test=city --duration=60 --radius=500 2>&1 | tee city.log
+          cat world.log city.log | grep "\[test\]" | while IFS= read -r l; do echo "::notice::$l"; done
+          grep -q "PASS" world.log && grep -q "PASS" city.log
