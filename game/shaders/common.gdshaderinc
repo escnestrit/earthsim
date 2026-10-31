@@ -1,6 +1,14 @@
 // Shared procedural helpers (no textures needed).
 global uniform float night;
 global uniform float wetness;
+global uniform vec3 detail_center;
+global uniform float detail_radius;
+uniform bool far_lod = false;
+
+// far LOD geometry is cut away where the detailed chunks are
+bool far_hidden(vec3 wp) {
+	return far_lod && length(wp.xz - detail_center.xz) < detail_radius;
+}
 
 float h21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));

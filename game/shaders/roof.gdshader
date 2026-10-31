@@ -12,6 +12,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (far_hidden(wpos)) discard;
 	vec3 col = COLOR.rgb * (0.85 + 0.25 * fbm(wpos.xz * 0.7));
 	float rough = 0.85;
 	if (wnrm.y < 0.95) {

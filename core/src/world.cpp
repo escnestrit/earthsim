@@ -379,16 +379,28 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
             if (on_seam(r.rings[0].outer[i], r.rings[0].outer[(i + 1) % 4])) simple = false;
     std::string rs = b.roof_shape;
     bool pitched = simple && (rs == "gabled" || rs == "hipped" || rs == "pyramidal" || rs == "skillion" || rs == "half-hipped");
+    // apex roofs (pyramid / dome / spire, and hipped roofs of small houses of any shape): one ring, no holes, no seams
+    bool single = r.rings.size() == 1 && r.rings[0].holes.empty() && r.rings[0].outer.size() >= 3;
+    if (single)
+        for (size_t i = 0; i < r.rings[0].outer.size(); i++)
+            if (on_seam(r.rings[0].outer[i], r.rings[0].outer[(i + 1) % r.rings[0].outer.size()])) single = false;
+    bool apex = !pitched && single &&
+                (rs == "pyramidal" || rs == "dome" || rs == "onion" || rs == "cone" || (b.roof_h > 0.5 * b.height && b.roof_h > 3) ||
+                 ((rs == "hipped" || rs == "gabled" || rs == "half-hipped") && b.area < 350));
     double rh = 0;
     if (pitched) {
         auto &q = r.rings[0].outer;
         double s1 = std::min(dist(q[0], q[1]), dist(q[1], q[2]));
         rh = b.roof_h > 0.3 ? b.roof_h : std::clamp(s1 * 0.35, 1.5, 5.0);
         rh = std::min(rh, b.height * 0.6);
+    } else if (apex) {
+        double rad = std::sqrt(b.area / PI);
+        rh = b.roof_h > 0.3 ? b.roof_h : std::clamp(rad * (rs == "dome" || rs == "onion" ? 0.9 : 0.6), 1.5, 8.0);
+        rh = std::min(rh, b.height * 0.97);
     }
     double eave = top - rh;
-    double rim = pitched ? 0.0 : (b.height > 6 ? 0.45 : 0.2);  // parapet of flat roofs
-    double wall_top = pitched ? eave : top + rim;
+    double rim = (pitched || apex) ? 0.0 : (b.height > 6 ? 0.45 : 0.2);  // parapet of flat roofs
+    double wall_top = (pitched || apex) ? eave : top + rim;
     size_t wall_start = W.idx.size();
     struct Seg {
         V2 a, c;
@@ -469,6 +481,45 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
                     }
                 }
             }
+    }
+    if (apex) {
+        const Poly &P = r.rings[0].outer;
+        V2 c = poly_centroid(P);
+        if (!point_in_poly(P, c)) {
+            // strongly concave footprint: fall back to a flat roof at the eave
+            flat_poly(Rf, P, {}, eave, o, rc, 0);
+            return;
+        }
+        bool dome = rs == "dome" || rs == "onion";
+        V3 A = lv(c, top, o);
+        for (size_t i = 0; i < P.size(); i++) {
+            V2 a = P[i], q = P[(i + 1) % P.size()];
+            if (dist(a, q) < 0.05) continue;
+            if (dome) {
+                // two tiers: steep lower band, then a shallow cap
+                V2 a2 = lerp(c, a, 0.72), q2 = lerp(c, q, 0.72);
+                double zm = eave + rh * 0.62;
+                V3 n1 = norm(cross(lv(q, eave, o) - lv(a, eave, o), lv(q2, zm, o) - lv(a, eave, o)));
+                int i0 = Rf.vert(lv(a, eave, o), n1, {a.x, a.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int i1 = Rf.vert(lv(q, eave, o), n1, {q.x, q.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int i2 = Rf.vert(lv(q2, zm, o), n1, {q2.x, q2.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int i3 = Rf.vert(lv(a2, zm, o), n1, {a2.x, a2.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                Rf.quad(i0, i1, i2, i3);
+                V3 n2 = norm(cross(lv(q2, zm, o) - lv(a2, zm, o), A - lv(a2, zm, o)));
+                int j0 = Rf.vert(lv(a2, zm, o), n2, {a2.x, a2.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int j1 = Rf.vert(lv(q2, zm, o), n2, {q2.x, q2.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int j2 = Rf.vert(A, n2, {c.x, c.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                Rf.tri(j0, j1, j2);
+            } else {
+                V3 pa = lv(a, eave, o), pq = lv(q, eave, o);
+                V3 n = norm(cross(pq - pa, A - pa));
+                int i0 = Rf.vert(pa, n, {a.x, a.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int i1 = Rf.vert(pq, n, {q.x, q.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                int i2 = Rf.vert(A, n, {c.x, c.y}, {0, 0}, float(rc.x), float(rc.y), float(rc.z), 0);
+                Rf.tri(i0, i1, i2);
+            }
+        }
+        return;
     }
     if (!pitched) {
         for (auto &ring : r.rings) flat_poly(Rf, ring.outer, ring.holes, top, o, rc, 0);
@@ -901,6 +952,97 @@ bool World::spawn_point(V2 near, V3 &pos, double &heading) const {
     pos = V3(p, e.z_at(s));
     heading = std::atan2(-d.x, d.y);
     return true;
+}
+
+}  // namespace es
+
+namespace es {
+
+void World::far_range(int &x0, int &y0, int &x1, int &y1) const {
+    Rect r = region.bounds.grown(1500);
+    x0 = int(std::floor(r.mn.x / FAR_CELL)), y0 = int(std::floor(r.mn.y / FAR_CELL));
+    x1 = int(std::floor(r.mx.x / FAR_CELL)), y1 = int(std::floor(r.mx.y / FAR_CELL));
+}
+
+std::unique_ptr<ChunkData> World::build_far(int fx, int fy) const {
+    auto out = std::make_unique<ChunkData>();
+    ChunkData &C = *out;
+    C.cx = fx, C.cy = fy;
+    Rect rect{{fx * FAR_CELL, fy * FAR_CELL}, {(fx + 1) * FAR_CELL, (fy + 1) * FAR_CELL}};
+    V2 o = (rect.mn + rect.mx) * 0.5;
+    C.origin = o;
+    const double S = 32.0;
+    const int N = int(FAR_CELL / S);
+    // terrain: DEM only, a little below the detailed ground so it never shows through it
+    {
+        Mesh &m = C.mats[M_TERRAIN];
+        std::vector<const RawArea *> areas;
+        for (auto &a : region.areas) {
+            Rect b;
+            for (auto &p : a.ring.outer) b.add(p);
+            if (b.overlaps(rect) && (a.kind == AreaKind::Forest || a.kind == AreaKind::Water || a.kind == AreaKind::Park)) areas.push_back(&a);
+        }
+        std::vector<double> H(size_t(N + 3) * (N + 3));
+        for (int j = 0; j < N + 3; j++)
+            for (int i = 0; i < N + 3; i++) H[size_t(j) * (N + 3) + i] = region.dem.sample(rect.mn + V2{(i - 1) * S, (j - 1) * S}) - 1.2;
+        std::vector<int> id(size_t(N + 1) * (N + 1));
+        for (int j = 0; j <= N; j++)
+            for (int i = 0; i <= N; i++) {
+                int gi = i + 1, gj = j + 1;
+                double z = H[size_t(gj) * (N + 3) + gi];
+                double dx = (H[size_t(gj) * (N + 3) + gi + 1] - H[size_t(gj) * (N + 3) + gi - 1]) / (2 * S);
+                double dy = (H[size_t(gj + 1) * (N + 3) + gi] - H[size_t(gj - 1) * (N + 3) + gi]) / (2 * S);
+                V2 p = rect.mn + V2{i * S, j * S};
+                int pr;
+                AreaKind k = area_at(areas, p, pr);
+                float r = 0.55f, g = 0.0f, b = 0.1f, a = 0.35f;
+                if (k == AreaKind::Forest) r = 0.25f, g = 0.75f, b = 0, a = 0;
+                else if (k == AreaKind::Park) r = 0.8f, g = 0.2f, b = 0, a = 0;
+                else if (k == AreaKind::Water) r = 0.1f, g = 0, b = 0.9f, a = 0;
+                id[size_t(j) * (N + 1) + i] = m.vert(lv(p, z, o), norm(V3(-dx, -dy, 1)), {p.x, p.y}, {0, 0}, r, g, b, a);
+            }
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < N; i++) {
+                int a = id[size_t(j) * (N + 1) + i], b = id[size_t(j) * (N + 1) + i + 1];
+                int c = id[size_t(j + 1) * (N + 1) + i + 1], d = id[size_t(j + 1) * (N + 1) + i];
+                m.quad(a, b, c, d);
+            }
+    }
+    // buildings as blocks (walls + flat top) on the DEM
+    for (auto &b : buildings) {
+        if (!b.render || !rect.contains(b.centroid)) continue;
+        if (b.area < 60) continue;
+        auto &r = region.buildings[b.src];
+        double base = region.dem.sample(b.centroid);
+        double top = base + b.height - (b.roof_h > 0.4 * b.height ? b.roof_h * 0.85 : 0.0);
+        double bot = b.min_h > 0.3 ? base + b.min_h : base - 4;
+        V3 fc = rgb(b.facade) * 0.9, rc = rgb(b.roof);
+        float seed = float(hash01(hash_str(r.id.data(), r.id.size())));
+        for (auto &ring : r.rings) {
+            auto &P = ring.outer;
+            double acc = 0;
+            for (size_t i = 0; i < P.size(); i++) {
+                V2 a = P[i], c = P[(i + 1) % P.size()];
+                double l = dist(a, c);
+                if (l < 0.5) continue;
+                add_quad(C.mats[M_WALL], lv(a, bot, o), lv(c, bot, o), lv(c, top, o), lv(a, top, o), {acc, bot - base}, {acc + l, bot - base}, {acc + l, top - base}, {acc, top - base},
+                         {b.floor_h, double(b.style)}, float(fc.x), float(fc.y), float(fc.z), seed);
+                acc += l;
+            }
+            flat_poly(C.mats[M_ROOF], ring.outer, ring.holes, top, o, rc, 0);
+        }
+    }
+    // water surfaces
+    auto &wl = water_levels();
+    for (size_t i = 0; i < region.areas.size(); i++) {
+        auto &a = region.areas[i];
+        if (a.kind != AreaKind::Water) continue;
+        Poly oc = clip_poly(a.ring.outer, rect);
+        if (oc.size() < 3) continue;
+        if (poly_area(oc) < 0) std::reverse(oc.begin(), oc.end());
+        flat_poly(C.mats[M_WATER], oc, {}, wl[i] - 0.3, o, {0.2, 0.3, 0.35}, 1);
+    }
+    return out;
 }
 
 }  // namespace es

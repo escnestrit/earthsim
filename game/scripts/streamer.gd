@@ -18,12 +18,17 @@ var done := []                # finished dictionaries waiting for the main threa
 var _mutex := Mutex.new()
 var _range := Rect2i()
 var stats := {"built": 0, "build_ms": 0.0, "max_apply_ms": 0.0}
+var far_enabled := true
+var far_cells := {}           # Vector2i -> Node3D (far LOD)
+var far_inflight := {}
+var _far_range := Rect2i()
 
 func setup(w: EarthWorld) -> void:
 	world = w
 	mats = MaterialsScript.new()
 	props = PropsScript.new()
 	_range = world.chunk_range()
+	_far_range = world.far_range()
 
 func chunk_of(p: Vector3) -> Vector2i:
 	var s := world.chunk_size()
@@ -33,11 +38,38 @@ func is_loaded_at(p: Vector3) -> bool:
 	return chunks.has(chunk_of(p))
 
 func loading_count() -> int:
-	return inflight.size() + done.size()
+	return inflight.size() + done.size() + _near_missing()
+
+func _near_missing() -> int:
+	var n := 0
+	for item in _wanted():
+		if not chunks.has(item[1]):
+			n += 1
+	return n
 
 func _process(_dt: float) -> void:
 	if world == null:
 		return
+	# the far LOD is cut away inside the ring that is certainly covered by loaded chunks
+	var covered := 0.0
+	var s := world.chunk_size()
+	var c := chunk_of(focus)
+	var r := 0
+	while r < 16:
+		var full := true
+		for dy in range(-r - 1, r + 2):
+			for dx in range(-r - 1, r + 2):
+				if absi(dx) <= r and absi(dy) <= r:
+					continue
+				var k := Vector2i(c.x + dx, c.y + dy)
+				if _range.has_point(k) and not chunks.has(k):
+					full = false
+		if not full:
+			break
+		r += 1
+	covered = maxf(0.0, r * s - s * 0.1) if chunks.has(c) else 0.0
+	RenderingServer.global_shader_parameter_set("detail_center", focus)
+	RenderingServer.global_shader_parameter_set("detail_radius", covered)
 	_apply_finished()
 	_schedule()
 	_unload()
@@ -60,13 +92,42 @@ func _wanted() -> Array:
 	return out
 
 func _schedule() -> void:
+	var near_pending := false
 	for item in _wanted():
-		if inflight.size() >= max_inflight:
-			break
 		var k: Vector2i = item[1]
 		if chunks.has(k) or inflight.has(k):
 			continue
+		near_pending = true
+		if inflight.size() + far_inflight.size() >= max_inflight:
+			break
 		inflight[k] = WorkerThreadPool.add_task(_build.bind(k), false, "chunk")
+	# far LOD only when the near ring is complete (and one at a time)
+	if far_enabled and not near_pending and far_inflight.is_empty() and inflight.size() < max_inflight:
+		var best := Vector2i(-99999, 0)
+		var bd := 1e18
+		var fs := world.far_size()
+		for y in range(_far_range.position.y, _far_range.end.y):
+			for x in range(_far_range.position.x, _far_range.end.x):
+				var k := Vector2i(x, y)
+				if far_cells.has(k):
+					continue
+				var c := Vector3((x + 0.5) * fs, 0, -(y + 0.5) * fs)
+				var d := Vector2(c.x - focus.x, c.z - focus.z).length()
+				if d < bd:
+					bd = d
+					best = k
+		if best.x != -99999:
+			far_inflight[best] = WorkerThreadPool.add_task(_build_far.bind(best), false, "far")
+
+func far_total() -> int:
+	return _far_range.size.x * _far_range.size.y
+
+func _build_far(k: Vector2i) -> void:
+	var d: Dictionary = world.build_far(k.x, k.y)
+	d["far"] = true
+	_mutex.lock()
+	done.append(d)
+	_mutex.unlock()
 
 func _build(k: Vector2i) -> void:
 	var t := Time.get_ticks_usec()
@@ -85,6 +146,11 @@ func _apply_finished() -> void:
 		if d == null:
 			break
 		var k := Vector2i(d["cx"], d["cy"])
+		if d.has("far"):
+			WorkerThreadPool.wait_for_task_completion(far_inflight[k])
+			far_inflight.erase(k)
+			far_cells[k] = _make_far(d)
+			continue
 		if inflight.has(k):
 			WorkerThreadPool.wait_for_task_completion(inflight[k])
 			inflight.erase(k)
@@ -104,6 +170,22 @@ func _unload() -> void:
 		if Vector2(centre.x - focus.x, centre.z - focus.z).length() > radius + s * 1.5:
 			chunks[k].queue_free()
 			chunks.erase(k)
+
+func _make_far(d: Dictionary) -> Node3D:
+	var n := Node3D.new()
+	n.position = d["origin"]
+	var mesh := ArrayMesh.new()
+	var surf := 0
+	for s in d["surfaces"]:
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, s[1])
+		mesh.surface_set_material(surf, mats.far_list[s[0]])
+		surf += 1
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	n.add_child(mi)
+	add_child(n)
+	return n
 
 func _make_node(d: Dictionary) -> Node3D:
 	var n := Node3D.new()

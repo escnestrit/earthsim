@@ -20,6 +20,9 @@ void EarthWorld::_bind_methods() {
     ClassDB::bind_method(D_METHOD("chunk_range"), &EarthWorld::chunk_range);
     ClassDB::bind_method(D_METHOD("chunk_size"), &EarthWorld::chunk_size);
     ClassDB::bind_method(D_METHOD("build_chunk", "cx", "cy"), &EarthWorld::build_chunk);
+    ClassDB::bind_method(D_METHOD("build_far", "fx", "fy"), &EarthWorld::build_far);
+    ClassDB::bind_method(D_METHOD("far_range"), &EarthWorld::far_range);
+    ClassDB::bind_method(D_METHOD("far_size"), &EarthWorld::far_size);
     ClassDB::bind_method(D_METHOD("spawn_near", "pos"), &EarthWorld::spawn_near);
     ClassDB::bind_method(D_METHOD("ground_height", "pos"), &EarthWorld::ground_height);
     ClassDB::bind_method(D_METHOD("latlon_to_world", "lat", "lon"), &EarthWorld::latlon_to_world);
@@ -59,12 +62,31 @@ static PackedVector3Array tri_soup(const std::vector<float> &v) {
     return a;
 }
 
+static Dictionary to_dict(const es::ChunkData *c);
+
 Dictionary EarthWorld::build_chunk(int cx, int cy) const {
-    Dictionary d;
-    if (!w) return d;
+    if (!w) return Dictionary();
     auto c = w->build_chunk(cx, cy);
-    d["cx"] = cx;
-    d["cy"] = cy;
+    return to_dict(c.get());
+}
+
+Dictionary EarthWorld::build_far(int fx, int fy) const {
+    if (!w) return Dictionary();
+    auto c = w->build_far(fx, fy);
+    return to_dict(c.get());
+}
+
+Rect2i EarthWorld::far_range() const {
+    if (!w) return Rect2i();
+    int x0, y0, x1, y1;
+    w->far_range(x0, y0, x1, y1);
+    return Rect2i(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+}
+
+static Dictionary to_dict(const es::ChunkData *c) {
+    Dictionary d;
+    d["cx"] = c->cx;
+    d["cy"] = c->cy;
     d["origin"] = G(c->origin.x, c->origin.y, 0);
     Array surfaces;
     for (int k = 0; k < es::M_COUNT; k++) {

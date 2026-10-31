@@ -9,6 +9,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (far_hidden(wpos)) discard;
 	vec2 w = wpos.xz;
 	float t = TIME * 0.4;
 	float e = 0.15;

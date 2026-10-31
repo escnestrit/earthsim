@@ -28,6 +28,9 @@ class EarthWorld : public RefCounted {
     double chunk_size() const { return es::CHUNK; }
     // thread-safe once loaded
     Dictionary build_chunk(int cx, int cy) const;
+    Dictionary build_far(int fx, int fy) const;
+    Rect2i far_range() const;
+    double far_size() const { return es::FAR_CELL; }
     Dictionary spawn_near(const Vector3 &p) const;
     double ground_height(const Vector3 &p) const;
     Vector3 latlon_to_world(double lat, double lon) const;

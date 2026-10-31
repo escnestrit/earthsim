@@ -14,6 +14,7 @@ namespace es {
 constexpr double CHUNK = 256.0;  // chunk size, m (metric grid in the local frame)
 constexpr double TCELL = 4.0;    // terrain grid spacing, m
 constexpr int TN = int(CHUNK / TCELL);  // cells per chunk side
+constexpr double FAR_CELL = 1024.0;     // far LOD cell size, m
 
 struct Instance {
     V3 p;          // local frame, origin subtracted
@@ -68,6 +69,9 @@ struct World {
     Rect chunk_rect(int cx, int cy) const { return {{cx * CHUNK, cy * CHUNK}, {(cx + 1) * CHUNK, (cy + 1) * CHUNK}}; }
 
     std::unique_ptr<ChunkData> build_chunk(int cx, int cy) const;
+    // Coarse far-view cell (FAR_CELL m): terrain at 32 m, buildings as plain blocks. No collision.
+    std::unique_ptr<ChunkData> build_far(int fx, int fy) const;
+    void far_range(int &x0, int &y0, int &x1, int &y1) const;
     // height of the rendered terrain triangles of a built chunk at p (NAN outside / in a hole)
     static double grid_height(const ChunkData &c, V2 p);
 

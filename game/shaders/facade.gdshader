@@ -15,6 +15,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (far_hidden(wpos)) discard;
 	float fh = max(info.x, 2.4);
 	int style = int(info.y + 0.5);
 	float seed = COLOR.a;

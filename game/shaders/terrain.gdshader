@@ -10,6 +10,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (far_hidden(wpos)) discard;
 	vec2 w = wpos.xz;
 	float n1 = fbm(w * 0.08), n2 = fbm(w * 0.6), n3 = vnoise(w * 5.0);
 	vec4 m = COLOR;

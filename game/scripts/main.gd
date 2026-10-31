@@ -89,6 +89,8 @@ func _setup_world() -> void:
 	streamer.setup(world)
 	if args.has("radius"):
 		streamer.radius = float(args["radius"])
+	if args.has("shot") and not args.has("far"):
+		streamer.far_enabled = false
 	var focus := Vector3.ZERO
 	if args.has("lat") and args.has("lon"):
 		focus = world.latlon_to_world(float(args["lat"]), float(args["lon"]))
@@ -126,8 +128,10 @@ func _setup_environment() -> void:
 	env.glow_bloom = 0.05
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_DEPTH
-	env.fog_depth_begin = 450.0
-	env.fog_depth_end = 1050.0
+	env.fog_depth_begin = 300.0
+	env.fog_depth_end = 7000.0
+	env.fog_depth_curve = 0.6
+	env.fog_density = 0.85
 	env.fog_light_color = Color(0.7, 0.77, 0.85)
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
@@ -392,10 +396,19 @@ func _update_hud() -> void:
 		t += "загрузка мира…"
 	hud.text = t
 
+var _ready_since := -1.0
+
 func _shot_logic() -> void:
 	var ready: bool = streamer.loading_count() == 0 and streamer.chunks.size() > 0 and (spawned or args.has("view"))
+	if args.has("far"):
+		ready = ready and streamer.far_inflight.is_empty() and streamer.far_cells.size() >= streamer.far_total()
+	var now := Time.get_ticks_msec() / 1000.0
+	if not ready:
+		_ready_since = -1.0
+	elif _ready_since < 0.0:
+		_ready_since = now
 	_frames_loaded = _frames_loaded + 1 if ready else 0
-	if _frames_loaded == int(args.get("shot_frames", "30")):
+	if ready and _frames_loaded >= 3 and now - _ready_since >= float(args.get("shot_wait", "2")):
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(String(args["shot"]))
 		print("[earthsim] shot saved ", args["shot"])

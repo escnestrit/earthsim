@@ -15,6 +15,7 @@ const M_RAIL := 10
 const COUNT := 11
 
 var list: Array[Material] = []
+var far_list: Array[Material] = []   # same shaders, cut away inside the detail radius
 
 func _init() -> void:
 	list.resize(COUNT)
@@ -36,3 +37,8 @@ func _init() -> void:
 		var m := ShaderMaterial.new()
 		m.shader = load("res://shaders/%s.gdshader" % pair[1])
 		list[pair[0]] = m
+	far_list = list.duplicate()
+	for k in [M_TERRAIN, M_WALL, M_ROOF, M_WATER]:
+		var fm: ShaderMaterial = list[k].duplicate()
+		fm.set_shader_parameter("far_lod", true)
+		far_list[k] = fm
