@@ -32,6 +32,14 @@ struct RoadEdge {
     bool sidewalk = false; // raised kerb + pavement on at least one side
     bool sw_l = false, sw_r = false;  // per side (left/right of a->b); none on the median side of a dual carriageway
     double sw_width = 0;   // pavement width
+    std::vector<int> twins;  // opposite carriageways of a dual carriageway
+    // carriageways mapped as two oneways but separated only by paint: each ribbon is widened towards
+    // the other until they meet, and a solid line is painted on that side
+    double ext_l = 0, ext_r = 0;
+    bool line_l = false, line_r = false;
+    double hl() const { return half() + ext_l; }
+    double hr() const { return half() + ext_r; }
+    double hs(double side) const { return side > 0 ? hl() : hr(); }
     double sw(double side) const { return (side > 0 ? sw_l : sw_r) ? sw_width : 0.0; }
     double trim_a = 0, trim_b = 0;  // distance cut off at each end by the junction polygon
     // vertical profile: z at arc length s (samples every <= 4 m, first at 0, last at len)
@@ -75,6 +83,7 @@ struct RoadNet {
     void profiles(const Region &R);
     void medians();
     void merge_overlaps();
+    void equalize_twins();
 };
 
 double road_default_width(const std::string &cls, const std::string &subclass, int oneway);

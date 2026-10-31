@@ -14,6 +14,7 @@ struct JArm {
     int edge = -1;
     bool at_a = true;  // the edge starts at this junction
     double h = 3, swl = 0, swr = 0;  // pavement widths on the arm's left/right (looking away), 0 = none
+    double hl = 3, hr = 3;           // carriageway half widths on the arm's left/right (joined twins are wider inside)
     double trim = 0;
     V2 P, D;      // centre point at trim and direction away from the junction
     V3 L, R;      // left/right carriageway corners at trim (left = CCW side looking away)

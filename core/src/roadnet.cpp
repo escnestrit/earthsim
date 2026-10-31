@@ -301,27 +301,32 @@ void RoadNet::build(const Region &R) {
     log.push_back("roadnet: " + std::to_string(nodes.size()) + " nodes, " + std::to_string(edges.size()) + " edges (" + std::to_string(merged) + " merged), bridges " + std::to_string(nb) + ", tunnels " + std::to_string(nt));
 }
 
-// Dual carriageways: the opposite carriageway on one side means a median there, not a pavement.
+// Dual carriageways: find the opposite carriageway of every one-way road. On that side there is a
+// median (no pavement); if the gap is only paint wide, the two ribbons are joined into one road.
 void RoadNet::medians() {
-    int cut = 0;
+    int cut = 0, joined = 0;
     std::vector<int> cand;
     for (size_t i = 0; i < edges.size(); i++) {
         auto &e = edges[i];
         e.sw_l = e.sw_r = e.sidewalk;
-        if (!e.sidewalk || !e.oneway) continue;
+        e.twins.clear();
+        e.ext_l = e.ext_r = 0, e.line_l = e.line_r = false;
+        if (!e.oneway || e.prio < 4 || e.tunnel) continue;
         for (double side : {1.0, -1.0}) {
             int votes = 0;
-            for (double t : {0.2, 0.5, 0.8}) {
+            std::vector<double> gaps;
+            for (double t : {0.15, 0.35, 0.5, 0.65, 0.85}) {
                 V2 d;
                 V2 p = e.at(e.len * t, &d);
                 V2 n = perp(d) * side;
                 V2 travel = d * double(e.oneway);
-                query(p, 40, cand);
-                bool hit = false;
+                query(p, 45, cand);
+                double bestlat = 1e9;
+                int bj = -1;
                 for (int j : cand) {
                     if (j == int(i)) continue;
                     auto &f = edges[j];
-                    if (!f.oneway || f.prio < 4) continue;
+                    if (!f.oneway || f.prio < 4 || f.tunnel) continue;
                     double best = 1e9, acc = 0, arc = 0;
                     V2 fd{1, 0};
                     for (size_t k = 0; k + 1 < f.pts.size(); k++) {
@@ -332,20 +337,89 @@ void RoadNet::medians() {
                     }
                     V2 q = f.at(arc);
                     double lat = dot(q - p, n), lon = std::fabs(dot(q - p, d));
-                    if (lat < e.half() + 0.5 || lat > e.half() + f.half() + 28 || lon > 12) continue;
+                    if (lat < e.half() * 0.5 || lat > e.half() + f.half() + 30 || lon > 12) continue;
                     if (dot(travel, fd * double(f.oneway)) > -0.6) continue;
-                    hit = true;
-                    break;
+                    if (lat < bestlat) bestlat = lat, bj = j;
                 }
-                votes += hit;
+                if (bj >= 0) {
+                    votes++;
+                    gaps.push_back(bestlat - e.half() - edges[bj].half());
+                    if (std::find(e.twins.begin(), e.twins.end(), bj) == e.twins.end()) e.twins.push_back(bj);
+                }
             }
-            if (votes >= 2) {
-                (side > 0 ? e.sw_l : e.sw_r) = false;
-                cut++;
+            if (votes >= 3) {
+                if (e.sidewalk) (side > 0 ? e.sw_l : e.sw_r) = false, cut++;
+                std::sort(gaps.begin(), gaps.end());
+                double g = gaps[gaps.size() / 2];
+                if (g < 3.2) {
+                    // only paint between them: meet in the middle (a little overlap)
+                    double ext = std::max(0.0, g * 0.5) + 0.12;
+                    (side > 0 ? e.ext_l : e.ext_r) = ext;
+                    (side > 0 ? e.line_l : e.line_r) = true;
+                    joined++;
+                }
             }
         }
     }
-    log.push_back("medians: " + std::to_string(cut) + " pavement sides removed next to opposite carriageways");
+    log.push_back("dual carriageways: " + std::to_string(cut) + " median sides without pavement, " + std::to_string(joined) + " sides joined (paint only)");
+}
+
+// The two directions of a dual carriageway are built at the same level: each takes the mean of
+// itself and its twin (where they are at about the same level), blended out towards the nodes.
+void RoadNet::equalize_twins() {
+    std::vector<std::vector<double>> orig(edges.size());
+    for (size_t i = 0; i < edges.size(); i++) orig[i] = edges[i].pz;
+    int changed = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass) for (size_t i = 0; i < edges.size(); i++) orig[i] = edges[i].pz;
+        for (size_t i = 0; i < edges.size(); i++) {
+            auto &e = edges[i];
+            if (e.twins.empty() || e.bridge || e.tunnel || e.level) continue;
+            size_t n = e.ps.size();
+            if (n < 3) continue;
+            std::vector<double> delta(n, 0.0);
+            bool any = false;
+            for (size_t k = 1; k + 1 < n; k++) {
+                V2 p = e.at(e.ps[k]);
+                double sum = 0;
+                int cnt = 0;
+                for (int t : e.twins) {
+                    auto &f = edges[t];
+                    if (f.bridge || f.tunnel || f.level) continue;
+                    double bd = 1e9, acc = 0, arc = 0;
+                    for (size_t q = 0; q + 1 < f.pts.size(); q++) {
+                        double u, sl = dist(f.pts[q], f.pts[q + 1]);
+                        double d = seg_dist(p, f.pts[q], f.pts[q + 1], &u);
+                        if (d < bd) bd = d, arc = acc + u * sl;
+                        acc += sl;
+                    }
+                    if (bd > 45 || arc < 0.5 || arc > f.len - 0.5) continue;
+                    // interpolate the twin's original profile
+                    double zf;
+                    {
+                        auto &P = f.ps;
+                        auto &Z = orig[t];
+                        size_t j = size_t(std::upper_bound(P.begin(), P.end(), arc) - P.begin());
+                        j = std::clamp<size_t>(j, 1, P.size() - 1);
+                        double tt = (arc - P[j - 1]) / std::max(1e-9, P[j] - P[j - 1]);
+                        zf = Z[j - 1] + (Z[j] - Z[j - 1]) * tt;
+                    }
+                    if (std::fabs(zf - orig[i][k]) > 4.0) continue;
+                    sum += zf, cnt++;
+                }
+                if (!cnt) continue;
+                delta[k] = (orig[i][k] + sum / cnt) * 0.5 - orig[i][k];
+                any = true;
+            }
+            if (!any) continue;
+            for (size_t k = 1; k + 1 < n; k++) {
+                double de = std::min(e.ps[k], e.len - e.ps[k]);
+                e.pz[k] = orig[i][k] + delta[k] * clampd(de / 12.0, 0.0, 1.0);
+            }
+            if (!pass) changed++;
+        }
+    }
+    log.push_back("twins levelled: " + std::to_string(changed));
 }
 
 void RoadNet::index() {
@@ -583,6 +657,7 @@ void RoadNet::profiles(const Region &R) {
         relax();
     }
     merge_overlaps();
+    equalize_twins();
 }
 
 // Where a minor road's carriageway overlaps a more important one at about the same level (shallow

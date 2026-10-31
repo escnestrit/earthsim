@@ -588,6 +588,11 @@ func _process(dt: float) -> void:
 	if args.has("view"):
 		focus = cam.global_position
 	streamer.focus = focus
+	# stream ahead of the car: chunks in the direction of travel are built first
+	if spawned and not args.has("view"):
+		var v: Vector3 = car.linear_velocity
+		v.y = 0.0
+		streamer.lead = (v * 4.0).limit_length(320.0)
 	if args.get("test", "") in ["drive", "crash"]:
 		if not spawned:
 			_make_test_ground()

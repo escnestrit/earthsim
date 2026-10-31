@@ -152,13 +152,14 @@ static Dictionary to_dict(const es::ChunkData *c) {
         PackedFloat32Array b;
         int stride = 12 + (colors ? 4 : 0) + (custom ? 4 : 0);
         int count = 0;
+        auto sel = [&](const es::Instance &I) { return variant_sel < 0 || (variant_sel >= 10 ? I.variant == variant_sel - 10 : (variant_sel == 3) == (I.variant == 3)); };
         for (auto &I : c->inst[kind])
-            if (variant_sel < 0 || (variant_sel == 3) == (I.variant == 3)) count++;
+            if (sel(I)) count++;
         b.resize(int64_t(count) * stride);
         float *p = b.ptrw();
         static const float tint[4][3] = {{0.85f, 1.0f, 0.8f}, {1.0f, 1.0f, 1.0f}, {0.75f, 0.9f, 0.7f}, {1.05f, 0.95f, 0.75f}};
         for (auto &I : c->inst[kind]) {
-            if (!(variant_sel < 0 || (variant_sel == 3) == (I.variant == 3))) continue;
+            if (!sel(I)) continue;
             Vector3 g = G(I.p.x, I.p.y, I.p.z);
             float cy = float(std::cos(I.yaw)), sy = float(std::sin(I.yaw)), sc = float(I.scale);
             // Basis(UP, yaw) scaled: x = (cos, 0, -sin), y = (0, 1, 0), z = (sin, 0, cos) as columns
@@ -167,8 +168,12 @@ static Dictionary to_dict(const es::ChunkData *c) {
             p[8] = -sy * sc, p[9] = 0, p[10] = cy * sc, p[11] = g.z;
             p += 12;
             if (colors) {
-                auto &t = tint[I.variant & 3];
-                p[0] = t[0], p[1] = t[1], p[2] = t[2], p[3] = 1, p += 4;
+                if (I.col[3] > 0) p[0] = I.col[0], p[1] = I.col[1], p[2] = I.col[2], p[3] = 1;
+                else {
+                    auto &t = tint[I.variant & 3];
+                    p[0] = t[0], p[1] = t[1], p[2] = t[2], p[3] = 1;
+                }
+                p += 4;
             }
             if (custom) {
                 // traffic lights: perpendicular approaches run opposite phases of the 40 s cycle
@@ -188,6 +193,12 @@ static Dictionary to_dict(const es::ChunkData *c) {
     mm["lamp"] = make(es::I_LAMP, -1, false, false);
     mm["signal"] = make(es::I_SIGNAL, -1, false, true);
     mm["bench"] = make(es::I_BENCH, -1, false, false);
+    mm["car"] = make(es::I_CAR, -1, true, false);
+    mm["bin"] = make(es::I_BIN, -1, false, false);
+    mm["stop"] = make(es::I_STOP, -1, false, false);
+    mm["play0"] = make(es::I_PLAY, 10, false, false);
+    mm["play1"] = make(es::I_PLAY, 11, false, false);
+    mm["play2"] = make(es::I_PLAY, 12, false, false);
     d["mm"] = mm;
     // ground heights for fast queries: (TN+1)^2 from south-west, plus grid geometry
     PackedFloat32Array gh;

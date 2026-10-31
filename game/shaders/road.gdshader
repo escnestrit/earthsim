@@ -44,10 +44,15 @@ void fragment() {
 		bool dbl = mod(flags, 8.0) >= 4.0;
 		float u = UV.x, v = UV.y;
 		float dash = step(fract(v / 12.0), 0.25);  // 3 m dash, 9 m gap
+		bool joined_l = mod(flags, 32.0) >= 16.0, joined_r = mod(flags, 64.0) >= 32.0;
 		if (edges && width > 5.0) {
-			paint = max(paint, band(u, 0.35, 0.06));
-			paint = max(paint, band(u, width - 0.35, 0.06));
+			if (!joined_l) paint = max(paint, band(u, 0.35, 0.06));
+			if (!joined_r) paint = max(paint, band(u, width - 0.35, 0.06));
 		}
+		// carriageways joined with their opposite direction: solid line on the inner edge (two of them
+		// side by side read as the double solid line)
+		if (joined_l) paint = max(paint, band(u, 0.1, 0.06));
+		if (joined_r) paint = max(paint, band(u, width - 0.1, 0.06));
 		if (!oneway && lanes >= 2.0) {
 			float c = width * 0.5;
 			if (dbl) paint = max(paint, max(band(u, c - 0.12, 0.06), band(u, c + 0.12, 0.06)));

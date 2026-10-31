@@ -9,7 +9,8 @@ var world: EarthWorld
 var mats
 var props
 var radius := 1000.0          # chunks whose centre is closer than this are loaded
-var max_inflight := 2
+var max_inflight := clampi(OS.get_processor_count() - 1, 2, 6)
+var lead := Vector3.ZERO      # look-ahead offset (car velocity): build order favours chunks ahead
 var budget_ms := 6.0
 var focus := Vector3.ZERO
 var chunks := {}              # Vector2i -> Node3D
@@ -87,7 +88,10 @@ func _wanted() -> Array:
 			var centre := Vector3((k.x + 0.5) * s, 0, -(k.y + 0.5) * s)
 			var d := Vector2(centre.x - focus.x, centre.z - focus.z).length()
 			if d <= radius:
-				out.append([d, k])
+				# priority: distance from the point the car will be at in a few seconds,
+				# but never let a chunk right next to the car wait
+				var dl := Vector2(centre.x - focus.x - lead.x, centre.z - focus.z - lead.z).length()
+				out.append([minf(dl, d * 1.6) if d > s else 0.0, k])
 	out.sort_custom(func(a, b): return a[0] < b[0])
 	return out
 
@@ -161,11 +165,11 @@ func _apply_finished() -> void:
 		stats["max_apply_ms"] = max(stats["max_apply_ms"], ms)
 		stats["built"] += 1
 		stats["build_ms"] = d["ms"]
-		break
-		stats["built"] += 1
-		stats["build_ms"] = d["ms"]
-		stats["max_apply_ms"] = max(stats["max_apply_ms"], ms)
-		if (Time.get_ticks_usec() - start) / 1000.0 > budget_ms:
+		# one chunk per frame normally; catch up (within the budget) when several are waiting
+		_mutex.lock()
+		var pending := done.size()
+		_mutex.unlock()
+		if pending < 3 or (Time.get_ticks_usec() - start) / 1000.0 > budget_ms * 0.5:
 			break
 
 func _unload() -> void:
@@ -195,12 +199,20 @@ func _make_far(d: Dictionary) -> Node3D:
 var prof := {"mesh": 0.0, "col": 0.0, "inst": 0.0, "n": 0}
 var _trunk := CylinderShape3D.new()
 var _pole := CylinderShape3D.new()
+var _car_box := BoxShape3D.new()
+var _bin_box := BoxShape3D.new()
+var _stop_box := BoxShape3D.new()
+var _play_box := BoxShape3D.new()
 
 func _init() -> void:
 	_trunk.radius = 0.3
 	_trunk.height = 4.0
 	_pole.radius = 0.13
 	_pole.height = 6.0
+	_car_box.size = Vector3(1.8, 1.4, 4.3)
+	_bin_box.size = Vector3(4.2, 1.2, 1.1)
+	_stop_box.size = Vector3(4.0, 2.4, 0.25)
+	_play_box.size = Vector3(2.4, 2.0, 2.4)
 
 # trunks and poles are solid: shapes added straight to one static body per chunk
 func _prop_collision(n: Node3D, inst: Array) -> void:
@@ -216,6 +228,15 @@ func _prop_collision(n: Node3D, inst: Array) -> void:
 			var sc := f[i * 6 + 4] if g[0] == PropsScript.I_TREE else 1.0
 			var p := Vector3(f[i * 6], f[i * 6 + 1] + g[2] * sc, f[i * 6 + 2])
 			PhysicsServer3D.body_add_shape(rid, sh.get_rid(), Transform3D(Basis().scaled(Vector3(sc, sc, sc)), p))
+	# boxes: parked cars, containers, shelters (back wall), playground equipment
+	for g in [[PropsScript.I_CAR, _car_box, Vector3(0, 0.72, 0)], [PropsScript.I_BIN, _bin_box, Vector3(0, 0.6, 0)],
+			[PropsScript.I_STOP, _stop_box, Vector3(0, 1.2, 0.75)], [PropsScript.I_PLAY, _play_box, Vector3(0, 1.0, 0)]]:
+		var f: PackedFloat32Array = inst[g[0]]
+		var sh: Shape3D = g[1]
+		for i in f.size() / 6:
+			var b := Basis(Vector3.UP, f[i * 6 + 3])
+			var p := Vector3(f[i * 6], f[i * 6 + 1], f[i * 6 + 2]) + b * (g[2] as Vector3)
+			PhysicsServer3D.body_add_shape(rid, sh.get_rid(), Transform3D(b, p))
 
 func _make_node(d: Dictionary) -> Node3D:
 	var t0 := Time.get_ticks_usec()
@@ -285,6 +306,11 @@ func _make_node(d: Dictionary) -> Node3D:
 	_mm(n, mm["lamp"], props.meshes[PropsScript.I_LAMP], 0.0, 450.0)
 	_mm(n, mm["signal"], props.meshes[PropsScript.I_SIGNAL], 0.0, 450.0)
 	_mm(n, mm["bench"], props.meshes[PropsScript.I_BENCH], 0.0, 200.0)
+	_mm(n, mm["car"], props.meshes[PropsScript.I_CAR], 0.0, 380.0)
+	_mm(n, mm["bin"], props.meshes[PropsScript.I_BIN], 0.0, 220.0)
+	_mm(n, mm["stop"], props.meshes[PropsScript.I_STOP], 0.0, 300.0)
+	for k in 3:
+		_mm(n, mm["play%d" % k], props.play[k], 0.0, 220.0)
 	add_child(n)
 	var t3 := Time.get_ticks_usec()
 	prof["mesh"] += (t1 - t0) / 1000.0

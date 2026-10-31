@@ -21,9 +21,13 @@ struct Instance {
     double yaw = 0;  // radians, rotation about up; 0 = facing local +y (north)
     double scale = 1;
     int variant = 0;
+    float col[4] = {0, 0, 0, 0};  // instance colour (a = 0: kind default)
 };
 
-enum InstKind : int { I_TREE = 0, I_LAMP, I_SIGNAL, I_BENCH, I_STOP, I_SIGN, I_COUNT };
+enum InstKind : int { I_TREE = 0, I_LAMP, I_SIGNAL, I_BENCH, I_STOP, I_SIGN, I_CAR, I_BIN, I_PLAY, I_COUNT };
+
+enum Era : int { E_HISTORIC, E_STALIN, E_KHRUSH, E_PANEL, E_MODERN, E_OFFICE, E_INDUSTRIAL, E_HOUSE, E_SHED, E_PUBLIC, E_CHURCH };
+enum RoofKind : int { RK_FLAT, RK_HIP, RK_APEX };
 
 struct Building {
     int src = -1;          // index into region.buildings
@@ -36,8 +40,12 @@ struct Building {
     int style = 0;
     double base = 0;       // base level (set when the chunk is built; parts use the parent's)
     bool base_set = false;
-    uint32_t facade = 0, roof = 0;
+    uint32_t facade = 0, roof = 0, trim = 0;
     std::string roof_shape;
+    int era = E_PANEL, variant = 0, floors = 1, roof_kind = RK_FLAT;
+    int verts = 0, holes = 0;
+    bool attached = false, cornice = false, balconies = false, entrances = false, roof_boxes = false, glazed = false;
+    V2 axis{1, 0};
 };
 
 struct ChunkData {
@@ -84,7 +92,8 @@ struct World {
 
   private:
     void prepare_buildings();
-    void emit_building(const Building &b, double base, double foot, V2 o, ChunkData &out) const;
+    void emit_building(const Building &b, double base, double foot, V2 o, ChunkData &out, const RoadGeom::Cache &rc) const;
+    bool street_facing(V2 mid, V2 out, const RoadGeom::Cache &rc) const;
 };
 
 }  // namespace es

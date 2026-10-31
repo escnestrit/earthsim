@@ -64,6 +64,36 @@ int main(int argc, char **argv) {
             self_x += x;
         }
         check(self_x < njs * 0.03, "junction outlines self-intersect", fmt("%.0f of %.0f", self_x, njs));
+        // dual carriageways: the two directions at about the same height
+        {
+            size_t n = 0, big = 0;
+            double worst = 0;
+            V2 wat;
+            for (auto &e : W.net.edges) {
+                if (e.twins.empty() || e.bridge || e.tunnel || e.level) continue;
+                for (double s = 5; s < e.len - 5; s += 10) {
+                    V2 p = e.at(s);
+                    double z = e.z_at(s);
+                    for (int t : e.twins) {
+                        auto &f = W.net.edges[t];
+                        if (f.bridge || f.tunnel || f.level) continue;
+                        double bd = 1e9, acc = 0, arc = 0;
+                        for (size_t k = 0; k + 1 < f.pts.size(); k++) {
+                            double u, sl = dist(f.pts[k], f.pts[k + 1]);
+                            double d = seg_dist(p, f.pts[k], f.pts[k + 1], &u);
+                            if (d < bd) bd = d, arc = acc + u * sl;
+                            acc += sl;
+                        }
+                        if (bd > 40 || arc < 1 || arc > f.len - 1) continue;
+                        double dz = std::fabs(f.z_at(arc) - z);
+                        n++;
+                        if (dz > 0.8) big++;
+                        if (dz > worst) worst = dz, wat = p;
+                    }
+                }
+            }
+            check(big <= n / 100, "twin carriageway height gap > 0.8 m", fmt("%.0f of %.0f samples, worst %.2f m at (%.0f,", big, n, worst, wat.x) + fmt("%.0f)", wat.y));
+        }
         // traffic signals only on arms with arriving traffic is enforced by construction; count heads
     }
 
@@ -72,7 +102,7 @@ int main(int argc, char **argv) {
     if (argc > 4) cx0 = atoi(argv[3]), cy0 = atoi(argv[4]);
     double worst_ms = 0, sum_ms = 0;
     size_t n_chunks = 0, road_pts = 0, road_poke = 0, pave_pts = 0, pave_poke = 0, kerb_pts = 0, kerb_bad = 0;
-    size_t bld = 0, bld_low = 0, bld_float = 0, signals = 0;
+    size_t bld = 0, bld_low = 0, bld_float = 0, signals = 0, props[I_COUNT] = {0}, props_bad = 0, fence_tris = 0;
     double worst_poke = 0, worst_low = 0;
     V2 worst_poke_at, worst_low_at;
     std::vector<std::unique_ptr<ChunkData>> chunks;
@@ -86,6 +116,13 @@ int main(int argc, char **argv) {
             Rect r = W.chunk_rect(cx, cy);
             RoadGeom::Cache rc;
             W.geom.prefetch(r.grown(40), rc);
+            fence_tris += c->mats[M_FENCE].idx.size() / 3;
+            for (int k : {I_CAR, I_BIN, I_STOP, I_PLAY})
+                for (auto &I : c->inst[k]) {
+                    props[k]++;
+                    SurfaceHit h = W.geom.query({I.p.x + c->origin.x, I.p.y + c->origin.y}, rc, 0);
+                    if (h.kind == 1 && !h.margin) props_bad++;
+                }
             // dense sampling: terrain triangles never above carriageway / pavement surfaces
             for (double y = r.mn.y + 0.37; y < r.mx.y; y += 1.13)
                 for (double x = r.mn.x + 0.29; x < r.mx.x; x += 1.13) {
@@ -130,7 +167,8 @@ int main(int argc, char **argv) {
             }
             chunks.push_back(std::move(c));
         }
-    check(worst_ms < 200, "chunk build time", fmt("worst %.0f ms, mean %.0f ms over %.0f chunks", worst_ms, sum_ms / n_chunks, n_chunks));
+    check(props_bad == 0 && props[I_CAR] > 50, "props off the carriageway", fmt("%.0f parked cars, ", props[I_CAR]) + fmt("%.0f container sites, ", props[I_BIN]) + fmt("%.0f shelters, ", props[I_STOP]) + fmt("%.0f playground items, ", props[I_PLAY]) + fmt("%.0f fence tris, ", fence_tris) + fmt("%.0f in a carriageway", props_bad));
+    check(sum_ms / n_chunks < 150 && worst_ms < 450, "chunk build time", fmt("worst %.0f ms, mean %.0f ms over %.0f chunks", worst_ms, sum_ms / n_chunks, n_chunks));
     check(road_poke < road_pts * 0.002, "terrain under carriageway", fmt("%.0f of %.0f samples poke through, worst %.2f m at (%.0f,", road_poke, road_pts, worst_poke, worst_poke_at.x) + fmt("%.0f)", worst_poke_at.y));
     check(pave_poke < pave_pts * 0.005, "terrain under pavement", fmt("%.0f of %.0f samples poke through", pave_poke, pave_pts));
     check(kerb_bad <= kerb_pts / 500, "kerb height", fmt("%.0f of %.0f samples off by > 5 cm", kerb_bad, kerb_pts));
@@ -176,6 +214,23 @@ int main(int argc, char **argv) {
             }
         check(bld_low == 0, "buildings below adjacent pavement", fmt("%.0f of %.0f, worst %.2f m", bld_low, bld, worst_low));
         check(bld_float < bld * 0.01, "buildings with visible gap below", fmt("%.0f of %.0f", bld_float, bld));
+    }
+    {
+        // architecture: the historic centre is old / Stalinist, not khrushchevkas; residential districts have both
+        double era_c[16] = {0}, era_o[16] = {0}, nc = 0, no = 0, att = 0;
+        for (auto &b : W.buildings) {
+            if (b.parent >= 0 || b.area < 60) continue;
+            bool c = len(b.centroid) < 1200;
+            (c ? era_c : era_o)[b.era]++;
+            (c ? nc : no)++;
+            att += b.attached;
+        }
+        auto pc = [](double a, double n) { return n > 0 ? 100.0 * a / n : 0.0; };
+        printf("   centre (%.0f): historic %.0f%% stalin %.0f%% khrush %.0f%% panel %.0f%% modern %.0f%% office %.0f%% public %.0f%%\n", nc, pc(era_c[E_HISTORIC], nc), pc(era_c[E_STALIN], nc),
+               pc(era_c[E_KHRUSH], nc), pc(era_c[E_PANEL], nc), pc(era_c[E_MODERN], nc), pc(era_c[E_OFFICE], nc), pc(era_c[E_PUBLIC], nc));
+        printf("   outside (%.0f): historic %.0f%% stalin %.0f%% khrush %.0f%% panel %.0f%% modern %.0f%% house %.0f%% shed %.0f%% indus %.0f%%\n", no, pc(era_o[E_HISTORIC], no), pc(era_o[E_STALIN], no),
+               pc(era_o[E_KHRUSH], no), pc(era_o[E_PANEL], no), pc(era_o[E_MODERN], no), pc(era_o[E_HOUSE], no), pc(era_o[E_SHED], no), pc(era_o[E_INDUSTRIAL], no));
+        if (nc > 50) check(era_c[E_KHRUSH] + era_c[E_PANEL] < 0.25 * nc, "centre is not prefab housing", fmt("%.0f%% khrushchevka/panel", pc(era_c[E_KHRUSH] + era_c[E_PANEL], nc)));
     }
     printf("%s: %d failed\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

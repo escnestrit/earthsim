@@ -27,6 +27,7 @@ inline double dot(V2 a, V2 b) { return a.x * b.x + a.y * b.y; }
 inline double cross(V2 a, V2 b) { return a.x * b.y - a.y * b.x; }
 inline double len(V2 a) { return std::sqrt(dot(a, a)); }
 inline double dist(V2 a, V2 b) { return len(a - b); }
+inline double dist2(V2 a, V2 b) { V2 d = a - b; return d.x * d.x + d.y * d.y; }
 inline V2 norm(V2 a) {
     double l = len(a);
     return l > 1e-12 ? a / l : V2{0, 0};

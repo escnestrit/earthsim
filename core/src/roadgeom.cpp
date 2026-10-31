@@ -115,6 +115,8 @@ void RoadGeom::build(RoadNet &N) {
                 JArm A;
                 A.edge = ei, A.at_a = at_a;
                 A.h = e.half();
+                A.hl = at_a ? e.hl() : e.hr();
+                A.hr = at_a ? e.hr() : e.hl();
                 A.swl = at_a ? e.sw(1) : e.sw(-1);
                 A.swr = at_a ? e.sw(-1) : e.sw(1);
                 double s = std::min(e.len, 10.0);
@@ -136,7 +138,7 @@ void RoadGeom::build(RoadNet &N) {
             if (th >= PI - 0.08) continue;  // straight or reflex: no corner
             double t, u;
             // A's left line and B's right line
-            if (!line_intersect(node.p + perp(A.D) * A.h, A.D, node.p - perp(B.D) * B.h, B.D, t, u)) continue;
+            if (!line_intersect(node.p + perp(A.D) * A.hl, A.D, node.p - perp(B.D) * B.hr, B.D, t, u)) continue;
             double r = fillet_radius(N.edges[A.edge].prio, N.edges[B.edge].prio);
             double tl = std::min(25.0, r / std::tan(th / 2));
             need[i] = std::max(need[i], t + tl);
@@ -177,8 +179,8 @@ void RoadGeom::build(RoadNet &N) {
             }
             A.D = d;
             double z = e.z_at(s);
-            A.L = V3(A.P + perp(d) * A.h, z);
-            A.R = V3(A.P - perp(d) * A.h, z);
+            A.L = V3(A.P + perp(d) * A.hl, z);
+            A.R = V3(A.P - perp(d) * A.hr, z);
         }
         J.centre = V3(node.p, node.z);
         J.flat = k == 2 && maxtrim < 0.05 && std::fabs(J.arms[0].h - J.arms[1].h) < 0.05;
@@ -291,11 +293,11 @@ void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats, const Cache *cache) const {
     std::vector<double> z(n);
     for (size_t k = 0; k < n; k++) {
         z[k] = e.z_at(S[k].s);
-        V2 nl = perp(S[k].t) * (h * S[k].miter);
-        L[k] = v3(S[k].p + nl, z[k], o);
-        R[k] = v3(S[k].p - nl, z[k], o);
-        uL[k] = {0, S[k].s};
-        uR[k] = {e.width, S[k].s};
+        V2 nn = perp(S[k].t) * S[k].miter;
+        L[k] = v3(S[k].p + nn * e.hl(), z[k], o);
+        R[k] = v3(S[k].p - nn * e.hr(), z[k], o);
+        uL[k] = {-e.ext_l, S[k].s};
+        uR[k] = {e.width + e.ext_r, S[k].s};
     }
     // exact ends: match the junction corners
     auto fix_end = [&](size_t k, bool at_a) {
@@ -309,7 +311,8 @@ void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats, const Cache *cache) const {
     };
     if (e.trim_a >= 0) fix_end(0, true);
     fix_end(n - 1, false);
-    float flags = float((e.oneway ? 1 : 0) | (e.prio >= 4 ? 2 : 0) | (e.prio >= 7 && !e.oneway ? 4 : 0) | (e.surface == "paving_stones" || e.surface == "sett" ? 8 : 0));
+    float flags = float((e.oneway ? 1 : 0) | (e.prio >= 4 ? 2 : 0) | (e.prio >= 7 && !e.oneway ? 4 : 0) | (e.surface == "paving_stones" || e.surface == "sett" ? 8 : 0) |
+                        (e.line_l ? 16 : 0) | (e.line_r ? 32 : 0));
     strip(mats[M_ASPHALT], L, R, uL, uR, {double(e.lanes) + 16.0 * flags, e.width});
 
     // sides: pavement (urban), skirt (rural), deck (bridge), walls (tunnel)
@@ -485,7 +488,7 @@ void RoadGeom::prefetch(const Rect &r, Cache &c) const {
     const double PAD = 32.0;  // max reach used by queries
     for (size_t i = 0; i < c.edges.size(); i++) {
         auto &e = net->edges[c.edges[i]];
-        double ext = e.half() + e.sw_width + PAD;
+        double ext = e.half() + 2.0 + e.sw_width + PAD;
         for (size_t k = 0; k + 1 < e.pts.size(); k++) {
             Rect sb;
             sb.add(e.pts[k]), sb.add(e.pts[k + 1]);
@@ -528,7 +531,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach, double zmax) cons
         const RoadEdge &e = net->edges[ei];
         bool br = e.bridge || e.level > 0, tu = e.tunnel || e.level < 0;
         // quick reject with the edge's bounding box
-        double h = e.half(), ext = h + e.sw_width + reach;
+        double h = e.half(), ext = h + 2.0 + e.sw_width + reach;
         double acc = 0, bd = 1e18, bs = 0, bside = 1;
         for (size_t k = 0; k + 1 < e.pts.size(); k++) {
             V2 a = e.pts[k], b = e.pts[k + 1];
@@ -544,6 +547,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach, double zmax) cons
         }
         if (bd > ext) continue;
         double sw = e.sw(bside);
+        h = e.hs(bside);
         double z = e.z_at(bs);
         if (z > zmax) continue;
         bool inside_span = bs >= e.trim_a - 0.01 && bs <= e.len - e.trim_b + 0.01;

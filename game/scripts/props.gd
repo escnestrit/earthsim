@@ -5,7 +5,11 @@ const I_TREE := 0
 const I_LAMP := 1
 const I_SIGNAL := 2
 const I_BENCH := 3
-const I_COUNT := 6
+const I_STOP := 4
+const I_CAR := 6
+const I_BIN := 7
+const I_PLAY := 8
+const I_COUNT := 9
 
 var meshes: Array[Mesh] = []
 var conifer: Mesh
@@ -13,6 +17,7 @@ var tree_lo: Mesh      # far versions: one blob crown / one cone
 var conifer_lo: Mesh
 var lamp_head_mat: StandardMaterial3D
 var signal_mat: ShaderMaterial
+var play: Array[Mesh] = []
 
 func _init() -> void:
 	meshes.resize(I_COUNT)
@@ -23,6 +28,10 @@ func _init() -> void:
 	meshes[I_LAMP] = _lamp()
 	meshes[I_SIGNAL] = _signal()
 	meshes[I_BENCH] = _bench()
+	meshes[I_CAR] = _parked_car()
+	meshes[I_BIN] = _bins()
+	meshes[I_STOP] = _shelter()
+	play = [_swing(), _slide(), _sandbox()]
 
 static func _mat(c: Color, rough := 0.8, metal := 0.0) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -231,3 +240,145 @@ func _bench() -> Mesh:
 
 func set_night(n: float) -> void:
 	lamp_head_mat.emission_energy_multiplier = 4.0 * n
+
+# box of any orientation (size s, transform t) appended to a SurfaceTool
+static func _pbox(st: SurfaceTool, s: Vector3, t: Transform3D) -> void:
+	var bm := BoxMesh.new()
+	bm.size = s
+	st.append_from(bm, 0, t)
+
+static func _at(x: float, y: float, z: float) -> Transform3D:
+	return Transform3D(Basis(), Vector3(x, y, z))
+
+func _parked_car() -> Mesh:
+	# low-poly parked car; front is -Z; the body takes the instance colour
+	var body := SurfaceTool.new()
+	body.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(body, Vector3(1.78, 0.62, 4.3), _at(0, 0.62, 0))
+	_pbox(body, Vector3(1.7, 0.14, 1.2), _at(0, 0.98, -1.35))   # bonnet
+	_pbox(body, Vector3(1.5, 0.07, 1.95), _at(0, 1.47, 0.25))   # roof
+	var m := body.commit()
+	var paint := _mat(Color(1, 1, 1), 0.35, 0.3)
+	paint.vertex_color_use_as_albedo = true
+	m.surface_set_material(0, paint)
+	var glass := SurfaceTool.new()
+	glass.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(glass, Vector3(1.56, 0.5, 2.15), _at(0, 1.2, 0.25))
+	glass.commit(m)
+	m.surface_set_material(1, _mat(Color(0.06, 0.07, 0.08), 0.1, 0.4))
+	var tyres := SurfaceTool.new()
+	tyres.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for sx in [-0.8, 0.8]:
+		for sz in [-1.35, 1.35]:
+			_pbox(tyres, Vector3(0.24, 0.64, 0.64), _at(sx, 0.32, sz))
+	_pbox(tyres, Vector3(1.8, 0.16, 0.1), _at(0, 0.45, -2.16))   # bumpers
+	_pbox(tyres, Vector3(1.8, 0.16, 0.1), _at(0, 0.45, 2.16))
+	tyres.commit(m)
+	m.surface_set_material(2, _mat(Color(0.05, 0.05, 0.05), 0.9))
+	return m
+
+func _bins() -> Mesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in 3:
+		_pbox(st, Vector3(1.25, 1.05, 1.0), _at(-1.4 + i * 1.4, 0.6, 0))
+	var m := st.commit()
+	m.surface_set_material(0, _mat(Color(0.2, 0.36, 0.24), 0.6, 0.4))
+	var lid := SurfaceTool.new()
+	lid.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in 3:
+		_pbox(lid, Vector3(1.3, 0.08, 1.05), _at(-1.4 + i * 1.4, 1.16, 0))
+		_pbox(lid, Vector3(0.12, 0.12, 0.12), _at(-1.4 + i * 1.4 - 0.5, 0.06, 0.4))
+		_pbox(lid, Vector3(0.12, 0.12, 0.12), _at(-1.4 + i * 1.4 + 0.5, 0.06, 0.4))
+	lid.commit(m)
+	m.surface_set_material(1, _mat(Color(0.12, 0.12, 0.12), 0.8))
+	return m
+
+func _shelter() -> Mesh:
+	# bus shelter facing -Z (the road): posts, roof, glass back and sides, bench
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for x in [-1.95, 1.95]:
+		for z in [-0.75, 0.75]:
+			_pbox(st, Vector3(0.08, 2.5, 0.08), _at(x, 1.25, z))
+	_pbox(st, Vector3(4.3, 0.12, 1.8), _at(0, 2.55, 0))
+	_pbox(st, Vector3(2.6, 0.06, 0.42), _at(0, 0.46, 0.45))
+	_pbox(st, Vector3(0.06, 0.44, 0.3), _at(-1.1, 0.22, 0.45))
+	_pbox(st, Vector3(0.06, 0.44, 0.3), _at(1.1, 0.22, 0.45))
+	_pbox(st, Vector3(0.9, 0.5, 0.04), _at(1.3, 2.2, -0.76))   # route sign
+	var m := st.commit()
+	m.surface_set_material(0, _mat(Color(0.3, 0.38, 0.45), 0.5, 0.6))
+	var g := SurfaceTool.new()
+	g.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(g, Vector3(3.8, 2.0, 0.02), _at(0, 1.3, 0.75))
+	_pbox(g, Vector3(0.02, 2.0, 1.3), _at(-1.95, 1.3, 0.05))
+	_pbox(g, Vector3(0.02, 2.0, 1.3), _at(1.95, 1.3, 0.05))
+	g.commit(m)
+	var gm := _mat(Color(0.7, 0.8, 0.85, 0.35), 0.05, 0.2)
+	gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	gm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.surface_set_material(1, gm)
+	return m
+
+func _swing() -> Mesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for x in [-1.4, 1.4]:
+		_pbox(st, Vector3(0.08, 2.4, 0.08), Transform3D(Basis(Vector3.RIGHT, 0.32), Vector3(x, 1.15, -0.38)))
+		_pbox(st, Vector3(0.08, 2.4, 0.08), Transform3D(Basis(Vector3.RIGHT, -0.32), Vector3(x, 1.15, 0.38)))
+	_pbox(st, Vector3(2.9, 0.09, 0.09), _at(0, 2.25, 0))
+	var m := st.commit()
+	m.surface_set_material(0, _mat(Color(0.75, 0.2, 0.15), 0.6, 0.3))
+	var s2 := SurfaceTool.new()
+	s2.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for x in [-0.6, 0.6]:
+		_pbox(s2, Vector3(0.02, 1.7, 0.02), _at(x - 0.2, 1.4, 0))
+		_pbox(s2, Vector3(0.02, 1.7, 0.02), _at(x + 0.2, 1.4, 0))
+		_pbox(s2, Vector3(0.5, 0.05, 0.22), _at(x, 0.55, 0))
+	s2.commit(m)
+	m.surface_set_material(1, _mat(Color(0.95, 0.75, 0.15), 0.6))
+	return m
+
+func _slide() -> Mesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for x in [-0.6, 0.6]:
+		for z in [-0.6, 0.6]:
+			_pbox(st, Vector3(0.1, 2.6, 0.1), _at(x, 1.3, z))
+	_pbox(st, Vector3(1.3, 0.08, 1.3), _at(0, 1.4, 0))
+	_pbox(st, Vector3(1.4, 0.5, 1.4), Transform3D(Basis(Vector3.UP, PI * 0.25).scaled(Vector3(1, 1, 1)), Vector3(0, 2.75, 0)))
+	var m := st.commit()
+	m.surface_set_material(0, _mat(Color(0.2, 0.45, 0.75), 0.6, 0.2))
+	var s2 := SurfaceTool.new()
+	s2.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(s2, Vector3(0.6, 0.06, 2.6), Transform3D(Basis(Vector3.RIGHT, -0.52), Vector3(0, 0.75, -1.65)))
+	for k in 5:
+		_pbox(s2, Vector3(0.6, 0.05, 0.2), _at(0, 0.28 * (k + 1), 0.7 + 0.25 * k * 0.0 + 0.1))
+	s2.commit(m)
+	m.surface_set_material(1, _mat(Color(0.95, 0.75, 0.15), 0.4, 0.3))
+	return m
+
+func _sandbox() -> Mesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(st, Vector3(2.6, 0.3, 0.12), _at(0, 0.15, -1.25))
+	_pbox(st, Vector3(2.6, 0.3, 0.12), _at(0, 0.15, 1.25))
+	_pbox(st, Vector3(0.12, 0.3, 2.6), _at(-1.25, 0.15, 0))
+	_pbox(st, Vector3(0.12, 0.3, 2.6), _at(1.25, 0.15, 0))
+	_pbox(st, Vector3(0.1, 2.2, 0.1), _at(-1.2, 1.1, -1.2))
+	_pbox(st, Vector3(0.1, 2.2, 0.1), _at(1.2, 1.1, 1.2))
+	_pbox(st, Vector3(0.1, 2.2, 0.1), _at(-1.2, 1.1, 1.2))
+	_pbox(st, Vector3(0.1, 2.2, 0.1), _at(1.2, 1.1, -1.2))
+	var m := st.commit()
+	m.surface_set_material(0, _mat(Color(0.55, 0.38, 0.22), 0.8))
+	var s2 := SurfaceTool.new()
+	s2.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(s2, Vector3(2.4, 0.06, 2.4), _at(0, 0.2, 0))
+	s2.commit(m)
+	m.surface_set_material(1, _mat(Color(0.85, 0.76, 0.55), 1.0))
+	var s3 := SurfaceTool.new()
+	s3.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_pbox(s3, Vector3(1.8, 0.08, 1.8), Transform3D(Basis(Vector3.UP, PI * 0.25), Vector3(0, 2.25, 0)))
+	s3.commit(m)
+	m.surface_set_material(2, _mat(Color(0.2, 0.6, 0.3), 0.6))
+	return m
