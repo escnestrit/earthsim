@@ -14,6 +14,9 @@ func _ready() -> void:
 	near = 0.1
 	far = 4000.0
 
+func snap() -> void:
+	_pos = Vector3.ZERO
+
 func cycle() -> void:
 	mode = (mode + 1) % 3
 

@@ -7,6 +7,9 @@ on:
   push:
     branches: [v2]
   workflow_dispatch:
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 env:
   GODOT_VER: 4.7.2
   GODOT_CPP_TAG: godot-4.5-stable
@@ -58,6 +61,8 @@ jobs:
         run: timeout 300 ./godot --headless --path game -- --test=world --data=$PWD/data
       - name: City driving test (autopilot through Minsk)
         run: timeout 400 ./godot --headless --path game -- --test=city --duration=60 --radius=500 --data=$PWD/data
+      - name: Crash test (deformation)
+        run: timeout 300 ./godot --headless --path game -- --test=crash
 
   windows:
     runs-on: windows-latest

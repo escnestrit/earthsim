@@ -6,6 +6,7 @@
 extends RigidBody3D
 
 signal reset_requested
+signal impact(local_pos: Vector3, local_dir: Vector3, impulse: float)
 
 # ---- chassis
 @export var car_mass := 1380.0
@@ -38,6 +39,8 @@ signal reset_requested
 @export var brake_torque := Vector2(2600, 1500)  # max per wheel, front/rear
 @export var handbrake_torque := 3200.0
 @export var max_steer := deg_to_rad(36.0)
+@export var wheel_override: Array = []   # explicit wheel centres (car local), FL, FR, RL, RR
+@export var torque_scale := 1.0
 
 # torque curve (rpm, Nm)
 const TORQUE := [[0, 120], [1000, 150], [2000, 195], [3000, 232], [4000, 258], [5000, 255], [6000, 235], [6800, 205], [7500, 120]]
@@ -60,6 +63,8 @@ var speed := 0.0               # forward speed m/s
 var surface_name := ""
 var ready_to_drive := false
 var wetness := 0.0             # 0 dry .. 1 wet roads (set by the game)
+var steer_bias := 0.0          # misalignment after heavy front impacts (rad)
+var _impact_cool := 0.0
 
 class Wheel:
 	var pos := Vector3.ZERO     # local wheel centre at rest (x, origin height, z)
@@ -103,12 +108,16 @@ func _ready() -> void:
 		w.front = i < 2
 		w.left = i % 2 == 0
 		w.pos = Vector3(-hw if w.left else hw, 0.0, -hl if w.front else hl)
+		if wheel_override.size() == 4:
+			w.pos = wheel_override[i]
 		w.driven = (not w.front) if rwd else w.front
 		w.len = rest_len
 		w.prev_len = rest_len
 		wheels.append(w)
 	_ray.exclude = [get_rid()]
 	_ray.collide_with_areas = false
+	contact_monitor = true
+	max_contacts_reported = 8
 
 func attach_wheel_nodes(nodes: Array) -> void:
 	for i in 4:
@@ -119,7 +128,7 @@ func torque_at(r: float) -> float:
 		if r <= TORQUE[i][0]:
 			var a = TORQUE[i - 1]
 			var b = TORQUE[i]
-			return lerpf(a[1], b[1], (r - a[0]) / float(b[0] - a[0]))
+			return lerpf(a[1], b[1], (r - a[0]) / float(b[0] - a[0])) * torque_scale
 	return 0.0
 
 func ratio() -> float:
@@ -142,6 +151,7 @@ func _physics_process(dt: float) -> void:
 		steer = move_toward(steer, target, rate * dt)
 	else:
 		steer = target
+	steer += steer_bias
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	if not ready_to_drive:
@@ -327,6 +337,30 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 		state.apply_force(force, w.hit_pos - xf.origin)
 	# aerodynamic drag
 	state.apply_central_force(-lv * lv.length() * 0.5 * 1.2 * drag_area)
+	# body impacts -> deformation (reported to the game, which dents the mesh)
+	_impact_cool -= dt
+	if _impact_cool <= 0.0:
+		var best := 0.0
+		var bp := Vector3.ZERO
+		var bn := Vector3.ZERO
+		for i in state.get_contact_count():
+			var imp := state.get_contact_impulse(i).length()
+			var nrm := state.get_contact_local_normal(i)
+			# ignore the floor: contacts whose normal points up are kerb scrapes / landings
+			if nrm.dot(up) > 0.7 and imp < 9000.0:
+				continue
+			if imp > best:
+				best = imp
+				bp = state.get_contact_local_position(i)
+				bn = nrm
+		if best > 1800.0:
+			var inv := xf.affine_inverse()
+			var lp := inv * bp
+			var ld := (xf.basis.inverse() * bn).normalized()
+			impact.emit(lp, ld, best)
+			if lp.z < -1.2 and best > 7000.0:
+				steer_bias += clampf(best / 400000.0, 0.0, 0.03) * (1.0 if lp.x > 0.0 else -1.0)
+			_impact_cool = 0.12
 	for w: Wheel in wheels:
 		w.angle = fmod(w.angle + w.omega * dt, TAU)
 

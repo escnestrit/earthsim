@@ -45,6 +45,9 @@ var monitor: Label
 var _lamp_lights: Array[OmniLight3D] = []
 var _lamp_t := 0.0
 var _tail_mat: StandardMaterial3D
+var _body_parts := []
+var _wheel_rest := []
+var _dent_total := 0.0
 var _night := 0.0
 
 func _ready() -> void:
@@ -210,39 +213,137 @@ func set_time(h: float) -> void:
 	if _head_light:
 		_head_light.visible = n > 0.3
 
+const CAR_MODEL := "res://models/car_concept.glb"
+
 func _setup_car() -> void:
 	car = RigidBody3D.new()
 	car.set_script(CarScript)
 	car.freeze = true
+	var model_scene: PackedScene = load(CAR_MODEL) if ResourceLoader.exists(CAR_MODEL) else null
+	var model_root: Node3D = null
+	var wheel_nodes := []
+	if model_scene:
+		# Car Concept (CC BY 4.0, Eric Chadwick / Darmstadt Graphics Group): faces +Z, ground at y=0.
+		model_root = model_scene.instantiate()
+		var names := ["WheelFrontL", "WheelFrontR", "WheelRearL", "WheelRearR"]
+		for nm in names:
+			wheel_nodes.append(model_root.find_child(nm, true, false))
+		if wheel_nodes.has(null):
+			model_root = null
+	if model_root:
+		var wheel_y := 0.384
+		var mx := Transform3D(Basis(Vector3.UP, PI), Vector3(0, -wheel_y, 0))
+		# wheel centres in car space from the model itself
+		var wp := []
+		for wn in wheel_nodes:
+			wp.append(mx * _model_xform(wn).origin)
+		car.wheel_override = wp
+		car.wheelbase = absf(wp[2].z - wp[0].z)
+		car.track = absf(wp[1].x - wp[0].x)
+		car.wheel_radius = 0.40
+		car.car_mass = 1650.0
+		car.torque_scale = 1.75
+		car.com_height = 0.05
+		car.rest_len = 0.40
+		car.max_len = 0.48
+		car.mount_h = 0.26
+		car.spring_k = Vector2(36000, 34000)
+		car.damp_bump = Vector2(3000, 2900)
+		car.damp_rebound = Vector2(4800, 4600)
+		car.arb_k = Vector2(18000, 11000)
+		car.mu = 1.15
+		car.drag_area = 0.62
 	add_child(car)
 	var lower := CollisionShape3D.new()
 	var b1 := BoxShape3D.new()
-	b1.size = Vector3(1.78, 0.62, 4.6)
+	b1.size = Vector3(2.1, 0.55, 4.25) if model_root else Vector3(1.78, 0.62, 4.6)
 	lower.shape = b1
-	lower.position = Vector3(0, 0.25, 0)
+	lower.position = Vector3(0, 0.12, 0.1) if model_root else Vector3(0, 0.25, 0)
 	car.add_child(lower)
 	var upper := CollisionShape3D.new()
 	var b2 := BoxShape3D.new()
-	b2.size = Vector3(1.4, 0.5, 2.3)
+	b2.size = Vector3(1.6, 0.4, 2.0) if model_root else Vector3(1.4, 0.5, 2.3)
 	upper.shape = b2
-	upper.position = Vector3(0, 0.85, 0.25)
+	upper.position = Vector3(0, 0.55, 0.3) if model_root else Vector3(0, 0.85, 0.25)
 	car.add_child(upper)
-	var model := CarModel.new()
-	var mi := MeshInstance3D.new()
-	mi.mesh = model.build_body()
-	_tail_mat = model.tail_mat
-	car.add_child(mi)
-	var wm: ArrayMesh = model.build_wheel(0.325, 0.215)
-	var nodes := []
-	for i in 4:
-		var w := MeshInstance3D.new()
-		w.mesh = wm
-		car.add_child(w)
-		nodes.append(w)
-	_wheel_nodes = nodes
-	car.attach_wheel_nodes(nodes)
+	if model_root:
+		var holder := Node3D.new()
+		holder.transform = Transform3D(Basis(Vector3.UP, PI), Vector3(0, -0.384, 0))
+		car.add_child(holder)
+		holder.add_child(model_root)
+		# no logos / trademarks: hide the plate and the steering wheel emblem
+		for nm in ["License Plate", "InteriorSteeringEmblem"]:
+			var n: Node = model_root.find_child(nm, true, false)
+			if n:
+				n.visible = false
+		# wheels become direct children of the car so physics can drive them
+		_wheel_rest = []
+		for i in 4:
+			var wn: Node3D = wheel_nodes[i]
+			var g := holder.transform * _model_xform(wn)
+			wn.get_parent().remove_child(wn)
+			car.add_child(wn)
+			wn.transform = g
+			_wheel_rest.append(g)
+		_wheel_nodes = wheel_nodes
+		car.attach_wheel_nodes(wheel_nodes)
+		# glass: glTF transmission is not portable across renderers -> our own tinted glass
+		var glass := StandardMaterial3D.new()
+		glass.albedo_color = Color(0.06, 0.08, 0.1, 0.72)
+		glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		glass.metallic = 0.3
+		glass.roughness = 0.04
+		glass.specular_mode = BaseMaterial3D.SPECULAR_SCHLICK_GGX
+		for m in model_root.find_children("*", "MeshInstance3D", true, false):
+			var nm := String(m.name)
+			if (nm.containsn("window") or nm.containsn("windshield") or nm.containsn("glass")) and not nm.containsn("gasket") and not nm.containsn("wiper"):
+				for si in (m as MeshInstance3D).mesh.get_surface_count():
+					(m as MeshInstance3D).set_surface_override_material(si, glass)
+		# deformable body panels
+		_body_parts = []
+		for m in model_root.find_children("Body*", "MeshInstance3D", true, false):
+			var mi3: MeshInstance3D = m
+			if String(mi3.name).containsn("wiper"):
+				continue
+			var surf := []
+			var mats := []
+			for si in mi3.mesh.get_surface_count():
+				surf.append(mi3.mesh.surface_get_arrays(si))
+				mats.append(mi3.get_active_material(si))
+			_body_parts.append({"mi": mi3, "xf": holder.transform * _model_xform(mi3), "orig": surf, "cur": surf.duplicate(true), "mats": mats})
+		var tl: MeshInstance3D = model_root.find_child("BodyTaillights", true, false)
+		if tl:
+			var m0 = tl.get_active_material(0)
+			if m0 is StandardMaterial3D:
+				_tail_mat = m0.duplicate()
+				_tail_mat.emission_enabled = true
+				_tail_mat.emission = Color(1.0, 0.05, 0.03)
+				tl.set_surface_override_material(0, _tail_mat)
+		car.impact.connect(_on_impact)
+	else:
+		var model := CarModel.new()
+		var mi := MeshInstance3D.new()
+		mi.mesh = model.build_body()
+		_tail_mat = model.tail_mat
+		car.add_child(mi)
+		var surf := []
+		var mats := []
+		for si in mi.mesh.get_surface_count():
+			surf.append(mi.mesh.surface_get_arrays(si))
+			mats.append(mi.mesh.surface_get_material(si))
+		_body_parts = [{"mi": mi, "xf": Transform3D(), "orig": surf, "cur": surf.duplicate(true), "mats": mats}]
+		car.impact.connect(_on_impact)
+		var wm: ArrayMesh = model.build_wheel(0.325, 0.215)
+		var nodes := []
+		for i in 4:
+			var w := MeshInstance3D.new()
+			w.mesh = wm
+			car.add_child(w)
+			nodes.append(w)
+		_wheel_nodes = nodes
+		car.attach_wheel_nodes(nodes)
 	_head_light = SpotLight3D.new()
-	_head_light.position = Vector3(0, 0.4, -2.3)
+	_head_light.position = Vector3(0, 0.2, -2.35)
 	_head_light.spot_range = 70.0
 	_head_light.spot_angle = 32.0
 	_head_light.light_energy = 9.0
@@ -347,6 +448,69 @@ func _update_lamp_lights(dt: float) -> void:
 		else:
 			l.visible = false
 
+# Dent the body around a contact point. Displacement falls off smoothly with distance and is
+# capped so the shell never folds through itself.
+func _on_impact(lp: Vector3, ld: Vector3, impulse: float) -> void:
+	var r := clampf(0.3 + impulse / 9000.0, 0.3, 1.1)
+	var depth := clampf(impulse / 45000.0, 0.01, 0.28)
+	# push inwards: towards the car centre along the contact normal
+	var dir := ld
+	if dir.dot(-lp.normalized()) < 0.0:
+		dir = -dir
+	for part in _body_parts:
+		var inv: Transform3D = (part["xf"] as Transform3D).affine_inverse()
+		var pl: Vector3 = inv * lp
+		var dl: Vector3 = (inv.basis * dir).normalized()
+		var changed := false
+		var cur: Array = part["cur"]
+		for si in cur.size():
+			var arr: Array = cur[si]
+			var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			var o: PackedVector3Array = part["orig"][si][Mesh.ARRAY_VERTEX]
+			var r2 := r * r
+			for k in v.size():
+				var dd := v[k].distance_squared_to(pl)
+				if dd < r2:
+					var w := 1.0 - dd / r2
+					var nv := v[k] + dl * depth * w * w
+					var off := nv - o[k]
+					if off.length_squared() > 0.38 * 0.38:
+						nv = o[k] + off.normalized() * 0.38
+					v[k] = nv
+					changed = true
+			arr[Mesh.ARRAY_VERTEX] = v
+		if changed:
+			_rebuild_part(part)
+	_dent_total += depth
+
+func _rebuild_part(part: Dictionary) -> void:
+	var m := ArrayMesh.new()
+	var cur: Array = part["cur"]
+	for si in cur.size():
+		var arr: Array = (cur[si] as Array).duplicate()
+		# imported meshes may carry LOD/skin data we do not keep
+		arr.resize(Mesh.ARRAY_MAX)
+		m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		m.surface_set_material(si, part["mats"][si])
+	(part["mi"] as MeshInstance3D).mesh = m
+
+func _repair() -> void:
+	if _dent_total > 0.0:
+		for part in _body_parts:
+			part["cur"] = (part["orig"] as Array).duplicate(true)
+			_rebuild_part(part)
+	car.steer_bias = 0.0
+	_dent_total = 0.0
+
+static func _model_xform(n: Node) -> Transform3D:
+	# transform of n relative to the scene root it was imported in
+	var t := Transform3D()
+	var c: Node = n
+	while c != null and c is Node3D and c.get_parent() != null:
+		t = (c as Node3D).transform * t
+		c = c.get_parent()
+	return t
+
 func _spawn(near: Vector3) -> void:
 	var s: Dictionary = world.spawn_near(near)
 	if s.is_empty():
@@ -362,6 +526,10 @@ func _spawn(near: Vector3) -> void:
 	car.freeze = false
 	car.ready_to_drive = true
 	spawned = true
+	if not _body_parts.is_empty():
+		_repair()
+	if cam:
+		cam.snap()
 
 func _process(dt: float) -> void:
 	if world == null:
@@ -370,9 +538,23 @@ func _process(dt: float) -> void:
 	if args.has("view"):
 		focus = cam.global_position
 	streamer.focus = focus
-	if args.get("test", "") == "drive":
+	if args.get("test", "") in ["drive", "crash"]:
 		if not spawned:
 			_make_test_ground()
+			if args["test"] == "crash":
+				var wall := StaticBody3D.new()
+				var cs := CollisionShape3D.new()
+				var bx := BoxShape3D.new()
+				bx.size = Vector3(12, 3, 1)
+				cs.shape = bx
+				wall.add_child(cs)
+				var wm := MeshInstance3D.new()
+				var bm := BoxMesh.new()
+				bm.size = bx.size
+				wm.mesh = bm
+				wall.add_child(wm)
+				wall.position = Vector3(0, 1001.5, 1800 - 45)
+				add_child(wall)
 	elif not spawned and streamer.is_loaded_at(streamer.focus) and streamer.loading_count() == 0:
 		_spawn(streamer.focus)
 	_update_wheels()
@@ -381,12 +563,14 @@ func _process(dt: float) -> void:
 		_tail_mat.emission_energy_multiplier = (4.0 if car.input_brake > 0.1 else 0.6) + 1.5 * _night
 	_read_input(dt)
 	_update_hud()
-	if args.has("shot"):
+	if args.has("shot") and args.get("test", "") != "crash":
 		_shot_logic()
 	if args.get("test", "") == "drive":
 		_drive_test(dt)
 	if args.get("test", "") == "world":
 		_world_test(dt)
+	if args.get("test", "") == "crash":
+		_crash_test(dt)
 	if args.get("test", "") == "city" or args.has("autodrive"):
 		_autodrive(dt)
 
@@ -397,6 +581,12 @@ func _update_wheels() -> void:
 		var w = car.wheels[i]
 		var n: Node3D = _wheel_nodes[i]
 		var p: Vector3 = w.pos + Vector3(0, car.mount_h - w.len, 0)
+		if _wheel_rest.size() == 4:
+			# imported model: keep its own wheel orientation, add steering and spin
+			var rest: Transform3D = _wheel_rest[i]
+			var spin := Basis(Vector3.RIGHT, -w.angle)
+			n.transform = Transform3D(Basis(Vector3.UP, -w.steer) * rest.basis * spin, p)
+			continue
 		var b := Basis(Vector3.UP, -w.steer) * Basis(Vector3.RIGHT, -w.angle)
 		if not w.left:
 			b = b * Basis(Vector3.UP, PI)
@@ -704,3 +894,33 @@ func _autodrive(dt: float) -> void:
 		var ok: bool = not _ad["fell"] and _ad["dist"] > _ad["t"] * 6.0 and _ad["air"] < 2.0 and _ad["max_roll"] < 0.5
 		print("[test] city: drove %.0f m in %.0f s, wheels off the ground %.2f s, clearance %.2f..%.2f m, max roll %.2f, resets %d -> %s" % [_ad["dist"], _ad["t"], _ad["air"], _ad["min_clear"], _ad["max_clear"], _ad["max_roll"], _ad["resets"], "PASS" if ok else "FAIL"])
 		get_tree().quit(0 if ok else 1)
+
+# --------------------------------------------------------------- crash test: drive into a wall
+
+var _crash_t := 0.0
+var _crash_vmax := 0.0
+
+func _crash_test(dt: float) -> void:
+	if not spawned:
+		return
+	_crash_t += dt
+	car.input_throttle = 1.0 if _crash_t < 4.5 else 0.0
+	car.input_brake = 0.0 if _crash_t < 4.5 else 1.0
+	_crash_vmax = maxf(_crash_vmax, car.speed * 3.6)
+	if _crash_t > 4.0 and cam.target == car and cam.mode != 2:
+		cam.mode = 2
+		cam._yaw = PI * 0.4
+		cam._pitch = -0.55
+		cam._dist = 4.6
+	if _crash_t > 8.0:
+		var up: float = car.global_transform.basis.y.y
+		var v: float = car.linear_velocity.length()
+		var ok: bool = _dent_total > 0.02 and up > 0.8 and v < 3.0 and is_finite(car.global_position.x)
+		print("[test] crash: impact at %.0f km/h, dent depth sum %.2f m, upright %.2f, speed after %.1f m/s, steer bias %.3f -> %s" % [_crash_vmax, _dent_total, up, v, car.steer_bias, "PASS" if ok else "FAIL"])
+		if args.has("shot"):
+			if _crash_t > 8.5:
+				get_viewport().get_texture().get_image().save_png(String(args["shot"]))
+				print("[earthsim] shot saved ", args["shot"])
+				get_tree().quit(0)
+		else:
+			get_tree().quit(0 if ok else 1)
