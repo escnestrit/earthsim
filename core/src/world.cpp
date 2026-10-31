@@ -126,6 +126,9 @@ bool World::load(const std::string &root, const std::string &spec) {
     }
     log = region.log;
     locale = locale_for(region.frame.lat0, region.frame.lon0, region.dem.sample({0, 0}));
+    if (const char *z = getenv("ES_ZONE")) locale.zone = Zone(atoi(z) % Z_COUNT);  // tests: any zone on local data
+    if (const char *b = getenv("ES_BIOME")) locale.biome = Biome(atoi(b) % 6);
+    if (getenv("ES_LHT")) locale.lht = true;
     log.push_back("locale: " + locale.zone_name() + ", climate " + locale.biome_name() + (locale.lht ? ", left-hand traffic" : ", right-hand traffic"));
     net.side = locale.lht ? -1.0 : 1.0;
     net.build(region);

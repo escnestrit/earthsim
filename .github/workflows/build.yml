@@ -69,7 +69,12 @@ jobs:
       - name: Traffic test
         run: timeout 300 ./godot --headless --path game -- --test=traffic --data=$PWD/data
       - name: Runtime map loading test (London -> region switch -> Tokyo, real servers)
-        run: timeout 900 ./godot --headless --path game -- --test=fetch --force_fetch --lat=51.5072 --lon=-0.1276 --lat2=35.6812 --lon2=139.7671 --cache=$PWD/fetch_cache --notraffic
+        run: |
+          rc=0
+          timeout 900 ./godot --headless --path game -- --test=fetch --force_fetch --lat=51.5072 --lon=-0.1276 --lat2=35.6812 --lon2=139.7671 --cache=$PWD/fetch_cache --notraffic > fetch.log 2>&1 || rc=$?
+          grep -E "^\[(test|fetch|earthsim)\]" fetch.log | while read -r l; do echo "::notice::$l"; done
+          if [ $rc -ne 0 ]; then tail -40 fetch.log | while read -r l; do echo "::notice::$l"; done; fi
+          exit $rc
 
   windows:
     runs-on: windows-latest

@@ -34,6 +34,10 @@ func _ready() -> void:
 		_pool.append(h)
 		_free.append(h)
 
+func _exit_tree() -> void:
+	for h in _pool:
+		h.cancel_request()
+
 # ------------------------------------------------------------------ HTTP
 
 func _http(url: String, from := -1, length := 0) -> Dictionary:

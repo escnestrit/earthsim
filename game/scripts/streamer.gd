@@ -33,6 +33,15 @@ func setup(w: EarthWorld) -> void:
 	_range = world.chunk_range()
 	_far_range = world.far_range()
 
+# never leave worker threads running on a world that is being freed
+func _exit_tree() -> void:
+	for k in inflight:
+		WorkerThreadPool.wait_for_task_completion(inflight[k])
+	for k in far_inflight:
+		WorkerThreadPool.wait_for_task_completion(far_inflight[k])
+	inflight.clear()
+	far_inflight.clear()
+
 func busy() -> bool:
 	return not inflight.is_empty() or not far_inflight.is_empty()
 
