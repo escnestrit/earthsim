@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "earthsim_init"
+compatibility_minimum = "4.5"
+reloadable = false
+
+[libraries]
+
+windows.x86_64 = "res://bin/libearthsim.dll"
+linux.x86_64 = "res://bin/libearthsim.so"

@@ -1,0 +1,117 @@
+name: build
+# v2: C++ world core + Godot 4.7 game.
+#  core-tests: quality checks of the world model on real Minsk data (Linux)
+#  game-tests: the game itself, headless: physics drive test + world streaming smoke test (Linux)
+#  windows:    earthsim.dll (MSVC) + exported earthsim.exe with the Minsk data -> artifact "earthsim-windows"
+on:
+  push:
+    branches: [v2]
+  workflow_dispatch:
+env:
+  GODOT_VER: 4.7.2
+  GODOT_CPP_TAG: godot-4.5-stable
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Minsk data
+        run: |
+          git fetch --depth 1 origin data-minsk
+          mkdir -p data && git archive FETCH_HEAD | tar -x -C data
+      - name: Build core
+        run: |
+          cmake -S . -B build -DES_EXTENSION=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 4
+      - name: Quality checks
+        run: ./build/es_tests data 4
+
+  game-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Minsk data
+        run: |
+          git fetch --depth 1 origin data-minsk
+          mkdir -p data && git archive FETCH_HEAD | tar -x -C data
+      - name: godot-cpp
+        run: git clone --depth 1 --branch $GODOT_CPP_TAG https://github.com/godotengine/godot-cpp godot-cpp
+      - uses: actions/cache@v4
+        with:
+          path: build
+          key: linux-ext-${{ env.GODOT_CPP_TAG }}-${{ hashFiles('core/**', 'ext/**', 'CMakeLists.txt') }}
+          restore-keys: linux-ext-${{ env.GODOT_CPP_TAG }}-
+      - name: Build extension (.so)
+        run: |
+          cmake -S . -B build -DES_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target earthsim --parallel 4
+      - name: Godot
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          unzip -q Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          mv Godot_v${GODOT_VER}-stable_linux.x86_64 godot
+      - name: Import
+        run: ./godot --headless --path game --import || true
+      - name: Drive test (physics)
+        run: timeout 300 ./godot --headless --path game -- --test=drive
+      - name: World test (streaming)
+        run: timeout 300 ./godot --headless --path game -- --test=world --data=$PWD/data
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: godot-cpp
+        shell: bash
+        run: git clone --depth 1 --branch $GODOT_CPP_TAG https://github.com/godotengine/godot-cpp godot-cpp
+      - uses: actions/cache@v4
+        with:
+          path: build
+          key: win-ext-${{ env.GODOT_CPP_TAG }}-${{ hashFiles('core/**', 'ext/**', 'CMakeLists.txt') }}
+          restore-keys: win-ext-${{ env.GODOT_CPP_TAG }}-
+      - name: Build earthsim.dll
+        shell: bash
+        run: |
+          cmake -S . -B build -DES_TOOLS=OFF
+          cmake --build build --config Release --target earthsim --parallel 4
+          ls -la game/bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earthsim-dll
+          path: game/bin/*.dll
+
+  export:
+    needs: [windows, core-tests, game-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: earthsim-dll
+          path: game/bin
+      - name: Godot and export templates
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          wget -q https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_export_templates.tpz
+          unzip -q Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          mv Godot_v${GODOT_VER}-stable_linux.x86_64 godot
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VER}.stable
+          unzip -q Godot_v${GODOT_VER}-stable_export_templates.tpz
+          mv templates/* ~/.local/share/godot/export_templates/${GODOT_VER}.stable/
+      - name: Export
+        run: |
+          mkdir -p dist
+          ./godot --headless --path game --import || true
+          ./godot --headless --path game --export-release "Windows Desktop" ../dist/earthsim.exe
+          cp game/bin/*.dll dist/
+      - name: Bundle Minsk data and docs
+        run: |
+          git fetch --depth 1 origin data-minsk
+          mkdir -p dist/data && git archive FETCH_HEAD | tar -x -C dist/data
+          cp README.md dist/README.md
+          cp ATTRIBUTION.md dist/ATTRIBUTION.md
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earthsim-windows
+          path: dist/
