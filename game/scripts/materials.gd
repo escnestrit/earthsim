@@ -12,7 +12,8 @@ const M_ROOF := 7
 const M_WATER := 8
 const M_PATH := 9
 const M_RAIL := 10
-const COUNT := 11
+const M_MARKING := 11
+const COUNT := 12
 
 var list: Array[Material] = []
 var far_list: Array[Material] = []   # same shaders, cut away inside the detail radius
@@ -33,7 +34,7 @@ func _init() -> void:
 		m.shader = surf
 		m.set_shader_parameter("kind", pair[1])
 		list[pair[0]] = m
-	for pair in [[M_TERRAIN, "terrain"], [M_WALL, "facade"], [M_ROOF, "roof"], [M_WATER, "water"]]:
+	for pair in [[M_TERRAIN, "terrain"], [M_WALL, "facade"], [M_ROOF, "roof"], [M_WATER, "water"], [M_MARKING, "marking"]]:
 		var m := ShaderMaterial.new()
 		m.shader = load("res://shaders/%s.gdshader" % pair[1])
 		list[pair[0]] = m

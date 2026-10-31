@@ -18,6 +18,7 @@ enum Mat : int {
     M_WATER,
     M_PATH,          // footpaths
     M_RAIL,          // ballast + rails
+    M_MARKING,       // painted markings on top of the carriageway: uv.y along, uv2.x = 0 zebra, 1 solid
     M_COUNT
 };
 

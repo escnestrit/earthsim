@@ -244,7 +244,7 @@ void RoadGeom::emit_junction(int n, V2 o, Mesh *mats) const {
                     if (q) acc += dist(top[q].xy(), top[q - 1].xy());
                     u1.push_back({acc, 0}), u2.push_back({acc, 0.6});
                 }
-                strip(mats[M_KERB], top, bot, u1, u2);  // faces outwards
+                strip(mats[M_TERRAIN], top, bot, world_uv(top, o), world_uv(bot, o), {0, 0}, 0.35f, 0.0f, 0.25f, 0.4f);  // sloped shoulder
             }
             continue;
         }
@@ -357,8 +357,9 @@ void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats) const {
             }
             (left ? outerL : outerR) = ot;
         } else {
-            if (left) strip(bridge ? mats[M_CONCRETE] : mats[M_KERB], sk, kb, ua, ub);
-            else strip(bridge ? mats[M_CONCRETE] : mats[M_KERB], kb, sk, ub, ua);
+            // shoulder: ground material (gravel/grass), concrete on bridges
+            if (left) strip(bridge ? mats[M_CONCRETE] : mats[M_TERRAIN], sk, kb, world_uv(sk, o), world_uv(kb, o), {0, 0}, 0.35f, 0.0f, 0.25f, 0.4f);
+            else strip(bridge ? mats[M_CONCRETE] : mats[M_TERRAIN], kb, sk, world_uv(kb, o), world_uv(sk, o), {0, 0}, 0.35f, 0.0f, 0.25f, 0.4f);
             (left ? outerL : outerR) = kb;
         }
     }

@@ -642,7 +642,9 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
                 }
                 // next to roads the ground is trodden: more urban dirt
                 if (kind[size_t(gj) * M + gi]) r *= 0.3f, a = 1.0f - r - g - b;
-                id[size_t(j) * (TN + 1) + i] = m.vert(lv(p, z, o), n, {p.x, p.y}, {0, 0}, r, g, b, a);
+                // squares and car parks are paved: uv2.x = 1 (paving), 0.5 (asphalt)
+                double paved = ak == AreaKind::Paved ? 1.0 : ak == AreaKind::Parking ? 0.5 : 0.0;
+                id[size_t(j) * (TN + 1) + i] = m.vert(lv(p, z, o), n, {p.x, p.y}, {paved, 0}, r, g, b, a);
             }
         C.hole.assign(size_t(TN) * TN, 0);
         for (int j = 0; j < TN; j++)
@@ -744,6 +746,60 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
         for (auto &h : hs)
             if (poly_area(h) > 0) std::reverse(h.begin(), h.end());
         flat_poly(C.mats[M_WATER], oc, hs, wa.second, o, {0.2, 0.3, 0.35}, 1);
+    }
+
+    // ---- road markings: zebra crossings (mapped crosswalks) and stop lines at signals
+    {
+        Mesh &mk = C.mats[M_MARKING];
+        for (auto &r : region.roads) {
+            if (r.kind != RoadKind::Path || r.subclass != "crosswalk") continue;
+            Rect bb;
+            for (auto p : r.pts) bb.add(p);
+            if (!bb.overlaps(rect)) continue;
+            for (auto &piece : clip_line(r.pts, rect)) {
+                double L = polyline_length(piece);
+                int n = std::max(1, int(std::ceil(L / 0.5)));
+                std::vector<V3> lft, rgt;
+                std::vector<double> ss;
+                std::vector<bool> on;
+                for (int k = 0; k <= n; k++) {
+                    double s = L * k / n;
+                    V2 d;
+                    V2 p = polyline_at(piece, s, &d);
+                    if (k == n) d = norm(p - polyline_at(piece, std::max(0.0, s - 0.1)));
+                    SurfaceHit hh = geom.query(p, ctx.rc, 0);
+                    on.push_back(hh.kind == 1 && !hh.margin);
+                    V2 nl = perp(d) * 1.6;
+                    lft.push_back(lv(p + nl, hh.z + 0.025, o)), rgt.push_back(lv(p - nl, hh.z + 0.025, o));
+                    ss.push_back(s);
+                }
+                for (size_t k = 0; k + 1 < lft.size(); k++)
+                    if (on[k] && on[k + 1]) add_quad(mk, lft[k], rgt[k], rgt[k + 1], lft[k + 1], {0, ss[k]}, {3.2, ss[k]}, {3.2, ss[k + 1]}, {0, ss[k + 1]}, {0, 0});
+            }
+        }
+        for (int ei : es_) {
+            auto &e = net.edges[ei];
+            for (int end = 0; end < 2; end++) {
+                int node = end == 0 ? e.a : e.b;
+                if (!net.nodes[node].signals || e.prio < 3) continue;
+                V2 np = net.nodes[node].p;
+                if (!(np.x >= rect.mn.x && np.x < rect.mx.x && np.y >= rect.mn.y && np.y < rect.mx.y)) continue;
+                // traffic arriving at this end: a->b arrives at b
+                int arriving = end == 1 ? 1 : -1;
+                if (e.oneway && e.oneway != arriving) continue;
+                double s = end == 0 ? e.trim_a + 2.0 : e.len - e.trim_b - 2.0;
+                if (s < 0.5 || s > e.len - 0.5) continue;
+                V2 d;
+                V2 c = e.at(s, &d);
+                V2 dir = d * double(arriving);       // direction of travel
+                V2 right = perp(dir) * -1.0;
+                double z = e.z_at(s) + 0.025;
+                double from = e.oneway ? -e.half() : 0.0, to = e.half();
+                V2 a = c + right * (from + 0.2), b = c + right * (to - 0.3);
+                V2 back = dir * -0.4;
+                add_quad(mk, lv(a + back, z, o), lv(b + back, z, o), lv(b, z, o), lv(a, z, o), {0, 0}, {1, 0}, {1, 0.4}, {0, 0.4}, {1, 0});
+            }
+        }
     }
 
     // ---- footpaths and railways (drawn on the shaped ground)

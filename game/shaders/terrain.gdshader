@@ -4,9 +4,11 @@ render_mode cull_back;
 #include "res://shaders/common.gdshaderinc"
 
 varying vec3 wpos;
+varying float paved;
 
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	paved = UV2.x;
 }
 
 void fragment() {
@@ -22,9 +24,25 @@ void fragment() {
 	vec3 urban = mix(vec3(0.30, 0.29, 0.26), vec3(0.38, 0.36, 0.30), n2) * (0.85 + 0.3 * n3);
 	// patches of worn grass in urban ground
 	float patchy = smoothstep(0.45, 0.6, fbm(w * 0.25));
-	urban = mix(urban, grass * 0.85, patchy * 0.6);
+	urban = mix(urban, grass * 0.85, patchy * 0.35);
 	vec3 col = grass * m.r + forest * m.g + soil * m.b + urban * m.a;
 	float rough = 0.95;
+	if (paved > 0.25) {
+		// squares: granite paving; car parks: worn asphalt
+		vec3 pv;
+		if (paved > 0.75) {
+			vec2 g = w / 0.6;
+			vec2 f = abs(fract(g + vec2(0.0, floor(g.x) * 0.5)) - 0.5);
+			float groove = smoothstep(0.44, 0.49, max(f.x, f.y));
+			pv = vec3(0.47, 0.45, 0.42) * (0.88 + 0.18 * h21(floor(g))) * (0.9 + 0.2 * n2);
+			pv = mix(pv, pv * 0.7, groove);
+		} else {
+			pv = vec3(0.2, 0.2, 0.205) * (0.85 + 0.3 * n2);
+		}
+		float k = smoothstep(0.25, 0.6, paved);
+		col = mix(col, pv, k);
+		rough = mix(rough, 0.8, k);
+	}
 	apply_wet(col, rough, 0.7);
 	ALBEDO = col;
 	ROUGHNESS = rough;
