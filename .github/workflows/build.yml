@@ -140,18 +140,29 @@ jobs:
         run: |
           cd dist
           for f in *; do echo "::notice::$(du -sh "$f")"; done
-      - name: Drive test (exe)
-        shell: bash
+      - name: Game tests (exe)
+        shell: pwsh
         run: |
           cd dist
-          timeout 300 ./earthsim.console.exe --headless -- --test=drive 2>&1 | tee drive.log
-          grep "\[test\]" drive.log | while IFS= read -r l; do echo "::notice::$l"; done
-          grep -q "PASS" drive.log
-      - name: World + city test (exe)
-        shell: bash
-        run: |
-          cd dist
-          timeout 300 ./earthsim.console.exe --headless -- --test=world 2>&1 | tee world.log
-          timeout 400 ./earthsim.console.exe --headless -- --test=city --duration=60 --radius=500 2>&1 | tee city.log
-          cat world.log city.log | grep "\[test\]" | while IFS= read -r l; do echo "::notice::$l"; done
-          grep -q "PASS" world.log && grep -q "PASS" city.log
+          $fail = 0
+          $tests = @(
+            @('--headless','--','--test=drive'),
+            @('--headless','--','--test=crash'),
+            @('--headless','--','--test=world'),
+            @('--headless','--','--test=city','--duration=60','--radius=500')
+          )
+          $i = 0
+          foreach ($a in $tests) {
+            $i++
+            $p = Start-Process -FilePath .\earthsim.console.exe -ArgumentList $a -NoNewWindow -PassThru -RedirectStandardOutput "t$i.log" -RedirectStandardError "t$i.err"
+            if (-not $p.WaitForExit(420000)) { $p.Kill(); Write-Output "::error::test $i timed out"; $fail = 1 }
+            $lines = Get-Content "t$i.log", "t$i.err" -ErrorAction SilentlyContinue
+            $res = $lines | Select-String -Pattern '\[test\]'
+            if ($res) { foreach ($l in $res) { Write-Output "::notice::$l" } } else {
+              Write-Output "::error::test $i ($($a -join ' ')) printed no result, exit $($p.ExitCode)"
+              $lines | Select-Object -Last 25 | ForEach-Object { Write-Output "::error::$_" }
+              $fail = 1
+            }
+            if ($res -and -not ($res -match 'PASS')) { $fail = 1 }
+          }
+          exit $fail
