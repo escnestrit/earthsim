@@ -16,6 +16,9 @@ const StreamerScript := preload("res://scripts/streamer.gd")
 const CarScript := preload("res://scripts/car.gd")
 const CarModel := preload("res://scripts/car_model.gd")
 const CameraScript := preload("res://scripts/camera_rig.gd")
+const AudioScript := preload("res://scripts/car_audio.gd")
+const MenuScript := preload("res://scripts/menu.gd")
+const ControlsScript := preload("res://scripts/controls.gd")
 
 var args := {}
 var world: EarthWorld
@@ -36,6 +39,13 @@ var _test := {}
 var _wheel_nodes := []
 var _head_light: SpotLight3D
 var _lights_on := false
+var menu
+var controls
+var monitor: Label
+var _lamp_lights: Array[OmniLight3D] = []
+var _lamp_t := 0.0
+var _tail_mat: StandardMaterial3D
+var _night := 0.0
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
@@ -52,6 +62,15 @@ func _ready() -> void:
 		return
 	_setup_car()
 	_setup_hud()
+	_setup_menu()
+	controls = ControlsScript.new()
+	controls.load_config()
+	_setup_lamp_lights()
+	if not args.has("test") and not args.has("shot") and DisplayServer.get_name() != "headless":
+		var au := AudioStreamPlayer.new()
+		au.set_script(AudioScript)
+		au.car = car
+		add_child(au)
 	set_time(hour)
 	if args.has("rain"):
 		set_wet(1.0)
@@ -156,24 +175,38 @@ func set_time(h: float) -> void:
 	hour = fposmod(h, 24.0)
 	var day := (hour - 6.0) / 12.0  # 0 sunrise .. 1 sunset
 	var elev := sin(day * PI) * deg_to_rad(52.0)
-	var az := lerpf(deg_to_rad(-100.0), deg_to_rad(100.0), clampf(day, 0.0, 1.0))
-	sun.rotation = Vector3(-elev if elev > 0.0 else deg_to_rad(-8.0), az + PI, 0)
-	var n := 1.0 - smoothstep(-0.05, 0.12, elev) if day > 0.0 and day < 1.0 else 1.0
+	var n := 1.0 - smoothstep(-0.10, 0.10, elev)
 	if day <= 0.0 or day >= 1.0:
 		n = 1.0
+		elev = -0.2
+	var az := lerpf(deg_to_rad(-100.0), deg_to_rad(100.0), clampf(day, 0.0, 1.0))
 	RenderingServer.global_shader_parameter_set("night", n)
-	sun.light_energy = lerpf(1.6, 0.0, n)
-	var warm := 1.0 - smoothstep(0.0, 0.35, elev)
-	sun.light_color = Color(1.0, 0.93, 0.85).lerp(Color(1.0, 0.6, 0.35), warm)
-	sky_mat.sky_top_color = Color(0.32, 0.5, 0.78).lerp(Color(0.01, 0.015, 0.04), n)
-	sky_mat.sky_horizon_color = Color(0.68, 0.76, 0.84).lerp(Color(0.05, 0.06, 0.1), n).lerp(Color(0.9, 0.6, 0.4), warm * (1.0 - n) * 0.6)
+	_night = n
+	var warm := (1.0 - smoothstep(0.0, 0.35, elev)) * (1.0 - n)
+	if n < 0.5:
+		sun.rotation = Vector3(-maxf(elev, deg_to_rad(3.0)), az + PI, 0)
+		sun.light_color = Color(1.0, 0.93, 0.85).lerp(Color(1.0, 0.6, 0.35), warm)
+		sun.light_energy = lerpf(1.6, 0.3, n * 2.0)
+	else:
+		# moonlight
+		sun.rotation = Vector3(deg_to_rad(-38.0), deg_to_rad(40.0), 0)
+		sun.light_color = Color(0.62, 0.72, 1.0)
+		sun.light_energy = 0.16
+	var day_top := Color(0.32, 0.5, 0.78)
+	var day_hor := Color(0.68, 0.76, 0.84)
+	# city sky at night is not black: light pollution on the horizon
+	var night_top := Color(0.03, 0.04, 0.08)
+	var night_hor := Color(0.17, 0.14, 0.13)
+	sky_mat.sky_top_color = day_top.lerp(night_top, n)
+	sky_mat.sky_horizon_color = day_hor.lerp(night_hor, n).lerp(Color(0.95, 0.6, 0.4), warm * 0.6)
 	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
+	sky_mat.ground_bottom_color = Color(0.25, 0.26, 0.28).lerp(Color(0.04, 0.04, 0.05), n)
 	env.fog_light_color = sky_mat.sky_horizon_color
-	env.ambient_light_energy = lerpf(1.0, 0.25, n)
-	env.background_energy_multiplier = lerpf(1.0, 0.5, n)
+	env.ambient_light_energy = lerpf(1.0, 0.9, n)
+	env.background_energy_multiplier = 1.0
+	env.tonemap_exposure = lerpf(1.0, 1.7, n)
 	if streamer:
 		streamer.props.set_night(n)
-	_lights_on = n > 0.5 or _lights_on and n > 0.3
 	if _head_light:
 		_head_light.visible = n > 0.3
 
@@ -197,6 +230,7 @@ func _setup_car() -> void:
 	var model := CarModel.new()
 	var mi := MeshInstance3D.new()
 	mi.mesh = model.build_body()
+	_tail_mat = model.tail_mat
 	car.add_child(mi)
 	var wm: ArrayMesh = model.build_wheel(0.325, 0.215)
 	var nodes := []
@@ -211,7 +245,9 @@ func _setup_car() -> void:
 	_head_light.position = Vector3(0, 0.4, -2.3)
 	_head_light.spot_range = 70.0
 	_head_light.spot_angle = 32.0
-	_head_light.light_energy = 6.0
+	_head_light.light_energy = 9.0
+	_head_light.spot_attenuation = 0.8
+	_head_light.rotation = Vector3(deg_to_rad(-4.0), 0, 0)
 	_head_light.shadow_enabled = true
 	_head_light.visible = false
 	car.add_child(_head_light)
@@ -241,11 +277,75 @@ func _setup_hud() -> void:
 	help.add_theme_font_size_override("font_size", 16)
 	help.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	help.add_theme_constant_override("outline_size", 5)
-	help.text = "W/S газ/тормоз (S на месте — назад) · A/D руль · Пробел ручник · R на дорогу · C камера\nQ/E передачи (ручная) · M авто/ручная · T трекшн · B ABS · N +1 час · F2 дождь · F12 скриншот · F1 скрыть"
+	help.text = "W/S газ/тормоз (S на месте — назад) · A/D руль · Пробел ручник · R на дорогу · C камера\nQ/E передачи (ручная) · M авто/ручная · T трекшн · B ABS · N +1 час · F2 дождь · F12 скриншот\nTab / Esc — меню (телепорт, время, дождь, дальность) · F4 руль/геймпад · F1 скрыть подсказку"
 	help.visible = not args.has("shot")
 	layer.add_child(help)
+	monitor = Label.new()
+	monitor.position = Vector2(16, 230)
+	monitor.add_theme_font_size_override("font_size", 15)
+	monitor.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	monitor.add_theme_constant_override("outline_size", 5)
+	monitor.visible = false
+	layer.add_child(monitor)
 	if args.has("shot"):
 		hud.visible = false
+
+func _setup_menu() -> void:
+	menu = CanvasLayer.new()
+	menu.set_script(MenuScript)
+	add_child(menu)
+	menu.teleport.connect(_teleport)
+	menu.time_changed.connect(set_time)
+	menu.rain_changed.connect(func(on): set_wet(1.0 if on else 0.0))
+	menu.radius_changed.connect(func(r): streamer.radius = r)
+
+func _teleport(lat: float, lon: float) -> void:
+	var p: Vector3 = world.latlon_to_world(lat, lon)
+	p.y = world.ground_height(p)
+	spawned = false
+	car.ready_to_drive = false
+	car.freeze = true
+	car.global_position = p + Vector3(0, 2, 0)
+	streamer.focus = p
+
+# street lamps light the road at night: a small pool of real lights follows the car to the nearest lamps
+func _setup_lamp_lights() -> void:
+	for i in 10:
+		var l := OmniLight3D.new()
+		l.omni_range = 22.0
+		l.light_energy = 2.2
+		l.light_color = Color(1.0, 0.8, 0.55)
+		l.shadow_enabled = false
+		l.visible = false
+		add_child(l)
+		_lamp_lights.append(l)
+
+func _update_lamp_lights(dt: float) -> void:
+	_lamp_t -= dt
+	if _lamp_t > 0.0:
+		return
+	_lamp_t = 0.4
+	var on := _night > 0.4
+	var c: Vector3 = car.global_position if spawned else streamer.focus
+	var cand := []
+	if on:
+		for k in streamer.chunks:
+			var node: Node3D = streamer.chunks[k]
+			if node.global_position.distance_to(c) > 400.0:
+				continue
+			var lamps: PackedVector3Array = node.get_meta("lamps", PackedVector3Array())
+			for lp in lamps:
+				var d := lp.distance_squared_to(c)
+				if d < 120.0 * 120.0:
+					cand.append([d, lp])
+		cand.sort_custom(func(a, b): return a[0] < b[0])
+	for i in _lamp_lights.size():
+		var l := _lamp_lights[i]
+		if i < cand.size():
+			l.global_position = cand[i][1] + Vector3(0, 8.0, 0)
+			l.visible = true
+		else:
+			l.visible = false
 
 func _spawn(near: Vector3) -> void:
 	var s: Dictionary = world.spawn_near(near)
@@ -276,6 +376,9 @@ func _process(dt: float) -> void:
 	elif not spawned and streamer.is_loaded_at(streamer.focus) and streamer.loading_count() == 0:
 		_spawn(streamer.focus)
 	_update_wheels()
+	_update_lamp_lights(dt)
+	if _tail_mat:
+		_tail_mat.emission_energy_multiplier = (4.0 if car.input_brake > 0.1 else 0.6) + 1.5 * _night
 	_read_input(dt)
 	_update_hud()
 	if args.has("shot"):
@@ -311,18 +414,30 @@ func _read_input(dt: float) -> void:
 		st += 1.0
 	var hb := 1.0 if Input.is_key_pressed(KEY_SPACE) else 0.0
 	car.steer_direct = false
-	# gamepad / wheel: first connected device
-	var pads := Input.get_connected_joypads()
-	if pads.size() > 0:
-		var j: int = pads[0]
-		var ax := Input.get_joy_axis(j, JOY_AXIS_LEFT_X)
-		if absf(ax) > 0.06:
-			st = ax
+	# steering wheel / gamepad (axes from controls.cfg)
+	var j: Dictionary = controls.read()
+	if j["active"]:
+		if absf(j["steer"]) > 0.0:
+			st = j["steer"]
 			car.steer_direct = true
-		thr = maxf(thr, Input.get_joy_axis(j, JOY_AXIS_TRIGGER_RIGHT))
-		brk = maxf(brk, Input.get_joy_axis(j, JOY_AXIS_TRIGGER_LEFT))
-		if Input.is_joy_button_pressed(j, JOY_BUTTON_A):
-			hb = 1.0
+		thr = maxf(thr, j["throttle"])
+		brk = maxf(brk, j["brake"])
+	hb = maxf(hb, j["handbrake"])
+	for b in j["pressed"]:
+		match b:
+			"shift_up":
+				car.auto_gear = false
+				car.shift(1)
+			"shift_down":
+				car.auto_gear = false
+				car.shift(-1)
+			"reset":
+				_spawn(car.global_position)
+	if monitor and monitor.visible:
+		monitor.text = controls.monitor_text()
+	# fell through or far off the world: back onto the road
+	if spawned and car.global_position.y < world.ground_height(car.global_position) - 6.0:
+		_spawn(car.global_position)
 	# automatic reverse: hold brake at a standstill
 	if car.auto_gear:
 		if car.gear >= 1 and absf(car.speed) < 0.6 and brk > 0.5 and thr < 0.1:
@@ -369,6 +484,8 @@ func _unhandled_key_input(e: InputEvent) -> void:
 			set_time(hour + 1.0)
 		KEY_F1:
 			help.visible = not help.visible
+		KEY_F4:
+			monitor.visible = not monitor.visible
 		KEY_F2:
 			set_wet(0.0 if wet > 0.5 else 1.0)
 		KEY_F12:
@@ -376,8 +493,11 @@ func _unhandled_key_input(e: InputEvent) -> void:
 			var path := OS.get_executable_path().get_base_dir().path_join("screenshot_%d.png" % Time.get_unix_time_from_system())
 			img.save_png(path)
 			print("[earthsim] screenshot ", path)
-		KEY_ESCAPE:
-			get_tree().quit()
+		KEY_ESCAPE, KEY_TAB:
+			if menu.visible:
+				menu.hide_menu()
+			else:
+				menu.show_menu(hour, streamer.radius, wet > 0.5)
 
 func _update_hud() -> void:
 	if hud == null or not hud.visible:
@@ -581,6 +701,6 @@ func _autodrive(dt: float) -> void:
 		if clear < -1.5:
 			_ad["fell"] = true
 	if args.get("test", "") == "city" and _ad["t"] > float(args.get("duration", "90")):
-		var ok: bool = not _ad["fell"] and _ad["dist"] > 400.0 and _ad["air"] < 2.0 and _ad["max_roll"] < 0.5
+		var ok: bool = not _ad["fell"] and _ad["dist"] > _ad["t"] * 6.0 and _ad["air"] < 2.0 and _ad["max_roll"] < 0.5
 		print("[test] city: drove %.0f m in %.0f s, wheels off the ground %.2f s, clearance %.2f..%.2f m, max roll %.2f, resets %d -> %s" % [_ad["dist"], _ad["t"], _ad["air"], _ad["min_clear"], _ad["max_clear"], _ad["max_roll"], _ad["resets"], "PASS" if ok else "FAIL"])
 		get_tree().quit(0 if ok else 1)

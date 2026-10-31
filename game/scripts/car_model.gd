@@ -4,6 +4,7 @@
 extends RefCounted
 
 var body_color := Color(0.62, 0.05, 0.06)
+var tail_mat: StandardMaterial3D
 
 # lower body sections: z (front -> rear), half width, bottom y, top y
 const BODY := [
@@ -148,7 +149,8 @@ func build_body() -> ArrayMesh:
 	for sx in [-1.0, 1.0]:
 		_quad(tl, Vector3(sx * 0.6, 0.55, 2.335), 0.36, 0.1, Vector3(0, 0, 1))
 	tl.commit(mesh)
-	var tail := StandardMaterial3D.new()
+	tail_mat = StandardMaterial3D.new()
+	var tail := tail_mat
 	tail.albedo_color = Color(0.6, 0.02, 0.02)
 	tail.emission_enabled = true
 	tail.emission = Color(1.0, 0.05, 0.03)

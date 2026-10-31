@@ -217,6 +217,12 @@ func _make_node(d: Dictionary) -> Node3D:
 		body.add_child(cs)
 		n.add_child(body)
 	var inst: Array = d["inst"]
+	# lamp positions (world) for the night light pool
+	var lp: PackedFloat32Array = inst[PropsScript.I_LAMP]
+	var lamps := PackedVector3Array()
+	for i in lp.size() / 6:
+		lamps.append(Vector3(lp[i * 6], lp[i * 6 + 1], lp[i * 6 + 2]) + n.position)
+	n.set_meta("lamps", lamps)
 	for kind in min(inst.size(), props.meshes.size()):
 		var all: PackedFloat32Array = inst[kind]
 		if props.meshes[kind] == null:
