@@ -25,9 +25,9 @@ struct Instance {
     float col[4] = {0, 0, 0, 0};  // instance colour (a = 0: kind default)
 };
 
-enum InstKind : int { I_TREE = 0, I_LAMP, I_SIGNAL, I_BENCH, I_STOP, I_SIGN, I_CAR, I_BIN, I_PLAY, I_COUNT };
+enum InstKind : int { I_TREE = 0, I_LAMP, I_SIGNAL, I_BENCH, I_STOP, I_SIGN, I_CAR, I_BIN, I_PLAY, I_GRASS, I_COUNT };
 
-enum Era : int { E_HISTORIC, E_STALIN, E_KHRUSH, E_PANEL, E_MODERN, E_OFFICE, E_INDUSTRIAL, E_HOUSE, E_SHED, E_PUBLIC, E_CHURCH, E_POSTWAR, E_LOCAL, E_TOWER };
+enum Era : int { E_HISTORIC, E_STALIN, E_KHRUSH, E_PANEL, E_MODERN, E_OFFICE, E_INDUSTRIAL, E_HOUSE, E_SHED, E_PUBLIC, E_CHURCH, E_POSTWAR, E_LOCAL, E_TOWER, E_TRIM, E_CANOPY, E_STADIUM, E_MONUMENT, E_CULTURE, E_MALL, E_PARKING };
 enum RoofKind : int { RK_FLAT, RK_HIP, RK_APEX };
 
 struct Building {
@@ -43,6 +43,7 @@ struct Building {
     bool base_set = false;
     uint32_t facade = 0, roof = 0, trim = 0;
     std::string roof_shape;
+    double core = 0;  // 0..1 urban core weight
     int era = E_PANEL, variant = 0, floors = 1, roof_kind = RK_FLAT;
     int verts = 0, holes = 0;
     bool attached = false, tanks = false, cornice = false, balconies = false, entrances = false, roof_boxes = false, glazed = false;
@@ -59,6 +60,7 @@ struct ChunkData {
     // terrain grid heights (TN+1)^2, row-major from south-west, for queries
     std::vector<float> ground;
     std::vector<uint8_t> hole;  // per grid cell (TN*TN): 1 = no terrain triangles
+    std::vector<uint8_t> grass;  // per grid cell: grass density 0..255 (from the ground cover weights)
     std::vector<std::string> notes;
     int stats_buildings = 0, stats_edges = 0;
 };
@@ -96,6 +98,7 @@ struct World {
     void prepare_buildings();
     void emit_building(const Building &b, double base, double foot, V2 o, ChunkData &out, const RoadGeom::Cache &rc) const;
     bool street_facing(V2 mid, V2 out, const RoadGeom::Cache &rc) const;
+    double street_distance(V2 mid, V2 out) const;
 };
 
 }  // namespace es

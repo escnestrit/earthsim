@@ -19,6 +19,7 @@ var lamp_head_mat: StandardMaterial3D
 var signal_mat: ShaderMaterial
 var play: Array[Mesh] = []
 var palm: Mesh
+var grass: Mesh
 
 func _init() -> void:
 	meshes.resize(I_COUNT)
@@ -34,6 +35,7 @@ func _init() -> void:
 	meshes[I_STOP] = _shelter()
 	play = [_swing(), _slide(), _sandbox()]
 	palm = _palm()
+	grass = _grass()
 
 static func _mat(c: Color, rough := 0.8, metal := 0.0) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -406,4 +408,28 @@ func _palm() -> Mesh:
 	var leaf := _mat(Color(0.2, 0.38, 0.14), 0.8)
 	leaf.cull_mode = BaseMaterial3D.CULL_DISABLED
 	m.surface_set_material(1, leaf)
+	return m
+
+func _grass() -> Mesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	for i in 9:
+		var a := rng.randf() * TAU
+		var r := rng.randf() * 0.28
+		var c := Vector3(cos(a) * r, 0, sin(a) * r)
+		var d := Vector3(cos(a + 1.3), 0, sin(a + 1.3)) * 0.035
+		var h := rng.randf_range(0.22, 0.48)
+		var lean := Vector3(rng.randf_range(-0.08, 0.08), 0, rng.randf_range(-0.08, 0.08))
+		var p := [c - d, c + d, c + lean + Vector3(0, h, 0)]
+		var uv := [Vector2(0, 0), Vector2(1, 0), Vector2(0.5, 1)]
+		for k in [0, 1, 2]:
+			st.set_uv(uv[k])
+			st.set_normal(Vector3.UP)
+			st.add_vertex(p[k])
+	var m := st.commit()
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/grass.gdshader")
+	m.surface_set_material(0, mat)
 	return m

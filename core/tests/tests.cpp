@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
     }
     {
         // architecture: the historic centre is old / Stalinist, not khrushchevkas; residential districts have both
-        double era_c[16] = {0}, era_o[16] = {0}, nc = 0, no = 0, att = 0;
+        double era_c[32] = {0}, era_o[32] = {0}, nc = 0, no = 0, att = 0;
         for (auto &b : W.buildings) {
             if (b.parent >= 0 || b.area < 60) continue;
             bool c = len(b.centroid) < 1200;

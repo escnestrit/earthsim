@@ -336,7 +336,15 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 			var v := lv + av.cross(w.hit_pos - xf.origin)
 			force -= (v - n * v.dot(n)) * w.load * 0.25
 		state.apply_force(force, w.hit_pos - xf.origin)
-	# aerodynamic drag
+	# stability control (with TCS on): damp yaw that does not match the steering (spins, snap oversteer)
+	if tcs_on and absf(speed) > 6.0:
+		var yaw_ax: Vector3 = xf.basis.y
+		var yaw_rate: float = av.dot(yaw_ax)
+		var want: float = -speed * tan(steer) / maxf(wheelbase, 1.0)
+		var err: float = yaw_rate - want
+		if absf(err) > 0.12:
+			state.apply_torque(-yaw_ax * (err - signf(err) * 0.12) * car_mass * 3.5)
+		# aerodynamic drag
 	state.apply_central_force(-lv * lv.length() * 0.5 * 1.2 * drag_area)
 	debug_contacts.clear()
 	for i in state.get_contact_count():

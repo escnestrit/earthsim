@@ -43,6 +43,8 @@ void fragment() {
 		bool edges = mod(flags, 4.0) >= 2.0;
 		bool dbl = mod(flags, 8.0) >= 4.0;
 		float u = UV.x, v = UV.y;
+		// lane count missing in the data: infer it from the width of urban roads
+		if (lanes < 2.0 && edges) lanes = oneway ? max(1.0, floor(width / 3.2)) : (width >= 5.8 ? 2.0 * max(1.0, floor(width / 6.4)) : lanes);
 		float dash = step(fract(v / 12.0), 0.25);  // 3 m dash, 9 m gap
 		bool joined_l = mod(flags, 32.0) >= 16.0, joined_r = mod(flags, 64.0) >= 32.0;
 		if (edges && width > 5.0) {

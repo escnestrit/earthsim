@@ -208,6 +208,10 @@ const std::vector<uint32_t> R_SHINGLE = {0x4A4744, 0x5C5650, 0x3E4247, 0x6B5E52,
 const std::vector<uint32_t> R_COLORBOND = {0x4F5A60, 0x7A8A8F, 0x9AA3A0, 0x3E5045, 0xA0402E, 0x5B4A3E};
 const std::vector<uint32_t> R_CORRUGATED = {0x8A8F92, 0x9B5A40, 0x6F7F86, 0x3F6E8C, 0x7A6E62};
 const std::vector<uint32_t> R_JAPAN = {0x3E4247, 0x55595E, 0x4A4F45};
+const std::vector<uint32_t> P_GRANITE = {0x6E6A66, 0x8A857E, 0xB9B2A6, 0x5A5552, 0xD6D0C4};
+const std::vector<uint32_t> P_CULTURE = {0xEDE6D6, 0xE6DCC4, 0xF2EFE8, 0xD9CFBF, 0xE9DEC8};
+const std::vector<uint32_t> P_MALL = {0xD8DCE0, 0xBFC5CA, 0xE6E1D6, 0x9AA3AB, 0xC9C3B8, 0xE9E9E6};
+const std::vector<uint32_t> P_CONCRETE = {0xA9A8A3, 0xB8B6B0, 0x9E9D99};
 
 uint32_t soften(uint32_t c) {
     // OSM colour tags are swatches ("yellow", "#FFFF00"): pull them towards a plaster tone
@@ -354,7 +358,16 @@ void World::prepare_buildings() {
             return false;
         };
         int era;
-        if (is({"garage", "garages", "shed", "carport", "roof", "kiosk", "toilets", "hut", "container"}) || b.area < 30) era = E_SHED;
+        double tall_thin = r.height > 0 ? r.height / std::max(1.0, std::sqrt(b.area)) : 0;
+        if (is({"column", "pillar", "pylon"}) || Wd < 1.7 || (r.part && (Wd < 2.2 || b.area < 9))) era = E_TRIM;
+        else if (is({"roof", "carport"}) || (r.part && r.min_height > 2.5 && r.height - r.min_height < 2.0)) era = E_CANOPY;
+        else if (is({"stadium", "grandstand"}) || (b.holes && b.area > 5000 && (cls == "sports" || cls == "sports_hall" || cls == "pavilion"))) era = E_STADIUM;
+        else if (is({"monument", "memorial", "obelisk", "statue", "tomb", "shrine"}) || tall_thin > 4.5 ||
+                 (cls.empty() && b.area < 45 && !b.attached && r.floors == 0 && (r.height == 0 || r.height < 12))) era = E_MONUMENT;
+        else if (is({"theatre", "concert_hall", "arts_centre", "cinema", "museum", "library", "townhall", "palace", "courthouse", "opera"})) era = E_CULTURE;
+        else if (is({"retail", "supermarket", "mall", "department_store", "shop", "commercial"}) && b.area > 2200 && (F <= 6 || !known)) era = E_MALL;
+        else if (is({"parking", "parking_garage", "multi_storey_car_park"})) era = E_PARKING;
+        else if (is({"garage", "garages", "shed", "kiosk", "toilets", "hut", "container"}) || b.area < 30) era = E_SHED;
         else if (is({"industrial", "warehouse", "service", "transportation", "hangar", "manufacture", "storage_tank", "train_station"})) era = E_INDUSTRIAL;
         else if (is({"house", "detached", "semidetached_house", "bungalow", "cabin", "farm", "terrace"})) era = E_HOUSE;
         else if (is({"church", "cathedral", "chapel", "religious", "mosque", "synagogue", "temple"})) era = E_CHURCH;
@@ -411,6 +424,13 @@ void World::prepare_buildings() {
         // style / storey height / palette
         const std::vector<uint32_t> *pal = &P_PANEL;
         switch (era) {
+            case E_TRIM: b.style = 15, b.floor_h = 3.0, pal = &P_CULTURE; break;
+            case E_CANOPY: b.style = 15, b.floor_h = 3.0, pal = &P_CONCRETE; break;
+            case E_STADIUM: b.style = 25, b.floor_h = 4.0, pal = &P_CONCRETE; break;
+            case E_MONUMENT: b.style = 15, b.floor_h = 3.0, pal = &P_GRANITE; break;
+            case E_CULTURE: b.style = 20, b.floor_h = 4.5, pal = &P_CULTURE; break;
+            case E_MALL: b.style = 21, b.floor_h = 4.5, pal = &P_MALL; break;
+            case E_PARKING: b.style = 23, b.floor_h = 3.0, pal = &P_CONCRETE; break;
             case E_POSTWAR:
                 b.style = hash01(h * 37) < (Z == Z_NORTH_AMERICA || lat > 50 ? 0.55 : 0.25) ? 1 : 19, b.floor_h = 2.9;
                 pal = b.style == 1 ? &P_WEST_BRICK : (Z == Z_EAST_ASIA ? &P_ASIA : &P_POSTWAR);
@@ -445,10 +465,18 @@ void World::prepare_buildings() {
             case E_PUBLIC: b.style = 13, b.floor_h = 3.6, pal = &P_PUBLIC; break;
             case E_CHURCH: b.style = 14, b.floor_h = 5.0, pal = &P_CHURCH; break;
         }
+        if (F <= 0 && (era == E_MONUMENT || era == E_TRIM || era == E_CANOPY)) F = 1;
+        if (F <= 0 && era == E_STADIUM) F = 4;
+        if (F <= 0 && era == E_MALL) F = 3;
+        if (F <= 0 && era == E_CULTURE) F = 4;
+        if (F <= 0 && era == E_PARKING) F = 4;
         if (F <= 0) F = era == E_INDUSTRIAL ? (b.area > 2000 ? 3 : 2) : era == E_SHED ? 1 : era == E_HOUSE ? 2 : era == E_CHURCH ? 3 : era == E_PUBLIC ? 3 : era == E_OFFICE ? 6 : 4;
         if (r.height > 0 && r.floors > 0) b.floor_h = std::clamp((r.height - (r.roof_height > 0 ? r.roof_height : 0)) / r.floors, 2.6, 6.0);
         b.floors = F;
         b.height = r.height > 0 ? r.height : F * b.floor_h + 0.4;
+        if (era == E_MONUMENT && r.height <= 0) b.height = 3.5 + 4.0 * hash01(h * 5);
+        if (era == E_CANOPY && r.height <= 0) b.height = 4.5;
+        b.core = cw;
         b.min_h = r.min_height > 0 ? r.min_height : r.min_floor > 0 ? r.min_floor * b.floor_h : 0;
         b.roof_h = r.roof_height;
         b.facade = r.facade_color ? soften(r.facade_color) : pick(*pal, h);
@@ -459,7 +487,9 @@ void World::prepare_buildings() {
         std::string rs = r.roof_shape;
         b.roof_shape = rs;
         bool data_pitched = rs == "gabled" || rs == "hipped" || rs == "half-hipped" || rs == "skillion" || rs == "gambrel" || rs == "mansard";
-        if (rs == "dome" || rs == "onion" || rs == "pyramidal" || rs == "cone") b.roof_kind = RK_APEX;
+        if (era == E_MONUMENT && tall_thin > 4.5) b.roof_kind = RK_APEX, b.roof_h = std::min(b.height * 0.08, 3.0);
+        else if (era == E_TRIM || era == E_CANOPY || era == E_STADIUM || era == E_MONUMENT || era == E_MALL || era == E_PARKING) b.roof_kind = RK_FLAT;
+        else if (rs == "dome" || rs == "onion" || rs == "pyramidal" || rs == "cone") b.roof_kind = RK_APEX;
         else if (data_pitched) b.roof_kind = RK_HIP;
         else if (rs == "flat") b.roof_kind = RK_FLAT;
         else {
@@ -507,7 +537,8 @@ void World::prepare_buildings() {
         b.cornice = (era == E_STALIN || era == E_HISTORIC || (era == E_PUBLIC && cw > 0.4)) && b.height > 6;
         b.balconies = (era == E_PANEL || era == E_KHRUSH || era == E_MODERN || (era == E_STALIN && hash01(h * 29) < 0.5)) && F >= 3;
         b.entrances = (era == E_PANEL || era == E_KHRUSH || era == E_MODERN || era == E_STALIN) && L > 18 && F >= 3;
-        b.roof_boxes = (era == E_PANEL || era == E_MODERN || era == E_OFFICE || era == E_TOWER) && F >= 9;
+        b.roof_boxes = ((era == E_PANEL || era == E_MODERN || era == E_OFFICE || era == E_TOWER) && F >= 9) || era == E_MALL;
+        if (era == E_CULTURE) b.cornice = b.height > 6;
         b.tanks = (era == E_LOCAL || ((Z == Z_LATIN_AMERICA || Z == Z_HOT_DRY || Z == Z_TROPICAL) && era == E_MODERN)) && b.roof_kind == RK_FLAT;
         if (era == E_POSTWAR || era == E_TOWER) {
             b.balconies = F >= 3 && (era == E_TOWER || hash01(h * 29) < 0.5);
@@ -520,6 +551,11 @@ void World::prepare_buildings() {
     for (auto &b : buildings)
         if (b.parent >= 0) {
             auto &p = buildings[b.parent];
+            if (b.era == E_TRIM || b.era == E_CANOPY) {
+                b.facade = RB[b.src].facade_color ? b.facade : p.trim ? p.trim : p.facade;
+                b.trim = b.facade;
+                continue;
+            }
             b.era = p.era, b.style = p.style, b.facade = RB[b.src].facade_color ? b.facade : p.facade, b.trim = p.trim, b.variant = p.variant;
             if (!RB[b.src].floors && !(RB[b.src].height > 0)) b.floor_h = p.floor_h;
         }
@@ -578,6 +614,10 @@ static double terrain_ctx(const World &w, V2 p, const Ctx &c, bool *hole, int *k
         double B = std::clamp(3 + 2.5 * std::fabs(target - G), 3.0, 30.0);
         double wgt = 1 - smoothstep(0, B, h.dist);
         G = lerpd(G, target, wgt);
+        // never a wall next to the road: the ground rises / falls at most ~1:4 from the edge, so medians and
+        // gores stay low and a car can drive off and back on anywhere
+        double dd = std::max(0.0, h.dist - 1.5);
+        G = std::clamp(G, target - 0.25 - 0.3 * dd, target + 0.1 + 0.25 * dd);
     }
     return G;
 }
@@ -727,17 +767,20 @@ bool rings_cross(const std::vector<Poly> &R) {
 
 }  // namespace
 
-bool World::street_facing(V2 mid, V2 out, const RoadGeom::Cache &rc) const {
-    for (double t : {4.0, 9.0, 16.0}) {
-        SurfaceHit h = geom.query(mid + out * t, rc, 0);
-        if (h.kind == 2) return true;
-        if (h.kind == 1) {
-            if (h.edge >= 0) return net.edges[h.edge].prio >= 4;
-            return true;
-        }
-    }
-    return false;
+// how far the nearest street is in front of a wall (1e9: none within 45 m in front)
+double World::street_distance(V2 mid, V2 out) const {
+    RoadHit h = net.nearest(mid + out * 2.0, 45, 4);
+    if (h.edge < 0) return 1e9;
+    V2 q = net.edges[h.edge].at(h.s);
+    V2 d = q - mid;
+    double l = len(d);
+    if (l < 0.5) return 0;
+    // the street must be in front of the wall, not behind the building
+    if (dot(d / l, out) < 0.35) return 1e9;
+    return l - net.edges[h.edge].half();
 }
+
+bool World::street_facing(V2 mid, V2 out, const RoadGeom::Cache &) const { return street_distance(mid, out) < 24; }
 
 void World::emit_building(const Building &b, double base, double foot, V2 o, ChunkData &out, const RoadGeom::Cache &rcache) const {
     auto &r = region.buildings[b.src];
@@ -758,6 +801,102 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
     };
     std::string rs = b.roof_shape;
     const bool high_part = b.min_h > 0.3;
+
+    // ---------------- canopies (petrol stations, platform roofs, "roof" buildings): slab on pillars
+    if (b.era == E_CANOPY) {
+        double zt = top, zb = top - 0.45;
+        V2 uv2{3.0, 15.0};
+        for (auto &ring : r.rings) {
+            flat_poly(Rf, ring.outer, ring.holes, zt, o, rc, 0);
+            Mesh tmp;
+            flat_poly(tmp, ring.outer, ring.holes, zb, o, fc, 0);
+            int b0 = int(W.verts());
+            for (size_t v = 0; v < tmp.verts(); v++)
+                W.vert({tmp.pos[v * 3], tmp.pos[v * 3 + 1], tmp.pos[v * 3 + 2]}, {0, 0, -1}, {tmp.uv[v * 2], tmp.uv[v * 2 + 1]}, uv2, float(fc.x * 0.8), float(fc.y * 0.8), float(fc.z * 0.8), seed);
+            for (size_t k = 0; k + 2 < tmp.idx.size(); k += 3) W.tri(b0 + tmp.idx[k], b0 + tmp.idx[k + 2], b0 + tmp.idx[k + 1]);
+            const Poly &P = ring.outer;
+            V2 cen = poly_centroid(P);
+            size_t col0 = W.idx.size();
+            for (size_t i = 0; i < P.size(); i++) {
+                V2 a = P[i], c = P[(i + 1) % P.size()];
+                double l = dist(a, c);
+                if (l < 0.05) continue;
+                add_quad(W, lv(a, zb, o), lv(c, zb, o), lv(c, zt, o), lv(a, zt, o), {0, 0}, {l, 0}, {l, 0.45}, {0, 0.45}, uv2, float(fc.x), float(fc.y), float(fc.z), seed);
+                if (on_seam(a, c)) continue;
+                int np = std::max(1, int(std::ceil(l / 9.0)));
+                for (int k = 0; k < np; k++) {
+                    V2 q = lerp(a, c, double(k) / np);
+                    q = q + norm(cen - q) * 0.7;
+                    if (!point_in_poly(P, q)) continue;
+                    cbox(W, q, {1, 0}, 0.18, 0.18, foot, zb, o, uv2, fc * 0.85, seed);
+                }
+            }
+            collect(W, out.col_solid, col0);
+        }
+        return;
+    }
+
+    // ---------------- stadiums: outer wall, stands sloping down to the field, roof ring
+    if (b.era == E_STADIUM && r.rings.size() == 1) {
+        Poly P = clean_ring(r.rings[0].outer);
+        double ao = std::fabs(poly_area(P)), ah = 0;
+        for (auto &hh : r.rings[0].holes) ah = std::max(ah, std::fabs(poly_area(hh)));
+        double L, Wd;
+        V2 ax;
+        obb(P, L, Wd, ax);
+        double gap = ah > 0 ? (std::sqrt(ao) - std::sqrt(ah)) * 0.5 : Wd * 0.28;
+        double ds = std::clamp(gap * 0.9, 6.0, 45.0);
+        Poly Q, R;
+        bool ok = false;
+        for (int t = 0; t < 4 && !ok && P.size() >= 3; t++, ds *= 0.75) {
+            std::vector<double> d(P.size());
+            for (size_t i = 0; i < P.size(); i++) d[i] = on_seam(P[i], P[(i + 1) % P.size()]) ? 0.0 : ds;
+            ok = inset_ring(P, d, Q) && !rings_cross({Q});
+            if (ok) {
+                for (auto &x : d) x *= 0.45;
+                if (!inset_ring(P, d, R) || rings_cross({R})) R.clear();
+            }
+        }
+        if (ok) {
+            double H = std::max(10.0, top - base);
+            double zo = base + H * 0.82, zi = base + 2.2;
+            V2 wv{4.0, 25.0}, sv{0.8, 26.0}, cv{3.0, 15.0};
+            size_t w0 = W.idx.size();
+            double acc = 0;
+            for (size_t i = 0; i < P.size(); i++) {
+                size_t j = (i + 1) % P.size();
+                double l = dist(P[i], P[j]);
+                if (l < 0.05 || on_seam(P[i], P[j])) {
+                    acc += l;
+                    continue;
+                }
+                add_quad(W, lv(P[i], foot, o), lv(P[j], foot, o), lv(P[j], base + H, o), lv(P[i], base + H, o), {acc, foot - base}, {acc + l, foot - base}, {acc + l, H}, {acc, H}, wv, float(fc.x), float(fc.y), float(fc.z), seed);
+                // inner face of the wall above the stands
+                add_quad(W, lv(P[j], zo, o), lv(P[i], zo, o), lv(P[i], base + H, o), lv(P[j], base + H, o), {0, 0}, {l, 0}, {l, 1}, {0, 1}, cv, float(fc.x * 0.9), float(fc.y * 0.9), float(fc.z * 0.9), seed);
+                acc += l;
+            }
+            collect(W, out.col_solid, w0);
+            double sl = std::hypot(ds, zo - zi);
+            for (size_t i = 0; i < P.size(); i++) {
+                size_t j = (i + 1) % P.size();
+                double l = dist(P[i], P[j]);
+                if (l < 0.05) continue;
+                // stands: the uv runs down the slope so the shader can draw rows of seats
+                add_quad(W, lv(P[i], zo, o), lv(P[j], zo, o), lv(Q[j], zi, o), lv(Q[i], zi, o), {0, 0}, {l, 0}, {l, sl}, {0, sl}, sv, 1.0f, 1.0f, 1.0f, seed);
+                // wall around the field
+                double lq = dist(Q[i], Q[j]);
+                add_quad(W, lv(Q[j], base - 0.5, o), lv(Q[i], base - 0.5, o), lv(Q[i], zi, o), lv(Q[j], zi, o), {0, 0}, {lq, 0}, {lq, zi - base}, {0, zi - base}, cv, float(fc.x), float(fc.y), float(fc.z), seed);
+                if (!R.empty()) {
+                    V3 rc2 = rc * 0.95;
+                    add_quad(Rf, lv(P[i], top + 0.6, o), lv(P[j], top + 0.6, o), lv(R[j], top + 0.6, o), lv(R[i], top + 0.6, o), P[i], P[j], R[j], R[i], {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
+                    add_quad(W, lv(P[j], top + 0.2, o), lv(P[i], top + 0.2, o), lv(R[i], top + 0.2, o), lv(R[j], top + 0.2, o), {0, 0}, {1, 0}, {1, 1}, {0, 1}, cv, 0.75f, 0.75f, 0.76f, seed);
+                    double lr = dist(R[i], R[j]);
+                    add_quad(W, lv(R[j], top + 0.2, o), lv(R[i], top + 0.2, o), lv(R[i], top + 0.6, o), lv(R[j], top + 0.6, o), {0, 0}, {lr, 0}, {lr, 0.4}, {0, 0.4}, cv, 0.8f, 0.8f, 0.8f, seed);
+                }
+            }
+            return;
+        }
+    }
 
     // ---------------- roof form
     // 1. apex (pyramid / dome / spire): one ring, no holes, no seams
@@ -871,6 +1010,7 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
         V2 a, c;
         double u0;
         bool street;
+        double sd;  // distance to the street in front (1e9 none)
     };
     std::vector<Seg> outer_walls;
     for (auto &ring : r.rings) {
@@ -889,9 +1029,24 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
                 }
                 V2 dir = (c - a) / l, outv = perp(dir) * -1.0;
                 bool street = false;
-                if (wants_street && lp == &ring.outer && l > 6) street = street_facing((a + c) * 0.5, outv, rcache);
-                bool shop = street && (b.era == E_HISTORIC || b.era == E_STALIN || b.era == E_MODERN || (b.era == E_PANEL && hash01(hb * 53 + i) < 0.3)) &&
-                            hash01(hb * 31 + i) < (b.era == E_HISTORIC ? 0.85 : 0.6) && nfl >= 2;
+                double sd = 1e9;
+                if (wants_street && lp == &ring.outer && l > 6) {
+                    sd = street_distance((a + c) * 0.5, outv);
+                    street = sd < 24;
+                }
+                // shop fronts on street walls: almost all in the core and along main streets, fewer in the suburbs
+                double shop_p = 0;
+                switch (b.era) {
+                    case E_HISTORIC: shop_p = 0.8; break;
+                    case E_STALIN: shop_p = 0.7; break;
+                    case E_MODERN: case E_POSTWAR: shop_p = 0.5; break;
+                    case E_LOCAL: shop_p = 0.55; break;
+                    case E_PANEL: case E_KHRUSH: shop_p = 0.22; break;
+                    case E_MALL: shop_p = 1.0; break;
+                    default: shop_p = 0;
+                }
+                if (shop_p > 0) shop_p = std::min(1.0, shop_p + 0.35 * b.core + (sd < 12 ? 0.15 : 0.0));
+                bool shop = street && nfl >= (b.era == E_MALL ? 1 : 2) && hash01(hb * 31 + i) < shop_p;
                 V2 uv2{b.floor_h + (shop ? 100.0 : 0.0), uv2y};
                 V3 n = V3(outv, 0);
                 int i0 = W.vert(lv(a, bottom, o), n, {acc, bottom - base}, uv2, float(fc.x), float(fc.y), float(fc.z), seed);
@@ -912,7 +1067,7 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
                     Rf.quad(j0, j1, j2, j3);
                     add_quad(Rf, lv(a, top + rim, o), lv(c, top + rim, o), lv(ci, top + rim, o), lv(ai, top + rim, o), {0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}, float(rc2.x), float(rc2.y), float(rc2.z), 0);
                 }
-                if (lp == &ring.outer) outer_walls.push_back({a, c, acc, street});
+                if (lp == &ring.outer) outer_walls.push_back({a, c, acc, street, sd});
                 acc += l;
             }
         }
@@ -980,15 +1135,16 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
     // ---------------- entrances: door, canopy, steps on courtyard walls; street doors for shops are in the shader
     if (b.entrances && !high_part) {
         double bay = style_bay(b.style);
+        // the courtyard side: long walls with no street in front; failing that, the long wall farthest
+        // from any street (never the one facing it)
         std::vector<const Seg *> yard;
         for (auto &sg : outer_walls)
-            if (!sg.street && dist(sg.a, sg.c) > 12) yard.push_back(&sg);
+            if (!sg.street && sg.sd > 30 && dist(sg.a, sg.c) > 12) yard.push_back(&sg);
         if (yard.empty()) {
-            // no courtyard side found: use the longest wall
             const Seg *best = nullptr;
             for (auto &sg : outer_walls)
-                if (!best || dist(sg.a, sg.c) > dist(best->a, best->c)) best = &sg;
-            if (best && dist(best->a, best->c) > 12) yard.push_back(best);
+                if (dist(sg.a, sg.c) > 12 && (!best || sg.sd > best->sd)) best = &sg;
+            if (best && best->sd > 12) yard.push_back(best);
         }
         // only the longest courtyard wall (one row of entrances, like real blocks)
         std::sort(yard.begin(), yard.end(), [](const Seg *x, const Seg *y) { return dist(x->a, x->c) > dist(y->a, y->c); });
@@ -1019,6 +1175,43 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
                     I.yaw = std::atan2(-outv.x, outv.y);
                     out.inst[I_BENCH].push_back(I);
                 }
+            }
+        }
+    }
+
+    // ---------------- shopping centres and big shops: a lit sign on the street wall, a video screen
+    if ((b.era == E_MALL || (b.era == E_OFFICE && b.area > 1500 && hash01(hb * 67) < 0.35)) && !high_part) {
+        std::vector<const Seg *> sw;
+        for (auto &sg : outer_walls)
+            if (sg.street && dist(sg.a, sg.c) > 14) sw.push_back(&sg);
+        if (sw.empty())
+            for (auto &sg : outer_walls)
+                if (dist(sg.a, sg.c) > 14) sw.push_back(&sg);
+        std::sort(sw.begin(), sw.end(), [](const Seg *x, const Seg *y) { return x->sd < y->sd || (x->sd == y->sd && dist(x->a, x->c) > dist(y->a, y->c)); });
+        static const uint32_t sign_cols[] = {0xC8102E, 0x0B4EA2, 0x1E7B34, 0xF2A900, 0x1A1A1A, 0xE35205, 0x5B2C83, 0xFFFFFF};
+        for (size_t k = 0; k < sw.size() && k < 2; k++) {
+            const Seg &sg = *sw[k];
+            double l = dist(sg.a, sg.c);
+            V2 dir = (sg.c - sg.a) / l, ov = perp(dir) * -1.0;
+            double t = 0.5 + (hash01(hb * 71 + k) - 0.5) * 0.3;
+            V2 m = lerp(sg.a, sg.c, t);
+            double hgt = top - base;
+            if (k == 0 || hash01(hb * 73) < 0.5) {
+                // illuminated sign box near the top of the wall
+                double w = std::min(l * 0.55, 6.0 + hash01(hb * 79 + k) * 14.0), hh = std::clamp(hgt * 0.14, 1.4, 3.2);
+                double zc = base + hgt - hh * 0.5 - 0.6;
+                uint32_t c = sign_cols[hash32(hb * 83 + k) % 8];
+                V3 sc = rgb(c);
+                cbox(W, m + ov * 0.22, dir, w * 0.5, 0.2, zc - hh * 0.5, zc + hh * 0.5, o, {3.0, 15.0}, V3(0.15, 0.15, 0.16), seed);
+                V2 p0 = m - dir * (w * 0.5) + ov * 0.43, p1 = m + dir * (w * 0.5) + ov * 0.43;
+                add_quad(W, lv(p0, zc - hh * 0.5, o), lv(p1, zc - hh * 0.5, o), lv(p1, zc + hh * 0.5, o), lv(p0, zc + hh * 0.5, o), {0, 0}, {w, 0}, {w, hh}, {0, hh}, {hh, 24.0}, float(sc.x), float(sc.y), float(sc.z), seed);
+            } else if (hgt > 8) {
+                // LED screen
+                double w = std::min(l * 0.45, 9.0 + hash01(hb * 89) * 6.0), hh = std::min(w * 0.56, hgt * 0.6);
+                double zc = base + std::max(4.5, hgt * 0.5);
+                cbox(W, m + ov * 0.2, dir, w * 0.5 + 0.25, 0.18, zc - hh * 0.5 - 0.25, zc + hh * 0.5 + 0.25, o, {3.0, 15.0}, V3(0.1, 0.1, 0.11), seed);
+                V2 p0 = m - dir * (w * 0.5) + ov * 0.39, p1 = m + dir * (w * 0.5) + ov * 0.39;
+                add_quad(W, lv(p0, zc - hh * 0.5, o), lv(p1, zc - hh * 0.5, o), lv(p1, zc + hh * 0.5, o), lv(p0, zc + hh * 0.5, o), {0, 0}, {w, 0}, {w, hh}, {0, hh}, {hh, 22.0}, 1.0f, 1.0f, 1.0f, seed);
             }
         }
     }
@@ -1223,6 +1416,7 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
     {
         Mesh &m = C.mats[M_TERRAIN];
         std::vector<int> id(size_t(TN + 1) * (TN + 1));
+        std::vector<float> gw(size_t(TN + 1) * (TN + 1), 0.0f);
         for (int j = 0; j <= TN; j++)
             for (int i = 0; i <= TN; i++) {
                 int gi = i + 1, gj = j + 1;
@@ -1252,15 +1446,22 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
                 if (kind[size_t(gj) * M + gi]) r *= 0.3f, a = 1.0f - r - g - b;
                 // squares and car parks are paved: uv2.x = 1 (paving), 0.5 (asphalt)
                 double paved = ak == AreaKind::Paved ? 1.0 : ak == AreaKind::Parking ? 0.5 : 0.0;
+                gw[size_t(j) * (TN + 1) + i] = r;
                 id[size_t(j) * (TN + 1) + i] = m.vert(lv(p, z, o), n, {p.x, p.y}, {paved, 0}, r, g, b, a);
             }
         C.hole.assign(size_t(TN) * TN, 0);
+        C.grass.assign(size_t(TN) * TN, 0);
         for (int j = 0; j < TN; j++)
             for (int i = 0; i < TN; i++) {
                 int gi = i + 1, gj = j + 1;
                 if (hole[size_t(gj) * M + gi] || hole[size_t(gj) * M + gi + 1] || hole[size_t(gj + 1) * M + gi] || hole[size_t(gj + 1) * M + gi + 1]) {
                     C.hole[size_t(j) * TN + i] = 1;
                     continue;
+                }
+                {
+                    float g0 = std::min(std::min(gw[size_t(j) * (TN + 1) + i], gw[size_t(j) * (TN + 1) + i + 1]),
+                                        std::min(gw[size_t(j + 1) * (TN + 1) + i], gw[size_t(j + 1) * (TN + 1) + i + 1]));
+                    C.grass[size_t(j) * TN + i] = uint8_t(std::clamp((g0 - 0.45f) / 0.55f, 0.0f, 1.0f) * 255);
                 }
                 int a = id[size_t(j) * (TN + 1) + i], b = id[size_t(j) * (TN + 1) + i + 1];
                 int c = id[size_t(j + 1) * (TN + 1) + i + 1], d = id[size_t(j + 1) * (TN + 1) + i];
@@ -1591,11 +1792,18 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
             if (dist(q, p) > 0.1) f = norm(q - p);
         }
         if (stop) {
-            // a shelter stands at the back of the pavement facing the road
-            if (rh.edge < 0) continue;
-            int guard = 0;
-            while (on_carriageway(p) && guard++ < 12) p = p - f * 0.5;
-            p = p - f * 1.2;
+            // a shelter stands at the back of the pavement, parallel to the street it serves
+            RoadHit sh = net.nearest(pt.p, 35, 4);
+            if (sh.edge < 0) sh = net.nearest(pt.p, 30, 3);
+            if (sh.edge < 0) continue;
+            auto &e = net.edges[sh.edge];
+            V2 t;
+            V2 c = e.at(sh.s, &t);
+            double sd = sh.side >= 0 ? 1.0 : -1.0;
+            V2 n = perp(t) * sd;
+            double off = e.hs(sd) + (e.sw(sd) > 1.4 ? e.sw(sd) - 0.95 : 2.4);
+            p = c + n * off;
+            f = n * -1.0;
         }
         if (on_carriageway(p) || in_building(p) || !is_free(p, 2.0)) continue;
         Instance I;
@@ -1874,6 +2082,44 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
                 place_tree(p, h, 0.85);
             }
         }
+    }
+    // ---------------- grass: clumps on grassy ground cells (lawns, parks, courtyards), not on paths
+    if (!C.grass.empty() && locale.biome != B_ARID) {
+        std::vector<uint8_t> path_cell(size_t(TN) * TN, 0);
+        for (auto *pl : near_paths)
+            for (size_t k = 0; k + 1 < pl->size(); k++) {
+                V2 a = (*pl)[k], b = (*pl)[k + 1];
+                int n = int(dist(a, b) / 1.0) + 1;
+                for (int t = 0; t <= n; t++) {
+                    V2 q = lerp(a, b, double(t) / n);
+                    int i = int(std::floor((q.x - rect.mn.x) / TCELL)), j = int(std::floor((q.y - rect.mn.y) / TCELL));
+                    if (i >= 0 && j >= 0 && i < TN && j < TN) path_cell[size_t(j) * TN + i] = 1;
+                }
+            }
+        double dens = locale.biome == B_TUNDRA ? 0.5 : 1.0;
+        for (int j = 0; j < TN; j++)
+            for (int i = 0; i < TN; i++) {
+                uint8_t g = C.grass[size_t(j) * TN + i];
+                if (g < 40 || path_cell[size_t(j) * TN + i]) continue;
+                V2 c0 = rect.mn + V2{(i + 0.5) * TCELL, (j + 0.5) * TCELL};
+                if (geom.query(c0, ctx.rc, 0).kind != 0 || in_building(c0)) continue;
+                uint64_t h = hash32(uint64_t(cx * 4096 + i) * 2654435761ULL ^ uint64_t(cy * 4096 + j + 7));
+                int n = int(std::round(g / 255.0 * 12.0 * dens));
+                for (int k = 0; k < n; k++) {
+                    uint64_t hk = hash32(h + k * 977);
+                    V2 p = c0 + V2{(hash01(hk) - 0.5) * TCELL, (hash01(hk * 3) - 0.5) * TCELL};
+                    double z = grid_height(C, p);
+                    if (std::isnan(z)) continue;
+                    Instance I;
+                    I.p = lv(p, z - 0.02, o);
+                    I.yaw = hash01(hk * 5) * 2 * PI;
+                    I.scale = 0.7 + 0.7 * hash01(hk * 7);
+                    double t = hash01(hk * 11);
+                    // greens with some dry blades
+                    I.col[0] = float(0.55 + 0.3 * t), I.col[1] = float(0.85 + 0.15 * (1 - t)), I.col[2] = float(0.45 + 0.1 * t), I.col[3] = 1;
+                    C.inst[I_GRASS].push_back(I);
+                }
+            }
     }
     return out;
 }

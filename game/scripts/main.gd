@@ -31,7 +31,9 @@ var car: RigidBody3D
 var cam: Camera3D
 var sun: DirectionalLight3D
 var env: Environment
-var sky_mat: ProceduralSkyMaterial
+var sky_mat: ShaderMaterial
+var rain: GPUParticles3D
+var _sky := {}
 var ui
 var fetcher
 var world_dynamic := false        # region downloaded at runtime (not a bundled one)
@@ -77,6 +79,7 @@ func _ready() -> void:
 	if world == null:
 		return
 	_setup_car()
+	_setup_rain()
 	_setup_monitor()
 	controls = ControlsScript.new()
 	controls.load_config()
@@ -361,17 +364,23 @@ func _setup_environment() -> void:
 	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
-	sky_mat = ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.32, 0.5, 0.78)
-	sky_mat.sky_horizon_color = Color(0.68, 0.76, 0.84)
-	sky_mat.ground_horizon_color = Color(0.6, 0.65, 0.7)
-	sky_mat.ground_bottom_color = Color(0.25, 0.26, 0.28)
+	sky_mat = ShaderMaterial.new()
+	sky_mat.shader = load("res://shaders/sky.gdshader")
 	sky.sky_material = sky_mat
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_white = 6.0
+	env.ssr_max_steps = 48
+	env.ssr_fade_in = 0.1
+	env.ssr_fade_out = 2.0
+	env.ssil_enabled = true
+	env.ssil_radius = 4.0
+	env.ssil_intensity = 0.6
+	env.adjustment_enabled = true
+	env.adjustment_saturation = 1.08
+	env.adjustment_contrast = 1.04
 	env.ssao_enabled = true
 	env.ssao_radius = 1.2
 	env.glow_enabled = true
@@ -401,6 +410,32 @@ func set_wet(w: float) -> void:
 	RenderingServer.global_shader_parameter_set("wetness", w)
 	if car:
 		car.wetness = w
+	_apply_weather()
+
+# sky, light, fog and rain particles from time of day (_sky) and wetness
+func _apply_weather() -> void:
+	if _sky.is_empty():
+		return
+	var n: float = _sky["n"]
+	var r := wet
+	var grey := Color(0.5, 0.52, 0.56).lerp(Color(0.04, 0.045, 0.05), n)
+	var top: Color = (_sky["top"] as Color).lerp(grey * 0.9, r * 0.85)
+	var hor: Color = (_sky["hor"] as Color).lerp(grey, r * 0.8)
+	sky_mat.set_shader_parameter("top_color", top)
+	sky_mat.set_shader_parameter("horizon_color", hor)
+	sky_mat.set_shader_parameter("ground_color", Color(0.25, 0.26, 0.28).lerp(Color(0.04, 0.04, 0.05), n))
+	sky_mat.set_shader_parameter("cloud_cover", lerpf(0.3, 1.0, r))
+	sky_mat.set_shader_parameter("night", n)
+	env.fog_light_color = hor
+	env.fog_depth_begin = lerpf(300.0, 40.0, r)
+	env.fog_depth_end = lerpf(7000.0, 1600.0, r)
+	env.ssr_enabled = r > 0.3
+	if n < 0.5:
+		sun.light_energy = lerpf(lerpf(1.6, 0.3, n * 2.0), 0.35, r)
+		sun.shadow_opacity = lerpf(1.0, 0.35, r)
+	env.ambient_light_energy = lerpf(1.0, 0.9, n) * lerpf(1.0, 1.15, r)
+	if rain:
+		rain.emitting = r > 0.5
 
 func set_time(h: float) -> void:
 	hour = fposmod(h, 24.0)
@@ -428,11 +463,9 @@ func set_time(h: float) -> void:
 	# city sky at night is not black: light pollution on the horizon
 	var night_top := Color(0.03, 0.04, 0.08)
 	var night_hor := Color(0.17, 0.14, 0.13)
-	sky_mat.sky_top_color = day_top.lerp(night_top, n)
-	sky_mat.sky_horizon_color = day_hor.lerp(night_hor, n).lerp(Color(0.95, 0.6, 0.4), warm * 0.6)
-	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
-	sky_mat.ground_bottom_color = Color(0.25, 0.26, 0.28).lerp(Color(0.04, 0.04, 0.05), n)
-	env.fog_light_color = sky_mat.sky_horizon_color
+	var hor := day_hor.lerp(night_hor, n).lerp(Color(0.95, 0.6, 0.4), warm * 0.6)
+	_sky = {"n": n, "top": day_top.lerp(night_top, n), "hor": hor}
+	_apply_weather()
 	env.ambient_light_energy = lerpf(1.0, 0.9, n)
 	env.background_energy_multiplier = 1.0
 	env.tonemap_exposure = lerpf(1.0, 1.7, n)
@@ -481,6 +514,10 @@ func _setup_car() -> void:
 		car.arb_k = Vector2(18000, 11000)
 		car.mu = 1.15
 		car.drag_area = 0.62
+	# the body slides over kerbs and verges it touches instead of sticking (the tyres do the gripping)
+	var bpm := PhysicsMaterial.new()
+	bpm.friction = 0.12
+	car.physics_material_override = bpm
 	add_child(car)
 	# lower body: convex hull with raised overhangs (approach/departure angles) so kerbs meet the
 	# wheels, not the body
@@ -607,6 +644,36 @@ func _setup_car() -> void:
 		cam.position = Vector3(float(v[0]), float(v[1]), float(v[2])) + streamer.focus
 		cam.rotation = Vector3(deg_to_rad(float(v[4])), deg_to_rad(float(v[3])), 0)
 		cam.far = 4000.0
+
+func _setup_rain() -> void:
+	rain = GPUParticles3D.new()
+	rain.amount = 9000
+	rain.lifetime = 1.1
+	rain.preprocess = 1.0
+	rain.visibility_aabb = AABB(Vector3(-30, -30, -30), Vector3(60, 60, 60))
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(28, 1, 28)
+	pm.direction = Vector3(0.05, -1, 0)
+	pm.spread = 2.0
+	pm.initial_velocity_min = 17.0
+	pm.initial_velocity_max = 22.0
+	pm.gravity = Vector3.ZERO
+	rain.process_material = pm
+	var q := QuadMesh.new()
+	q.size = Vector2(0.012, 0.55)
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.8, 0.85, 0.9, 0.28)
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
+	m.billboard_keep_scale = true
+	q.material = m
+	rain.draw_pass_1 = q
+	rain.local_coords = false
+	rain.position = Vector3(0, 14, -8)
+	rain.emitting = wet > 0.5
+	cam.add_child(rain)
 
 func _setup_monitor() -> void:
 	monitor = Label.new()
@@ -794,9 +861,82 @@ func _process(dt: float) -> void:
 		_traffic_test(dt)
 	if args.get("test", "") == "fetch":
 		_fetch_test(dt)
+	if args.get("test", "") == "offroad":
+		_offroad_test(dt)
 	_check_hop(dt)
 	if args.get("test", "") == "city" or args.has("autodrive"):
 		_autodrive(dt)
+
+# --------------------------------------------------------------- off-road and back
+# Drive off the road sideways onto the verge, turn round and drive back up: must work everywhere.
+var _or := {"i": 0, "phase": 0, "t": 0.0, "ok": 0, "tries": 0, "fails": []}
+
+func _offroad_test(dt: float) -> void:
+	if not spawned or streamer.loading_count() > 0:
+		return
+	_or["t"] += dt
+	var ph: int = _or["phase"]
+	var tries := 10
+	if ph == 0:
+		# next spot: a spawn point on a road around the start, car turned to face off the road
+		var ang: float = float(_or["i"]) * 2.4
+		var spot: Vector3 = streamer.focus + Vector3(cos(ang), 0, sin(ang)) * (60.0 + 25.0 * _or["i"])
+		var s: Dictionary = world.spawn_near(spot)
+		if s.is_empty():
+			_or["i"] += 1
+			return
+		var yaw: float = s["yaw"] + (PI * 0.5 if _or["i"] % 2 == 0 else -PI * 0.5)
+		car.global_transform = Transform3D(Basis(Vector3.UP, yaw), (s["pos"] as Vector3) + Vector3(0, 0.45, 0))
+		car.linear_velocity = Vector3.ZERO
+		car.angular_velocity = Vector3.ZERO
+		_or["start"] = s["pos"]
+		_or["phase"] = 1
+		_or["t"] = 0.0
+	elif ph == 1:
+		car.input_throttle = 0.45
+		car.input_brake = 0.0
+		car.input_steer = 0.0
+		if _or["t"] > 3.5:
+			_or["phase"] = 2
+			_or["t"] = 0.0
+	elif ph == 2:
+		car.input_throttle = 0.0
+		car.input_brake = 1.0
+		if _or["t"] > 1.5:
+			# turn round in place (as a player would with a few manoeuvres)
+			var f := -car.global_transform.basis.z
+			var yaw := atan2(-f.x, -f.z) + PI
+			var p := car.global_position
+			car.global_transform = Transform3D(Basis(Vector3.UP, yaw), p + Vector3(0, 0.3, 0))
+			car.linear_velocity = Vector3.ZERO
+			car.angular_velocity = Vector3.ZERO
+			_or["off"] = (p - (_or["start"] as Vector3)).length()
+			_or["phase"] = 3
+			_or["t"] = 0.0
+	elif ph == 3:
+		car.input_brake = 0.0
+		car.input_throttle = 0.5
+		var d := (car.global_position - (_or["start"] as Vector3))
+		d.y = 0.0
+		if d.length() < 3.0 or _or["t"] > 8.0:
+			var ok := d.length() < 3.5
+			_or["tries"] += 1
+			if ok:
+				_or["ok"] += 1
+			else:
+				var cs := []
+				for c in car.debug_contacts:
+					cs.append("s%d n%s" % [c[2], str((c[1] as Vector3).snapped(Vector3(0.1, 0.1, 0.1)))])
+				var g: float = world.ground_height(car.global_position)
+				_or["fails"].append("(%.0f, %.0f) went %.0f m off, stuck %.0f m away, speed %.1f, wheels on ground %d, height %.2f, body contacts %s" % [(_or["start"] as Vector3).x, (_or["start"] as Vector3).z, _or["off"], d.length(), car.speed, car.telemetry()["contacts"], car.global_position.y - g, str(cs)])
+			_or["i"] += 1
+			_or["phase"] = 0
+			if _or["tries"] >= tries:
+				for f in _or["fails"]:
+					print("[offroad] fail ", f)
+				var pass_ok: bool = _or["ok"] >= tries - 1
+				print("[test] offroad: %d of %d times back on the road -> %s" % [_or["ok"], _or["tries"], "PASS" if pass_ok else "FAIL"])
+				get_tree().quit(0 if pass_ok else 1)
 
 # --------------------------------------------------------------- runtime map loading test
 # Start anywhere (data downloaded by the game itself), drive-stream, switch to the next region

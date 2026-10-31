@@ -65,7 +65,7 @@ struct RoadNet {
 
     void build(const Region &R);
     // nearest edge centreline within maxd (spatial hash); returns edge=-1 if none
-    RoadHit nearest(V2 p, double maxd) const;
+    RoadHit nearest(V2 p, double maxd, int min_prio = 0) const;
     // nearest edge whose surface is within dz of height z (ignores roads above/below: bridges, tunnels)
     RoadHit nearest_at(V2 p, double z, double maxd, double dz = 3.0) const;
     // all edges whose centreline passes within maxd of p

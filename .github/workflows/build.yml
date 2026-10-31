@@ -68,6 +68,8 @@ jobs:
         run: timeout 300 ./godot --headless --path game -- --test=crash
       - name: Traffic test
         run: timeout 300 ./godot --headless --path game -- --test=traffic --data=$PWD/data
+      - name: Off-road and back test
+        run: timeout 400 ./godot --headless --path game -- --test=offroad --notraffic --data=$PWD/data
       - name: Runtime map loading test (London -> region switch -> Tokyo, real servers)
         run: |
           rc=0

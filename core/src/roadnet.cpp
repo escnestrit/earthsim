@@ -458,12 +458,13 @@ void RoadNet::query(V2 p, double maxd, std::vector<int> &out) const {
     query_rect(Rect{p - V2{maxd + cell, maxd + cell}, p + V2{maxd + cell, maxd + cell}}, out);
 }
 
-RoadHit RoadNet::nearest(V2 p, double maxd) const {
+RoadHit RoadNet::nearest(V2 p, double maxd, int min_prio) const {
     RoadHit h;
     std::vector<int> c;
     query(p, maxd, c);
     for (int i : c) {
         auto &e = edges[i];
+        if (e.prio < min_prio || e.tunnel) continue;
         double acc = 0;
         for (size_t k = 0; k + 1 < e.pts.size(); k++) {
             double t, sl = dist(e.pts[k], e.pts[k + 1]);

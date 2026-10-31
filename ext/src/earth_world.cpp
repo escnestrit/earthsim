@@ -247,6 +247,7 @@ static Dictionary to_dict(const es::ChunkData *c) {
     mm["signal"] = make(es::I_SIGNAL, -1, false, true);
     mm["bench"] = make(es::I_BENCH, -1, false, false);
     mm["car"] = make(es::I_CAR, -1, true, false);
+    mm["grass"] = make(es::I_GRASS, -1, true, false);
     mm["bin"] = make(es::I_BIN, -1, false, false);
     mm["stop"] = make(es::I_STOP, -1, false, false);
     mm["play0"] = make(es::I_PLAY, 10, false, false);

@@ -370,6 +370,8 @@ func _make_node(d: Dictionary) -> Node3D:
 	_mm(n, mm["signal"], props.meshes[PropsScript.I_SIGNAL], 0.0, 450.0)
 	_mm(n, mm["bench"], props.meshes[PropsScript.I_BENCH], 0.0, 200.0)
 	_mm(n, mm["car"], props.meshes[PropsScript.I_CAR], 0.0, 380.0)
+	if mm.has("grass"):
+		_mm(n, mm["grass"], props.grass, 0.0, 230.0, true)
 	_mm(n, mm["bin"], props.meshes[PropsScript.I_BIN], 0.0, 220.0)
 	_mm(n, mm["stop"], props.meshes[PropsScript.I_STOP], 0.0, 300.0)
 	for k in 3:
@@ -382,7 +384,7 @@ func _make_node(d: Dictionary) -> Node3D:
 	prof["n"] += 1
 	return n
 
-func _mm(n: Node3D, e: Dictionary, mesh: Mesh, vis_begin: float, vis_end: float) -> void:
+func _mm(n: Node3D, e: Dictionary, mesh: Mesh, vis_begin: float, vis_end: float, no_shadow := false) -> void:
 	var count: int = e["count"]
 	if count == 0 or mesh == null:
 		return
@@ -397,6 +399,6 @@ func _mm(n: Node3D, e: Dictionary, mesh: Mesh, vis_begin: float, vis_end: float)
 	mmi.multimesh = mm
 	mmi.visibility_range_begin = vis_begin
 	mmi.visibility_range_end = vis_end
-	if vis_begin > 0.0:
+	if vis_begin > 0.0 or no_shadow:
 		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	n.add_child(mmi)
