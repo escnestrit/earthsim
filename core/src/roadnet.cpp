@@ -404,6 +404,26 @@ RoadHit RoadNet::nearest(V2 p, double maxd) const {
     return h;
 }
 
+RoadHit RoadNet::nearest_at(V2 p, double z, double maxd, double dz) const {
+    RoadHit h;
+    std::vector<int> c;
+    query(p, maxd, c);
+    for (int i : c) {
+        auto &e = edges[i];
+        double acc = 0;
+        for (size_t k = 0; k + 1 < e.pts.size(); k++) {
+            double t, sl = dist(e.pts[k], e.pts[k + 1]);
+            double d = seg_dist(p, e.pts[k], e.pts[k + 1], &t);
+            if (d < h.d && d <= maxd && std::fabs(e.z_at(acc + t * sl) - z) <= dz) {
+                h.d = d, h.edge = i, h.s = acc + t * sl;
+                h.side = cross(e.pts[k + 1] - e.pts[k], p - e.pts[k]) >= 0 ? d : -d;
+            }
+            acc += sl;
+        }
+    }
+    return h;
+}
+
 void RoadNet::profiles(const Region &R) {
     const double STEP_UP = 6.5, STEP_DOWN = 6.0;  // vertical offset per level, m
     size_t N = nodes.size();
@@ -629,8 +649,8 @@ void RoadNet::merge_overlaps() {
 }  // namespace es
 
 namespace es {
-bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit, V2 *centre, double *width) const {
-    RoadHit hit = nearest(p, 25);
+bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit, V2 *centre, double *width, double z) const {
+    RoadHit hit = std::isnan(z) ? nearest(p, 25) : nearest_at(p, z, 25, 3.5);
     if (hit.edge < 0) return false;
     int ei = hit.edge;
     V2 d;
@@ -670,6 +690,10 @@ bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit, V2 
             if (f.prio < 2) continue;
             V2 q = f.at(fd > 0 ? std::min(f.len, 8.0) : std::max(0.0, f.len - 8.0));
             double dd = dot(norm(q - nodes[node].p), tin);
+            // avoid dead ends (we cannot turn round) and minor service lanes when there is a choice
+            int far = fd > 0 ? f.b : f.a;
+            if (nodes[far].edges.size() <= 1) dd -= 2.5;
+            if (f.prio <= 2 && edges[ei].prio > 2) dd -= 0.6;
             if (dd > bd) bd = dd, best = nj, bdir = fd;
         }
         if (best < 0) {

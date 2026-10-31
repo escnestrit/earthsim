@@ -315,10 +315,10 @@ double World::terrain_at(V2 p, const RoadGeom::Cache &rc, bool *hole) const {
     return terrain_ctx(*this, p, c, hole);
 }
 
-double World::ground_at(V2 p) const {
+double World::ground_at(V2 p, double zmax) const {
     Ctx c;
     make_ctx(*this, Rect{p - V2{45, 45}, p + V2{45, 45}}, c);
-    SurfaceHit h = geom.query(p, c.rc, 0);
+    SurfaceHit h = geom.query(p, c.rc, 0, zmax);
     if (h.kind == 2 || (h.kind == 1 && !h.bridge)) return h.z;
     if (h.kind == 1 && h.bridge) return h.z;
     return terrain_ctx(*this, p, c, nullptr);
@@ -672,7 +672,7 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
         auto &e = net.edges[ei];
         V2 mid = e.at(e.len * 0.5);
         if (!(mid.x >= rect.mn.x && mid.x < rect.mx.x && mid.y >= rect.mn.y && mid.y < rect.mx.y)) continue;
-        geom.emit_edge(ei, o, C.mats);
+        geom.emit_edge(ei, o, C.mats, &ctx.rc);
         C.stats_edges++;
         // bridge piers
         if (e.bridge || e.level > 0) {
@@ -683,9 +683,20 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
                 bool hl = false;
                 double g = terrain_ctx(*this, p, ctx, &hl);
                 if (deck - g < 2.5) continue;
-                // keep piers off roads and railways below
-                SurfaceHit below = geom.query(p, ctx.rc, 0);
-                (void)below;
+                // keep piers off roads, pavements and railways below (and 2 m clear of them)
+                bool blocked = false;
+                for (double ox : {-2.5, 0.0, 2.5})
+                    for (double oy : {-2.5, 0.0, 2.5}) {
+                        V2 q = p + d * ox + perp(d) * oy;
+                        SurfaceHit below = geom.query(q, ctx.rc, 0, deck - 2.0);
+                        if (below.kind != 0) blocked = true;
+                    }
+                for (auto &rl : region.roads) {
+                    if (blocked || rl.kind != RoadKind::Rail) continue;
+                    for (size_t k = 0; k + 1 < rl.pts.size() && !blocked; k++)
+                        if (seg_dist(p, rl.pts[k], rl.pts[k + 1]) < 4.0) blocked = true;
+                }
+                if (blocked) continue;
                 box(C.mats[M_CONCRETE], p, d, 0.7, std::max(1.2, e.half() * 0.6), g - 0.5, deck, o, &C.col_solid);
             }
         }
@@ -698,7 +709,7 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
         for (int n : nodes) {
             V2 p = net.nodes[n].p;
             if (!(p.x >= rect.mn.x && p.x < rect.mx.x && p.y >= rect.mn.y && p.y < rect.mx.y)) continue;
-            geom.emit_junction(n, o, C.mats);
+            geom.emit_junction(n, o, C.mats, &ctx.rc);
             // traffic signals: one head per arm with traffic arriving, on the approaching driver's right
             if (!net.nodes[n].signals) continue;
             for (auto &A : geom.junctions[n].arms) {
@@ -708,6 +719,10 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
                 if (e.prio < 3) continue;
                 V2 out = perp(A.D);
                 V2 pos = A.L.xy() + out * (A.swl > 0 ? std::min(1.0, A.swl * 0.4) : 1.2);
+                {
+                    SurfaceHit sh = geom.query(pos, ctx.rc, 0, A.L.z + 2.0);
+                    if (sh.kind == 1 && !sh.margin) continue;  // would stand in a carriageway (acute junctions)
+                }
                 Instance I;
                 I.p = lv(pos, A.L.z + (A.swl > 0 ? KERB_H : 0), o);
                 I.yaw = std::atan2(-A.D.x, A.D.y);
@@ -892,6 +907,7 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
             RoadHit rh = net.nearest(pt.p, 25);
             Instance I;
             SurfaceHit sh = geom.query(pt.p, ctx.rc, 0);
+            if (sh.kind == 1 && !sh.margin && !sh.bridge) continue;  // never in the carriageway
             double z = sh.kind ? sh.z : terrain_ctx(*this, pt.p, ctx, nullptr);
             I.p = lv(pt.p, z, o);
             if (rh.edge >= 0) {
@@ -904,6 +920,7 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
             if (in_building(pt.p)) continue;
             Instance I;
             SurfaceHit sh = geom.query(pt.p, ctx.rc, 0);
+            if (sh.kind == 1) continue;
             I.p = lv(pt.p, sh.kind ? sh.z : terrain_ctx(*this, pt.p, ctx, nullptr), o);
             I.yaw = hash01(h) * 2 * PI;
             C.inst[I_BENCH].push_back(I);

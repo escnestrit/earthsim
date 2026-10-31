@@ -38,6 +38,7 @@ struct Junction {
 struct SurfaceHit {
     int kind = 0;        // 0 none, 1 carriageway (incl. 1 m margin), 2 pavement
     bool margin = false; // kind 1: the point is in the 1 m margin just outside the carriageway
+    int edge = -1, node = -1;  // kind 1: which carriageway (edge ribbon or junction polygon)
     double z = 0;        // surface height (kind > 0)
     double dist = 1e9;   // kind 0: distance to the nearest hard surface
     double znear = 0;    // kind 0: height of that surface's edge
@@ -52,8 +53,11 @@ struct RoadGeom {
     void build(RoadNet &N);           // sets edge trims too
 
     // geometry emission (meshes are in the local frame, origin subtracted)
-    void emit_edge(int e, V2 origin, Mesh *mats) const;
-    void emit_junction(int n, V2 origin, Mesh *mats) const;
+    // with a cache, pavement pieces lying on another carriageway are dropped (carriageway wins)
+    struct Cache;
+    void emit_edge(int e, V2 origin, Mesh *mats, const Cache *c = nullptr) const;
+    void emit_junction(int n, V2 origin, Mesh *mats, const Cache *c = nullptr) const;
+    bool on_other_carriageway(V2 p, double z, int self_edge, int self_node, const Cache &c) const;
 
     // hard-surface query with candidate edges prefetched for an area
     struct Cache {
@@ -65,7 +69,8 @@ struct RoadGeom {
         void bucket_range(const Rect &q, int &x0, int &y0, int &x1, int &y1) const;
     };
     void prefetch(const Rect &r, Cache &c) const;
-    SurfaceHit query(V2 p, const Cache &c, double reach = 30) const;
+    // zmax: surfaces higher than this are ignored (a bridge above the point)
+    SurfaceHit query(V2 p, const Cache &c, double reach = 30, double zmax = 1e9) const;
     // height of the drivable/walkable surface at p (pavement, carriageway) or NAN if none
     double surface_z(V2 p) const;
 };

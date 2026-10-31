@@ -222,7 +222,8 @@ Dictionary EarthWorld::spawn_near(const Vector3 &p) const {
     return d;
 }
 
-double EarthWorld::ground_height(const Vector3 &p) const { return w ? w->ground_at(L(p)) : 0.0; }
+// height of the surface under p: surfaces more than 2 m above p (bridges overhead) are ignored
+double EarthWorld::ground_height(const Vector3 &p) const { return w ? w->ground_at(L(p), p.y == 0.0 ? 1e9 : p.y + 2.0) : 0.0; }
 
 Vector3 EarthWorld::latlon_to_world(double lat, double lon) const {
     if (!w) return Vector3();
@@ -240,7 +241,7 @@ Vector2 EarthWorld::world_to_latlon(const Vector3 &p) const {
 Dictionary EarthWorld::road_at(const Vector3 &p) const {
     Dictionary d;
     if (!w) return d;
-    es::RoadHit h = w->net.nearest(L(p), 15);
+    es::RoadHit h = w->net.nearest_at(L(p), p.y - 0.4, 15, 3.5);
     if (h.edge < 0) return d;
     auto &e = w->net.edges[h.edge];
     d["name"] = String::utf8(e.name.c_str());
@@ -271,7 +272,7 @@ Dictionary EarthWorld::follow(const Vector3 &p, const Vector3 &heading, double a
     es::V2 t, c;
     int lim = 0;
     double wd = 0;
-    if (!w->net.follow(L(p), es::V2{heading.x, -heading.z}, ahead, t, &lim, &c, &wd)) return d;
+    if (!w->net.follow(L(p), es::V2{heading.x, -heading.z}, ahead, t, &lim, &c, &wd, p.y - 0.4)) return d;
     d["target"] = G(t.x, t.y, p.y);
     d["centre"] = G(c.x, c.y, p.y);
     d["width"] = wd;

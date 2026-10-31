@@ -64,6 +64,7 @@ var surface_name := ""
 var ready_to_drive := false
 var wetness := 0.0             # 0 dry .. 1 wet roads (set by the game)
 var steer_bias := 0.0          # misalignment after heavy front impacts (rad)
+var debug_contacts := []
 var _impact_cool := 0.0
 
 class Wheel:
@@ -337,6 +338,10 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 		state.apply_force(force, w.hit_pos - xf.origin)
 	# aerodynamic drag
 	state.apply_central_force(-lv * lv.length() * 0.5 * 1.2 * drag_area)
+	debug_contacts.clear()
+	for i in state.get_contact_count():
+		var col = state.get_contact_collider_object(i)
+		debug_contacts.append([xf.affine_inverse() * state.get_contact_local_position(i), state.get_contact_local_normal(i), col.get_meta("surface", -1) if col else -2])
 	# body impacts -> deformation (reported to the game, which dents the mesh)
 	_impact_cool -= dt
 	if _impact_cool <= 0.0:

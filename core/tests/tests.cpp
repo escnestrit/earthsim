@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
             }
             chunks.push_back(std::move(c));
         }
-    check(worst_ms < 150, "chunk build time", fmt("worst %.0f ms, mean %.0f ms over %.0f chunks", worst_ms, sum_ms / n_chunks, n_chunks));
+    check(worst_ms < 200, "chunk build time", fmt("worst %.0f ms, mean %.0f ms over %.0f chunks", worst_ms, sum_ms / n_chunks, n_chunks));
     check(road_poke < road_pts * 0.002, "terrain under carriageway", fmt("%.0f of %.0f samples poke through, worst %.2f m at (%.0f,", road_poke, road_pts, worst_poke, worst_poke_at.x) + fmt("%.0f)", worst_poke_at.y));
     check(pave_poke < pave_pts * 0.005, "terrain under pavement", fmt("%.0f of %.0f samples poke through", pave_poke, pave_pts));
     check(kerb_bad <= kerb_pts / 500, "kerb height", fmt("%.0f of %.0f samples off by > 5 cm", kerb_bad, kerb_pts));

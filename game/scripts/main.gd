@@ -48,6 +48,7 @@ var _tail_mat: StandardMaterial3D
 var _body_parts := []
 var _wheel_rest := []
 var _dent_total := 0.0
+var _fall_t := 0.0
 var _night := 0.0
 
 func _ready() -> void:
@@ -254,11 +255,27 @@ func _setup_car() -> void:
 		car.mu = 1.15
 		car.drag_area = 0.62
 	add_child(car)
+	# lower body: convex hull with raised overhangs (approach/departure angles) so kerbs meet the
+	# wheels, not the body
 	var lower := CollisionShape3D.new()
-	var b1 := BoxShape3D.new()
-	b1.size = Vector3(2.1, 0.55, 4.25) if model_root else Vector3(1.78, 0.62, 4.6)
-	lower.shape = b1
-	lower.position = Vector3(0, 0.12, 0.1) if model_root else Vector3(0, 0.25, 0)
+	var hull := ConvexPolygonShape3D.new()
+	var hw := 1.02 if model_root else 0.86
+	var fz := -2.25 if model_root else -2.3
+	var rz := 2.3 if model_root else 2.35
+	var pts := PackedVector3Array()
+	for sx in [-1.0, 1.0]:
+		pts.append(Vector3(sx * (hw - 0.12), -0.13, -1.45))   # floor between the axles
+		pts.append(Vector3(sx * (hw - 0.12), -0.13, 1.35))
+		pts.append(Vector3(sx * (hw - 0.2), 0.04, fz + 0.05))  # front bumper, lower lip
+		pts.append(Vector3(sx * (hw - 0.2), 0.04, rz - 0.05))  # rear bumper, lower lip
+		pts.append(Vector3(sx * (hw - 0.25), 0.32, fz))        # bumper tops
+		pts.append(Vector3(sx * (hw - 0.25), 0.42, rz))
+		pts.append(Vector3(sx * hw, 0.0, -1.7))               # sills
+		pts.append(Vector3(sx * hw, 0.0, 1.6))
+		pts.append(Vector3(sx * hw, 0.42, -1.6))              # beltline
+		pts.append(Vector3(sx * hw, 0.45, 1.6))
+	hull.points = pts
+	lower.shape = hull
 	car.add_child(lower)
 	var upper := CollisionShape3D.new()
 	var b2 := BoxShape3D.new()
@@ -625,9 +642,15 @@ func _read_input(dt: float) -> void:
 				_spawn(car.global_position)
 	if monitor and monitor.visible:
 		monitor.text = controls.monitor_text()
-	# fell through or far off the world: back onto the road
-	if spawned and car.global_position.y < world.ground_height(car.global_position) - 6.0:
-		_spawn(car.global_position)
+	# fell through the world (free fall without wheel contact): back onto the road
+	if spawned:
+		if car.telemetry()["contacts"] == 0 and car.linear_velocity.y < -6.0:
+			_fall_t += dt
+		else:
+			_fall_t = 0.0
+		if _fall_t > 2.5:
+			_fall_t = 0.0
+			_spawn(car.global_position)
 	# automatic reverse: hold brake at a standstill
 	if car.auto_gear:
 		if car.gear >= 1 and absf(car.speed) < 0.6 and brk > 0.5 and thr < 0.1:
@@ -872,6 +895,11 @@ func _autodrive(dt: float) -> void:
 		car.input_throttle = clampf((v - kmh) * 0.15, 0.0, 1.0)
 		car.input_brake = clampf((kmh - v - 4.0) * 0.1, 0.0, 1.0)
 		if args.has("verbose") and absf(car.speed) < 0.3 and _ad["t"] > 3.0:
+			for c in car.debug_contacts:
+				print("[ad] contact local=%s normal=%s surface=%d" % [c[0], c[1], c[2]])
+			for wi in 4:
+				var ww = car.wheels[wi]
+				print("[ad] wheel %d contact=%s n=%s load=%.0f fx=%.0f fy=%.0f surf=%d len=%.3f hit=%s" % [wi, ww.contact, ww.hit_n, ww.load, ww.fx, ww.fy, ww.surf, ww.len, ww.hit_pos])
 			var sp := get_world_3d().direct_space_state
 			for hgt in [-0.25, 0.0, 0.3, 0.7]:
 				for side in [-0.9, 0.0, 0.9]:
@@ -894,6 +922,12 @@ func _autodrive(dt: float) -> void:
 		_ad["stuck"] = 0.0
 	if _ad["stuck"] > 4.0:
 		print("[autodrive] stuck at %s (lat/lon %s), speed %.1f, gear %d, contacts %d" % [car.global_position, world.world_to_latlon(car.global_position), car.speed, car.gear, car.telemetry()["contacts"]])
+		for wi in 4:
+			var ww = car.wheels[wi]
+			print("[autodrive]   wheel %d contact=%s n=%s load=%.0f fx=%.0f fy=%.0f surf=%d len=%.3f omega=%.1f" % [wi, ww.contact, ww.hit_n, ww.load, ww.fx, ww.fy, ww.surf, ww.len, ww.omega])
+		for c in car.debug_contacts:
+			print("[autodrive]   body contact local=%s normal=%s surface=%d" % [c[0], c[1], c[2]])
+		print("[autodrive]   up=%s lin_vel=%s" % [car.global_transform.basis.y, car.linear_velocity])
 		_ad["resets"] += 1
 		_ad["stuck"] = 0.0
 		_spawn(car.global_position + fwd * 30.0)

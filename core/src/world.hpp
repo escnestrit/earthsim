@@ -76,7 +76,7 @@ struct World {
     static double grid_height(const ChunkData &c, V2 p);
 
     // ground height (terrain after shaping, or road/pavement surface where present)
-    double ground_at(V2 p) const;
+    double ground_at(V2 p, double zmax = 1e9) const;
     double terrain_at(V2 p, const RoadGeom::Cache &c, bool *hole = nullptr) const;
     // a good place to start driving: on a carriageway near p, with heading along the road
     bool spawn_point(V2 near, V3 &pos, double &heading) const;

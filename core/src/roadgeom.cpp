@@ -211,7 +211,7 @@ void RoadGeom::build(RoadNet &N) {
 
 // ------------------------------------------------------------------ emission
 
-void RoadGeom::emit_junction(int n, V2 o, Mesh *mats) const {
+void RoadGeom::emit_junction(int n, V2 o, Mesh *mats, const Cache *cache) const {
     const Junction &J = junctions[n];
     if (J.arms.empty()) return;
     const RoadNode &node = net->nodes[n];
@@ -248,6 +248,15 @@ void RoadGeom::emit_junction(int n, V2 o, Mesh *mats) const {
             }
             continue;
         }
+        // a corner pavement that would lie on another road (acute merges): leave it out
+        if (cache) {
+            bool bad = false;
+            for (size_t q = 0; q < C.kerb.size() && !bad; q += 2) {
+                V2 mid = (C.kerb[q].xy() + C.outer[q].xy()) * 0.5;
+                if (on_other_carriageway(mid, C.kerb[q].z, -1, n, *cache)) bad = true;
+            }
+            if (bad) continue;
+        }
         std::vector<V3> kb, kt, ot, ob;
         for (size_t q = 0; q < C.kerb.size(); q++) {
             V3 a = C.kerb[q], b = C.outer[q];
@@ -269,7 +278,7 @@ void RoadGeom::emit_junction(int n, V2 o, Mesh *mats) const {
     (void)node;
 }
 
-void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats) const {
+void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats, const Cache *cache) const {
     const RoadEdge &e = net->edges[ei];
     double s0 = e.trim_a, s1 = e.len - e.trim_b;
     auto S = sample_edge(e, s0, s1, 4.0);
@@ -344,6 +353,42 @@ void RoadGeom::emit_edge(int ei, V2 o, Mesh *mats) const {
             if (left) strip(mats[M_KERB], fl, edge, world_uv(fl, o), world_uv(edge, o));
             else strip(mats[M_KERB], edge, fl, world_uv(edge, o), world_uv(fl, o));
             continue;
+        }
+        if (has_sw && cache) {
+            // split the pavement into runs that do not lie on another carriageway
+            std::vector<bool> ok(n, true);
+            V2 oo = o;
+            for (size_t k = 0; k < n; k++) {
+                V2 mid = (kt[k].xy() + ot[k].xy()) * 0.5 + oo;
+                if (on_other_carriageway(mid, kt[k].z, ei, -1, *cache)) ok[k] = false;
+            }
+            size_t k = 0;
+            bool all = true;
+            for (bool b : ok) all = all && b;
+            if (!all) {
+                while (k < n) {
+                    while (k < n && !ok[k]) k++;
+                    size_t k0 = k;
+                    while (k < n && ok[k]) k++;
+                    if (k - k0 >= 2) {
+                        auto sub = [&](const std::vector<V3> &v) { return std::vector<V3>(v.begin() + k0, v.begin() + k); };
+                        auto subu = [&](const std::vector<V2> &v) { return std::vector<V2>(v.begin() + k0, v.begin() + k); };
+                        auto KB = sub(kb), KT = sub(kt), OT = sub(ot), OB = sub(ob);
+                        auto UA = subu(ua), UB = subu(ub);
+                        if (left) {
+                            strip(mats[M_KERB], KT, KB, UB, UA);
+                            strip(mats[M_PAVEMENT], OT, KT, world_uv(OT, o), world_uv(KT, o));
+                            strip(mats[M_KERB], OB, OT, UA, UB);
+                        } else {
+                            strip(mats[M_KERB], KB, KT, UA, UB);
+                            strip(mats[M_PAVEMENT], KT, OT, world_uv(KT, o), world_uv(OT, o));
+                            strip(mats[M_KERB], OT, OB, UB, UA);
+                        }
+                    }
+                }
+                (left ? outerL : outerR) = ot;
+                continue;
+            }
         }
         if (has_sw) {
             if (left) {
@@ -463,7 +508,7 @@ void RoadGeom::prefetch(const Rect &r, Cache &c) const {
     }
 }
 
-SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
+SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach, double zmax) const {
     SurfaceHit best;
     double best_road_d = 1e9;  // for choosing among overlapping carriageways
     double best_pave_d = 1e9;  // overlapping pavements: the nearest kerb wins
@@ -500,6 +545,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
         if (bd > ext) continue;
         double sw = e.sw(bside);
         double z = e.z_at(bs);
+        if (z > zmax) continue;
         bool inside_span = bs >= e.trim_a - 0.01 && bs <= e.len - e.trim_b + 0.01;
         if (tu) {
             if (bd < h + 1.5 && inside_span) {
@@ -517,6 +563,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
             if (best.kind != 1 || (best.bridge && !br) || (!br && z < best.z)) {
                 best.kind = 1, best.z = z, best_road_d = bd, best.bridge = br;
                 best.margin = bd >= h && sw <= 0;
+                best.edge = ei, best.node = -1;
             }
         } else if (sw > 0 && bd < h + sw + 0.3) {
             if (best.kind == 0 || (best.kind == 2 && bd - h < best_pave_d)) best.kind = 2, best.z = z + KERB_H, best.bridge = br, best_pave_d = bd - h;
@@ -531,6 +578,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
         bool br = false, tu = false;
         for (auto &A : J.arms) br |= net->edges[A.edge].bridge || net->edges[A.edge].level > 0, tu |= net->edges[A.edge].tunnel || net->edges[A.edge].level < 0;
         if (tu) continue;
+        if (J.centre.z > zmax) continue;
         if (!J.box.grown(reach + 1).contains(p)) continue;
         Poly ol;
         for (auto &q : J.outline) ol.push_back(q.xy());
@@ -560,6 +608,7 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
                 }
                 best.kind = 1, best.z = z, best.bridge = br;
                 best.margin = !in;
+                best.edge = -1, best.node = ni;
                 best_road_d = 0;
             }
             continue;
@@ -583,6 +632,14 @@ SurfaceHit RoadGeom::query(V2 p, const Cache &c, double reach) const {
         if (!done) consider_out(d, J.centre.z, br);
     }
     return best;
+}
+
+bool RoadGeom::on_other_carriageway(V2 p, double z, int self_edge, int self_node, const Cache &c) const {
+    SurfaceHit h = query(p, c, 0, z + 0.6);
+    if (h.kind != 1 || h.margin || h.bridge) return false;
+    if (h.edge >= 0 && h.edge == self_edge) return false;
+    if (h.node >= 0 && h.node == self_node) return false;
+    return std::fabs(h.z - z) < 0.6;
 }
 
 double RoadGeom::surface_z(V2 p) const {

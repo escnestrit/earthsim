@@ -57,13 +57,15 @@ struct RoadNet {
     void build(const Region &R);
     // nearest edge centreline within maxd (spatial hash); returns edge=-1 if none
     RoadHit nearest(V2 p, double maxd) const;
+    // nearest edge whose surface is within dz of height z (ignores roads above/below: bridges, tunnels)
+    RoadHit nearest_at(V2 p, double z, double maxd, double dz = 3.0) const;
     // all edges whose centreline passes within maxd of p
     void query(V2 p, double maxd, std::vector<int> &out) const;
     void query_rect(const Rect &r, std::vector<int> &out) const;
     // Point `ahead` metres further along the road the vehicle at p (heading h) is on, keeping to the
     // right-hand lane; at junctions the straightest allowed continuation is taken. Returns false if
     // no road is near. `speed_limit` receives the limit of the edge at the target (km/h).
-    bool follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit = nullptr, V2 *centre = nullptr, double *width = nullptr) const;
+    bool follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit = nullptr, V2 *centre = nullptr, double *width = nullptr, double z = NAN) const;
 
   private:
     double cell = 32;
