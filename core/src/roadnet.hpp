@@ -60,6 +60,7 @@ struct RoadNet {
     std::vector<RoadNode> nodes;
     std::vector<RoadEdge> edges;
     std::vector<std::string> log;
+    double side = 1.0;    // +1 right-hand traffic, -1 left-hand
     double grade = 0.08;  // ramp grade used to approach bridges/tunnels
 
     void build(const Region &R);

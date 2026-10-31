@@ -1,4 +1,6 @@
 #include "earth_world.h"
+#include "mvt.hpp"
+#include <cstring>
 #include <cmath>
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -30,11 +32,57 @@ void EarthWorld::_bind_methods() {
     ClassDB::bind_method(D_METHOD("world_to_latlon", "pos"), &EarthWorld::world_to_latlon);
     ClassDB::bind_method(D_METHOD("road_at", "pos"), &EarthWorld::road_at);
     ClassDB::bind_method(D_METHOD("region_info"), &EarthWorld::region_info);
+    ClassDB::bind_method(D_METHOD("load_spec", "root", "spec"), &EarthWorld::load_spec);
+    ClassDB::bind_static_method("EarthWorld", D_METHOD("map_tile_roads", "mvt"), &EarthWorld::map_tile_roads);
+    ClassDB::bind_static_method("EarthWorld", D_METHOD("map_shade", "png", "z", "ty"), &EarthWorld::map_shade);
     ClassDB::bind_method(D_METHOD("follow", "pos", "heading", "ahead"), &EarthWorld::follow);
     ClassDB::bind_method(D_METHOD("edge_info", "e"), &EarthWorld::edge_info);
     ClassDB::bind_method(D_METHOD("lane_pose", "e", "s", "dir", "lane_off"), &EarthWorld::lane_pose);
     ClassDB::bind_method(D_METHOD("next_edge", "e", "dir", "rnd"), &EarthWorld::next_edge);
     ClassDB::bind_method(D_METHOD("traffic_spawns", "centre", "rmin", "rmax", "count", "seed"), &EarthWorld::traffic_spawns);
+}
+
+bool EarthWorld::load_spec(const String &root, const String &spec) {
+    auto nw = std::make_unique<es::World>();
+    bool ok = nw->load(std::string(root.utf8().get_data()), std::string(spec.utf8().get_data()));
+    log_.clear();
+    for (auto &l : nw->log) log_.push_back(String::utf8(l.c_str()));
+    if (ok) w = std::move(nw);
+    return ok;
+}
+
+Array EarthWorld::map_tile_roads(const PackedByteArray &bytes) {
+    Array out;
+    std::vector<es::mvt::Layer> L;
+    if (bytes.size() == 0 || !es::mvt::decode(bytes.ptr(), size_t(bytes.size()), L)) return out;
+    for (auto &l : L) {
+        if (l.name != "segment") continue;
+        double k = 256.0 / l.extent;
+        for (auto &f : l.features) {
+            if (f.kind != es::mvt::Geom::Line) continue;
+            std::string st = f.str("subtype"), c = f.str("class");
+            int cls = st == "rail" ? 0 : c == "motorway" || c == "trunk" ? 4 : c == "primary" || c == "secondary" ? 3 : c == "tertiary" || c == "residential" || c == "unclassified" || c == "living_street" ? 2 : st == "road" ? 1 : -1;
+            if (cls < 0) continue;
+            for (auto &part : f.parts) {
+                PackedVector2Array pl;
+                for (auto &q : part) pl.push_back(Vector2(float(q.x * k), float(q.y * k)));
+                Array e;
+                e.push_back(cls);
+                e.push_back(pl);
+                out.push_back(e);
+            }
+        }
+    }
+    return out;
+}
+
+PackedByteArray EarthWorld::map_shade(const PackedByteArray &png, int z, int ty) {
+    PackedByteArray out;
+    std::vector<uint8_t> rgb;
+    if (png.size() == 0 || !es::shade_terrarium(png.ptr(), size_t(png.size()), z, ty, rgb)) return out;
+    out.resize(int64_t(rgb.size()));
+    memcpy(out.ptrw(), rgb.data(), rgb.size());
+    return out;
 }
 
 bool EarthWorld::load(const String &dir) {
@@ -152,7 +200,11 @@ static Dictionary to_dict(const es::ChunkData *c) {
         PackedFloat32Array b;
         int stride = 12 + (colors ? 4 : 0) + (custom ? 4 : 0);
         int count = 0;
-        auto sel = [&](const es::Instance &I) { return variant_sel < 0 || (variant_sel >= 10 ? I.variant == variant_sel - 10 : (variant_sel == 3) == (I.variant == 3)); };
+        auto sel = [&](const es::Instance &I) {
+            if (variant_sel < 0) return true;
+            if (variant_sel >= 10) return I.variant == variant_sel - 10;
+            return variant_sel == 3 ? I.variant == 3 : I.variant < 3;
+        };
         for (auto &I : c->inst[kind])
             if (sel(I)) count++;
         b.resize(int64_t(count) * stride);
@@ -190,6 +242,7 @@ static Dictionary to_dict(const es::ChunkData *c) {
     };
     mm["tree_broad"] = make(es::I_TREE, 0, true, false);
     mm["tree_conifer"] = make(es::I_TREE, 3, true, false);
+    mm["tree_palm"] = make(es::I_TREE, 14, false, false);
     mm["lamp"] = make(es::I_LAMP, -1, false, false);
     mm["signal"] = make(es::I_SIGNAL, -1, false, true);
     mm["bench"] = make(es::I_BENCH, -1, false, false);
@@ -277,6 +330,11 @@ Dictionary EarthWorld::region_info() const {
     d["min"] = G(w->region.bounds.mn.x, w->region.bounds.mx.y, 0);
     d["max"] = G(w->region.bounds.mx.x, w->region.bounds.mn.y, 0);
     d["roads"] = int64_t(w->net.edges.size());
+    d["zone"] = int64_t(w->locale.zone);
+    d["zone_name"] = String::utf8(w->locale.zone_name().c_str());
+    d["biome"] = int64_t(w->locale.biome);
+    d["biome_name"] = String::utf8(w->locale.biome_name().c_str());
+    d["lht"] = w->locale.lht;
     d["buildings"] = int64_t(w->buildings.size());
     return d;
 }
@@ -323,7 +381,7 @@ Dictionary EarthWorld::lane_pose(int e, double s, int dir, double lane_off) cons
     es::V2 t;
     es::V2 c = E.at(s, &t);
     t = t * double(dir);
-    es::V2 p = c - es::perp(t) * lane_off;
+    es::V2 p = c - es::perp(t) * (lane_off * w->net.side);
     double z = E.z_at(s);
     // pitch from the profile
     double s2 = es::clampd(s + dir * 2.0, 0, E.len);

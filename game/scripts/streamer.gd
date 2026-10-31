@@ -24,12 +24,60 @@ var far_cells := {}           # Vector2i -> Node3D (far LOD)
 var far_inflight := {}
 var _far_range := Rect2i()
 
+var legacy: Array[Node3D] = []   # chunks of the previous region, kept until the new ones cover them
+
 func setup(w: EarthWorld) -> void:
 	world = w
 	mats = MaterialsScript.new()
 	props = PropsScript.new()
 	_range = world.chunk_range()
 	_far_range = world.far_range()
+
+func busy() -> bool:
+	return not inflight.is_empty() or not far_inflight.is_empty()
+
+# Switch to another region. keep = true: the old chunks stay on screen (moved by `shift`, the
+# offset between the two local frames) until new chunks replace them; false: everything goes.
+func set_world(w: EarthWorld, keep: bool, shift: Vector3) -> void:
+	for k in inflight:
+		WorkerThreadPool.wait_for_task_completion(inflight[k])
+	for k in far_inflight:
+		WorkerThreadPool.wait_for_task_completion(far_inflight[k])
+	inflight.clear()
+	far_inflight.clear()
+	_mutex.lock()
+	done.clear()
+	_mutex.unlock()
+	for n in legacy:
+		n.queue_free()
+	legacy.clear()
+	for k in chunks:
+		var n: Node3D = chunks[k]
+		if keep:
+			n.position += shift
+			n.set_meta("lamps", PackedVector3Array())
+			legacy.append(n)
+		else:
+			n.queue_free()
+	for k in far_cells:
+		far_cells[k].queue_free()
+	chunks.clear()
+	far_cells.clear()
+	world = w
+	_range = world.chunk_range()
+	_far_range = world.far_range()
+	focus += shift
+
+func _drop_legacy(k: Vector2i) -> void:
+	if legacy.is_empty():
+		return
+	var s := world.chunk_size()
+	var r := Rect2(k.x * s, -(k.y + 1) * s, s, s)
+	for i in range(legacy.size() - 1, -1, -1):
+		var p: Vector3 = legacy[i].position
+		if r.has_point(Vector2(p.x, p.z)):
+			legacy[i].queue_free()
+			legacy.remove_at(i)
 
 func chunk_of(p: Vector3) -> Vector2i:
 	var s := world.chunk_size()
@@ -74,6 +122,10 @@ func _process(_dt: float) -> void:
 	_apply_finished()
 	_schedule()
 	_unload()
+	if not legacy.is_empty() and _near_missing() == 0 and inflight.is_empty():
+		for n in legacy:
+			n.queue_free()
+		legacy.clear()
 
 func _wanted() -> Array:
 	var s := world.chunk_size()
@@ -160,6 +212,7 @@ func _apply_finished() -> void:
 			inflight.erase(k)
 		var t := Time.get_ticks_usec()
 		chunks[k] = _make_node(d)
+		_drop_legacy(k)
 		var ms := (Time.get_ticks_usec() - t) / 1000.0
 		# one chunk per frame keeps the frame time flat while streaming
 		stats["max_apply_ms"] = max(stats["max_apply_ms"], ms)
@@ -303,6 +356,7 @@ func _make_node(d: Dictionary) -> Node3D:
 	_mm(n, mm["tree_broad"], props.tree_lo, 240.0, 1000.0)
 	_mm(n, mm["tree_conifer"], props.conifer, 0.0, 260.0)
 	_mm(n, mm["tree_conifer"], props.conifer_lo, 240.0, 1000.0)
+	_mm(n, mm["tree_palm"], props.palm, 0.0, 600.0)
 	_mm(n, mm["lamp"], props.meshes[PropsScript.I_LAMP], 0.0, 450.0)
 	_mm(n, mm["signal"], props.meshes[PropsScript.I_SIGNAL], 0.0, 450.0)
 	_mm(n, mm["bench"], props.meshes[PropsScript.I_BENCH], 0.0, 200.0)

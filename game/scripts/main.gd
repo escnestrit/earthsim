@@ -17,7 +17,10 @@ const CarScript := preload("res://scripts/car.gd")
 const CarModel := preload("res://scripts/car_model.gd")
 const CameraScript := preload("res://scripts/camera_rig.gd")
 const AudioScript := preload("res://scripts/car_audio.gd")
-const MenuScript := preload("res://scripts/menu.gd")
+const UiScript := preload("res://scripts/ui.gd")
+const FetcherScript := preload("res://scripts/fetcher.gd")
+const REGION_RADIUS := 1800.0     # metres of map loaded around a place picked anywhere on Earth
+const HOP_MARGIN := 650.0         # load the next region when the car gets this close to the edge
 const ControlsScript := preload("res://scripts/controls.gd")
 const TrafficScript := preload("res://scripts/traffic.gd")
 
@@ -29,8 +32,13 @@ var cam: Camera3D
 var sun: DirectionalLight3D
 var env: Environment
 var sky_mat: ProceduralSkyMaterial
-var hud: Label
-var help: Label
+var ui
+var fetcher
+var world_dynamic := false        # region downloaded at runtime (not a bundled one)
+var _switching := false
+var _hop_retry := 0.0
+var _region_box := Rect2()        # loaded region in Godot x/z
+var _place := ""                  # human readable "where am I"
 var hour := 13.0
 var spawned := false
 var reverse_hold := 0.0
@@ -63,12 +71,13 @@ func _ready() -> void:
 			args[s] = "1"
 	hour = float(args.get("time", "13"))
 	_setup_environment()
-	_setup_world()
+	_setup_fetcher()
+	_setup_ui()
+	await _setup_world()
 	if world == null:
 		return
 	_setup_car()
-	_setup_hud()
-	_setup_menu()
+	_setup_monitor()
 	controls = ControlsScript.new()
 	controls.load_config()
 	_setup_lamp_lights()
@@ -121,20 +130,125 @@ func _find_data() -> String:
 		return dir.path_join(want)
 	return ""
 
+func _setup_fetcher() -> void:
+	fetcher = FetcherScript.new()
+	if args.has("overture_url"):
+		fetcher.overture_url = args["overture_url"]
+	if args.has("terrarium_url"):
+		fetcher.terrarium_url = args["terrarium_url"]
+	if args.has("cache"):
+		fetcher.cache_dir = args["cache"]
+	add_child(fetcher)
+	fetcher.progress.connect(_on_fetch_progress)
+
+func _setup_ui() -> void:
+	ui = UiScript.new()
+	add_child(ui)
+	ui.setup(fetcher)
+	ui.teleport.connect(_teleport)
+	ui.time_changed.connect(set_time)
+	ui.rain_changed.connect(func(on): set_wet(1.0 if on else 0.0))
+	ui.radius_changed.connect(func(r): streamer.radius = r)
+	ui.assist_changed.connect(_on_assist)
+	ui.respawn.connect(func(): _spawn(car.global_position))
+	ui.quit_game.connect(func(): get_tree().quit())
+	if args.has("shot") and not args.has("ui"):
+		ui.visible = false
+
+var _loading_title := ""
+
+func _on_assist(n: String, on: bool) -> void:
+	if n == "abs":
+		car.abs_on = on
+	elif n == "tcs":
+		car.tcs_on = on
+	elif n == "auto":
+		car.auto_gear = on
+
+func _on_fetch_progress(done: int, total: int, text: String) -> void:
+	if ui.loading.visible:
+		ui.show_loading(_loading_title, text, float(done) / maxf(1.0, total))
+	elif _switching:
+		ui.set_status("Подгружаю карту впереди… %d / %d" % [done, total])
+
+# Bundled regions (offline, next to the exe) that contain a point
+func _bundled_for(lat: float, lon: float) -> String:
+	var base := _data_base()
+	if base == "":
+		return ""
+	var dirs := []
+	if FileAccess.file_exists(base.path_join("region.json")):
+		dirs.append(base)
+	for r in regions:
+		dirs.append(base.path_join(r))
+	for d in dirs:
+		var j = JSON.parse_string(FileAccess.get_file_as_string(String(d).path_join("region.json")))
+		if j == null:
+			continue
+		var dl := (float(j["radius_m"]) - 700.0) / 111320.0
+		if absf(lat - float(j["lat"])) < dl and absf(lon - float(j["lon"])) < dl / cos(deg_to_rad(lat)):
+			return d
+	return ""
+
+func _data_base() -> String:
+	var c := []
+	if args.has("data"):
+		c.append(args["data"])
+	if OS.has_environment("EARTHSIM_DATA"):
+		c.append(OS.get_environment("EARTHSIM_DATA"))
+	c.append(OS.get_executable_path().get_base_dir().path_join("data"))
+	c.append(ProjectSettings.globalize_path("res://").path_join("../data"))
+	c.append(ProjectSettings.globalize_path("res://").path_join("../data_local"))
+	for d in c:
+		if DirAccess.dir_exists_absolute(d):
+			if FileAccess.file_exists(String(d).path_join("region.json")) or not DirAccess.get_directories_at(d).is_empty():
+				return d
+	return ""
+
+# Load a world on a worker thread (the frame keeps running: loading screen, HUD)
+func _load_threaded(root: String, spec: String) -> EarthWorld:
+	var w := EarthWorld.new()
+	var res := [false]
+	var tid := WorkerThreadPool.add_task(func(): res[0] = w.load(root) if spec == "" else w.load_spec(root, spec), true, "world load")
+	while not WorkerThreadPool.is_task_completed(tid):
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(tid)
+	for l in w.get_log():
+		print("  ", l)
+	return w if res[0] else null
+
+# Make a world for any point: bundled data if it covers it, otherwise download into the cache.
+func _world_for(lat: float, lon: float, quiet: bool) -> EarthWorld:
+	var b := _bundled_for(lat, lon)
+	if b != "" and not args.has("force_fetch"):
+		return await _load_threaded(b, "")
+	_loading_title = "Загружаю карту: %.4f, %.4f" % [lat, lon]
+	if not quiet:
+		ui.show_loading(_loading_title, "Подключение…", 0.0)
+	var spec: String = await fetcher.prepare_region(lat, lon, REGION_RADIUS)
+	if spec == "":
+		print("[earthsim] fetch failed: ", fetcher.last_error)
+		return null
+	if not quiet:
+		ui.show_loading(_loading_title, "Строю дороги и здания…", 1.0)
+	return await _load_threaded(fetcher.cache_dir, spec)
+
 func _setup_world() -> void:
 	var dir := _find_data()
-	if dir == "":
-		_fatal("Не найдены данные карты (папка data с region.json рядом с exe).")
+	var want := args.has("lat") and args.has("lon")
+	var lat := float(args.get("lat", "53.9024"))
+	var lon := float(args.get("lon", "27.5618"))
+	if dir != "" and not args.has("force_fetch") and (not want or _bundled_for(lat, lon) != ""):
+		if want:
+			dir = _bundled_for(lat, lon)
+		world = await _load_threaded(dir, "")
+	else:
+		world = await _world_for(lat, lon, false)
+		world_dynamic = world != null and _bundled_for(lat, lon) == ""
+	ui.hide_loading()
+	if world == null:
+		_fatal("Не удалось загрузить карту.\n" + (fetcher.last_error if fetcher.last_error != "" else "Нет данных рядом с exe и нет доступа к интернету."))
 		return
-	world = EarthWorld.new()
-	var t := Time.get_ticks_msec()
-	if not world.load(dir):
-		_fatal("Ошибка загрузки данных:\n" + "\n".join(world.get_log()))
-		world = null
-		return
-	print("[earthsim] world loaded in %d ms from %s" % [Time.get_ticks_msec() - t, dir])
-	for l in world.get_log():
-		print("  ", l)
 	streamer = StreamerScript.new()
 	add_child(streamer)
 	streamer.setup(world)
@@ -143,10 +257,95 @@ func _setup_world() -> void:
 	if args.has("shot") and not args.has("far"):
 		streamer.far_enabled = false
 	var focus := Vector3.ZERO
-	if args.has("lat") and args.has("lon"):
-		focus = world.latlon_to_world(float(args["lat"]), float(args["lon"]))
+	if want:
+		focus = world.latlon_to_world(lat, lon)
 	focus.y = world.ground_height(focus)
 	streamer.focus = focus
+	_after_world_change()
+
+func _after_world_change() -> void:
+	var info: Dictionary = world.region_info()
+	var a: Vector3 = info["min"]
+	var b: Vector3 = info["max"]
+	_region_box = Rect2(Vector2(minf(a.x, b.x), minf(a.z, b.z)), Vector2(absf(b.x - a.x), absf(b.z - a.z)))
+	RenderingServer.global_shader_parameter_set("biome", float(info.get("biome", 0)))
+	_place = "%s · климат: %s · %s" % [info.get("zone_name", ""), info.get("biome_name", ""), "левостороннее движение" if info.get("lht", false) else "правостороннее движение"]
+	print("[earthsim] region %.4f, %.4f: %s" % [info["lat"], info["lon"], _place])
+
+# Swap the active world. keep = true while driving (no loading screen, the car carries on).
+var _swap_err := 0.0   # metres between where the car was and where it is after a region switch
+
+func _install_world(w: EarthWorld, keep: bool, shift: Vector3) -> void:
+	var ll0: Vector2 = world.world_to_latlon(car.global_position)
+	world = w
+	if keep:
+		car.global_position += shift
+		var ll1: Vector2 = world.world_to_latlon(car.global_position)
+		_swap_err = Vector2((ll1.x - ll0.x) * 111320.0, (ll1.y - ll0.y) * 111320.0 * cos(deg_to_rad(ll0.x))).length()
+		if cam:
+			cam.global_position += shift
+	streamer.set_world(w, keep, shift)
+	if traffic:
+		traffic.reset(w)
+	_after_world_change()
+
+func _teleport(lat: float, lon: float) -> void:
+	var p: Vector3 = world.latlon_to_world(lat, lon)
+	var inside := _region_box.grow(-300.0).has_point(Vector2(p.x, p.z))
+	if not inside:
+		if _switching:
+			ui.toast("Подожди, предыдущая загрузка ещё идёт")
+			return
+		_switching = true
+		var w: EarthWorld = await _world_for(lat, lon, false)
+		ui.hide_loading()
+		_switching = false
+		if w == null:
+			ui.toast("Не удалось загрузить карту: " + fetcher.last_error, 6.0)
+			return
+		world_dynamic = _bundled_for(lat, lon) == ""
+		_install_world(w, false, Vector3.ZERO)
+		p = world.latlon_to_world(lat, lon)
+	p.y = world.ground_height(p)
+	spawned = false
+	car.ready_to_drive = false
+	car.freeze = true
+	car.global_position = p + Vector3(0, 2, 0)
+	streamer.focus = p
+
+# Driving towards the edge of the loaded map: fetch the next region around the car in the
+# background and switch to it without stopping.
+func _check_hop(dt: float) -> void:
+	if _switching or not spawned or args.has("test") and args["test"] != "fetch":
+		return
+	_hop_retry -= dt
+	if _hop_retry > 0.0:
+		return
+	var p: Vector3 = car.global_position + streamer.lead * 0.5
+	var r: Rect2 = _region_box
+	var edge := minf(minf(p.x - r.position.x, r.end.x - p.x), minf(p.z - r.position.y, r.end.y - p.z))
+	if edge > HOP_MARGIN:
+		return
+	_hop(p)
+
+func _hop(p: Vector3) -> void:
+	_switching = true
+	var ll: Vector2 = world.world_to_latlon(p)
+	ui.set_status("Подгружаю карту впереди…")
+	var w: EarthWorld = await _world_for(ll.x, ll.y, true)
+	ui.set_status("")
+	_switching = false
+	if w == null:
+		_hop_retry = 30.0
+		ui.toast("Нет данных дальше: " + fetcher.last_error, 5.0)
+		return
+	# the same point on Earth in both local frames
+	var old_p: Vector3 = world.latlon_to_world(ll.x, ll.y)
+	var new_p: Vector3 = w.latlon_to_world(ll.x, ll.y)
+	var shift := new_p - old_p
+	shift.y = 0.0
+	world_dynamic = true
+	_install_world(w, true, shift)
 
 func _fatal(msg: String) -> void:
 	push_error(msg)
@@ -409,55 +608,14 @@ func _setup_car() -> void:
 		cam.rotation = Vector3(deg_to_rad(float(v[4])), deg_to_rad(float(v[3])), 0)
 		cam.far = 4000.0
 
-func _setup_hud() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
-	hud = Label.new()
-	hud.position = Vector2(16, 12)
-	hud.add_theme_font_size_override("font_size", 18)
-	hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	hud.add_theme_constant_override("outline_size", 5)
-	layer.add_child(hud)
-	help = Label.new()
-	help.position = Vector2(16, 140)
-	help.add_theme_font_size_override("font_size", 16)
-	help.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	help.add_theme_constant_override("outline_size", 5)
-	help.text = "W/S газ/тормоз (S на месте — назад) · A/D руль · Пробел ручник · R на дорогу · C камера\nQ/E передачи (ручная) · M авто/ручная · T трекшн · B ABS · N +1 час · F2 дождь · F12 скриншот\nTab / Esc — меню (телепорт, время, дождь, дальность) · F4 руль/геймпад · F1 скрыть подсказку"
-	help.visible = not args.has("shot")
-	layer.add_child(help)
+func _setup_monitor() -> void:
 	monitor = Label.new()
-	monitor.position = Vector2(16, 230)
+	monitor.position = Vector2(18, 110)
 	monitor.add_theme_font_size_override("font_size", 15)
 	monitor.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	monitor.add_theme_constant_override("outline_size", 5)
 	monitor.visible = false
-	layer.add_child(monitor)
-	if args.has("shot"):
-		hud.visible = false
-
-func _setup_menu() -> void:
-	menu = CanvasLayer.new()
-	menu.set_script(MenuScript)
-	add_child(menu)
-	menu.teleport.connect(_teleport)
-	menu.time_changed.connect(set_time)
-	menu.rain_changed.connect(func(on): set_wet(1.0 if on else 0.0))
-	menu.radius_changed.connect(func(r): streamer.radius = r)
-	menu.set_regions(regions, args.get("region", ""))
-	menu.region_chosen.connect(func(name):
-		# a new region is a new world: restart the game with it
-		OS.create_process(OS.get_executable_path(), ["--", "--region=" + name])
-		get_tree().quit())
-
-func _teleport(lat: float, lon: float) -> void:
-	var p: Vector3 = world.latlon_to_world(lat, lon)
-	p.y = world.ground_height(p)
-	spawned = false
-	car.ready_to_drive = false
-	car.freeze = true
-	car.global_position = p + Vector3(0, 2, 0)
-	streamer.focus = p
+	ui.root.add_child(monitor)
 
 # street lamps light the road at night: a small pool of real lights follows the car to the nearest lamps
 func _setup_lamp_lights() -> void:
@@ -575,6 +733,8 @@ func _spawn(near: Vector3) -> void:
 	car.gear = 1
 	car.freeze = false
 	car.ready_to_drive = true
+	if not spawned and ui:
+		ui.show_hint()
 	spawned = true
 	if not _body_parts.is_empty():
 		_repair()
@@ -618,6 +778,10 @@ func _process(dt: float) -> void:
 		_tail_mat.emission_energy_multiplier = (4.0 if car.input_brake > 0.1 else 0.6) + 1.5 * _night
 	_read_input(dt)
 	_update_hud()
+	if args.has("ui") and spawned and not ui.menu_open() and not _ui_opened:
+		_ui_opened = true
+		if args["ui"] != "hud":
+			_open_menu(args["ui"])
 	if args.has("shot") and args.get("test", "") != "crash":
 		_shot_logic()
 	if args.get("test", "") == "drive":
@@ -628,8 +792,61 @@ func _process(dt: float) -> void:
 		_crash_test(dt)
 	if args.get("test", "") == "traffic":
 		_traffic_test(dt)
+	if args.get("test", "") == "fetch":
+		_fetch_test(dt)
+	_check_hop(dt)
 	if args.get("test", "") == "city" or args.has("autodrive"):
 		_autodrive(dt)
+
+# --------------------------------------------------------------- runtime map loading test
+# Start anywhere (data downloaded by the game itself), drive-stream, switch to the next region
+# without stopping, then teleport far away.
+var _ft := {"phase": 0, "t": 0.0, "w": null}
+
+func _fetch_test(dt: float) -> void:
+	_ft["t"] += dt
+	if _ft["t"] > 600.0:
+		print("[test] fetch: FAIL timeout in phase %d" % _ft["phase"])
+		get_tree().quit(1)
+		return
+	var loaded: bool = spawned and streamer.loading_count() == 0 and streamer.chunks.size() >= 9
+	match int(_ft["phase"]):
+		0:
+			if loaded:
+				var info: Dictionary = world.region_info()
+				print("[fetch] start region: %d roads, %d buildings, %s" % [info["roads"], info["buildings"], _place])
+				if int(info["roads"]) < 50:
+					print("[test] fetch: FAIL too few roads")
+					get_tree().quit(1)
+					return
+				_ft["phase"] = 1
+				_ft["w"] = world
+				var before: Vector3 = car.global_position
+				_ft["before_ll"] = world.world_to_latlon(before)
+				_hop(before + Vector3(REGION_RADIUS * 0.5, 0, 0))
+		1:
+			if world != _ft["w"] and not _switching and loaded:
+				var drift := _swap_err
+				var g: float = world.ground_height(car.global_position)
+				var clear := car.global_position.y - g
+				print("[fetch] hop: legacy chunks %d, position drift %.2f m, clearance %.2f m" % [streamer.legacy.size(), drift, clear])
+				if drift > 5.0 or clear < -0.5 or clear > 3.0:
+					print("[test] fetch: FAIL hop moved the car (drift %.1f m, clearance %.2f m)" % [drift, clear])
+					get_tree().quit(1)
+					return
+				_ft["phase"] = 2
+				if args.has("lat2"):
+					_ft["w"] = world
+					_teleport(float(args["lat2"]), float(args["lon2"]))
+				else:
+					_ft["phase"] = 3
+		2:
+			if world != _ft["w"] and loaded:
+				_ft["phase"] = 3
+		3:
+			var info: Dictionary = world.region_info()
+			print("[test] fetch: %d roads, %d buildings at %.3f, %.3f (%s), %.0f s -> PASS" % [info["roads"], info["buildings"], info["lat"], info["lon"], _place, _ft["t"]])
+			get_tree().quit(0)
 
 func _update_wheels() -> void:
 	if car == null or not car.ready_to_drive:
@@ -727,16 +944,23 @@ func _unhandled_key_input(e: InputEvent) -> void:
 		KEY_E:
 			car.auto_gear = false
 			car.shift(1)
-		KEY_M:
+		KEY_G:
 			car.auto_gear = not car.auto_gear
+			ui.toast("Коробка: " + ("автомат" if car.auto_gear else "ручная"), 1.5)
+		KEY_M:
+			_open_menu("map")
+		KEY_F3:
+			ui.fps_label.visible = not ui.fps_label.visible
 		KEY_T:
 			car.tcs_on = not car.tcs_on
+			ui.toast("Антипробуксовка " + ("вкл" if car.tcs_on else "выкл"), 1.5)
 		KEY_B:
 			car.abs_on = not car.abs_on
+			ui.toast("ABS " + ("вкл" if car.abs_on else "выкл"), 1.5)
 		KEY_N:
 			set_time(hour + 1.0)
 		KEY_F1:
-			help.visible = not help.visible
+			_open_menu("help")
 		KEY_F4:
 			monitor.visible = not monitor.visible
 		KEY_F2:
@@ -747,29 +971,56 @@ func _unhandled_key_input(e: InputEvent) -> void:
 			img.save_png(path)
 			print("[earthsim] screenshot ", path)
 		KEY_ESCAPE, KEY_TAB:
-			if menu.visible:
-				menu.hide_menu()
+			if ui.menu_open():
+				ui.hide_menu()
 			else:
-				menu.show_menu(hour, streamer.radius, wet > 0.5)
+				_open_menu("map" if e.keycode == KEY_TAB else "env")
+
+func _open_menu(page: String) -> void:
+	if ui.menu_open() and ui.current_page == page:
+		ui.hide_menu()
+		return
+	var st := {"hour": hour, "radius": streamer.radius, "wet": wet > 0.5, "abs": car.abs_on, "tcs": car.tcs_on, "auto": car.auto_gear, "place_sub": _place}
+	var ll: Vector2 = world.world_to_latlon(car.global_position if spawned else streamer.focus)
+	st["car_ll"] = ll
+	st["place"] = "%.4f, %.4f" % [ll.x, ll.y]
+	var f: Vector3 = -car.global_transform.basis.z
+	st["heading"] = atan2(f.x, -f.z)
+	var a: Vector2 = world.world_to_latlon(Vector3(_region_box.position.x, 0, _region_box.end.y))
+	var b: Vector2 = world.world_to_latlon(Vector3(_region_box.end.x, 0, _region_box.position.y))
+	st["region_ll"] = [a.x, a.y, b.x, b.y]
+	ui.show_menu(page, st)
+
+var _hud_dt := 0.0
 
 func _update_hud() -> void:
-	if hud == null or not hud.visible:
+	if ui == null:
 		return
-	var t := ""
-	t += "FPS %d   чанки %d (+%d)\n" % [Engine.get_frames_per_second(), streamer.chunks.size(), streamer.loading_count()]
+	var dt := get_process_delta_time()
+	_hud_dt += dt
+	var d := {"driving": spawned}
 	if spawned:
-		var g := "R" if car.gear < 0 else ("N" if car.gear == 0 else str(car.gear))
-		t += "%3d км/ч   %s   %4d об/мин   %s%s%s\n" % [int(absf(car.speed) * 3.6), g, int(car.rpm), "A" if car.auto_gear else "M", "  ABS" if car.abs_on else "", "  TCS" if car.tcs_on else ""]
-		var r: Dictionary = world.road_at(car.global_position)
-		if not r.is_empty():
-			t += "%s  (%s, %d км/ч)\n" % [r["name"] if r["name"] != "" else "—", r["class"], r["speed"]]
-		var ll: Vector2 = world.world_to_latlon(car.global_position)
-		t += "%.5f, %.5f   %02d:%02d" % [ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60)]
+		d["speed"] = absf(car.speed) * 3.6
+		d["gear"] = "R" if car.gear < 0 else ("N" if car.gear == 0 else str(car.gear))
+		d["rpm"] = car.rpm
+		d["auto"] = car.auto_gear
+		d["abs"] = car.abs_on
+		d["tcs"] = car.tcs_on
+		if _hud_dt > 0.25:
+			_hud_dt = 0.0
+			var r: Dictionary = world.road_at(car.global_position)
+			var ll: Vector2 = world.world_to_latlon(car.global_position)
+			d["road"] = (r["name"] if r.get("name", "") != "" else "") if not r.is_empty() else ""
+			if d["road"] == "":
+				d["road"] = "Вне дорог" if r.is_empty() else String(r.get("class", "дорога")).capitalize()
+			d["place"] = "%.5f, %.5f   ·   %02d:%02d%s" % [ll.x, ll.y, int(hour), int(fmod(hour, 1.0) * 60), ("   ·   %d км/ч" % r["speed"]) if not r.is_empty() and int(r.get("speed", 0)) > 0 else ""]
 	else:
-		t += "загрузка мира…"
-	hud.text = t
+		d["road"] = "Загрузка мира…"
+		d["place"] = "%d / %d фрагментов" % [streamer.chunks.size(), streamer.chunks.size() + streamer.loading_count()]
+	ui.update_hud(d, dt)
 
 var _ready_since := -1.0
+var _ui_opened := false
 
 func _shot_logic() -> void:
 	var ready: bool = streamer.loading_count() == 0 and streamer.chunks.size() > 0 and (spawned or args.has("view"))

@@ -119,12 +119,15 @@ static std::vector<double> &water_levels() {
     return v;
 }
 
-bool World::load(const std::string &root) {
-    if (!region.load(root)) {
+bool World::load(const std::string &root, const std::string &spec) {
+    if (!region.load(root, spec)) {
         log = region.log;
         return false;
     }
     log = region.log;
+    locale = locale_for(region.frame.lat0, region.frame.lon0, region.dem.sample({0, 0}));
+    log.push_back("locale: " + locale.zone_name() + ", climate " + locale.biome_name() + (locale.lht ? ", left-hand traffic" : ", right-hand traffic"));
+    net.side = locale.lht ? -1.0 : 1.0;
     net.build(region);
     for (auto &l : net.log) log.push_back(l);
     geom.build(net);
@@ -186,6 +189,22 @@ const std::vector<uint32_t> P_CHURCH = {0xF2F0EA, 0xEDE4C8, 0xF0E0D2};
 const std::vector<uint32_t> R_FLATC = {0x4A4A4A, 0x555555, 0x5E5E5E, 0x505452};
 const std::vector<uint32_t> R_METAL = {0x5E6E5E, 0x6A7480, 0x4F5A55, 0x7A3A2A, 0x8C4B32, 0x55585C};
 const std::vector<uint32_t> R_TILE = {0x8B3A2B, 0x7A3B2E, 0x9A4A32, 0x6E6E6E};
+
+// other parts of the world
+const std::vector<uint32_t> P_WEST_HIST = {0xE9E2D3, 0xDCCFB4, 0xE8D7B5, 0xD9C9A8, 0xF0EBE0, 0xC9BFAE, 0xE3D3BC, 0xD8B89A};
+const std::vector<uint32_t> P_WEST_BRICK = {0x8E4A3A, 0x9C5540, 0xA0634A, 0x7E4636, 0xB07A5A, 0x6E4A3E};
+const std::vector<uint32_t> P_POSTWAR = {0xD9D4CA, 0xCFC8BA, 0xE2DCCF, 0xC7C1B5, 0xDCCDB0, 0xBFB8AC};
+const std::vector<uint32_t> P_SIDING = {0xE8E6E0, 0xD9D2C0, 0xBFC9CF, 0xC9C2A8, 0xA9B7A6, 0xE0D6C2, 0x8FA1AE, 0xD8CBB0, 0xF2F0EA};
+const std::vector<uint32_t> P_LATAM = {0xE8C35A, 0xD9786A, 0x6FA8C8, 0x9CC48A, 0xE8A07A, 0xF0E6D2, 0xC86B8A, 0xE0D08C, 0x7FC2B0, 0xEDE6DA};
+const std::vector<uint32_t> P_HOTDRY = {0xE6D6B8, 0xDCC9A3, 0xEFE6D4, 0xD2BC94, 0xE9DFC9, 0xC9B28A, 0xF2EEE6};
+const std::vector<uint32_t> P_TROPIC = {0xEDE3CF, 0xE0D3A8, 0xC9DCC2, 0xE8C9A8, 0xBFD6E0, 0xF0EBDF, 0xE5B98A};
+const std::vector<uint32_t> P_ASIA = {0xEDEBE6, 0xE2DED5, 0xD8D3C8, 0xCFCCC6, 0xE9E0CF, 0xD6DADC};
+const std::vector<uint32_t> R_SLATE = {0x4A4E55, 0x5A5F66, 0x52565C, 0x7A3B2E};
+const std::vector<uint32_t> R_TERRACOTTA = {0xB0553A, 0xA65B3E, 0xC0704A, 0x9E4E36};
+const std::vector<uint32_t> R_SHINGLE = {0x4A4744, 0x5C5650, 0x3E4247, 0x6B5E52, 0x55504A};
+const std::vector<uint32_t> R_COLORBOND = {0x4F5A60, 0x7A8A8F, 0x9AA3A0, 0x3E5045, 0xA0402E, 0x5B4A3E};
+const std::vector<uint32_t> R_CORRUGATED = {0x8A8F92, 0x9B5A40, 0x6F7F86, 0x3F6E8C, 0x7A6E62};
+const std::vector<uint32_t> R_JAPAN = {0x3E4247, 0x55595E, 0x4A4F45};
 
 uint32_t soften(uint32_t c) {
     // OSM colour tags are swatches ("yellow", "#FFFF00"): pull them towards a plaster tone
@@ -286,6 +305,31 @@ void World::prepare_buildings() {
         }
     }
 
+    // urban core from the data itself: built-up coverage and wall-to-wall share in 160 m cells
+    // (smoothed over 3x3). Works for any city, wherever the region was started.
+    const double DC = 160.0;
+    std::unordered_map<uint64_t, std::pair<double, double>> cov;  // footprint area, attached area
+    auto dkey = [](int x, int y) { return (uint64_t(uint32_t(x)) << 32) | uint32_t(y); };
+    for (auto &b : buildings) {
+        if (RB[b.src].part) continue;
+        auto &c = cov[dkey(int(std::floor(b.centroid.x / DC)), int(std::floor(b.centroid.y / DC)))];
+        c.first += b.area, c.second += b.attached ? b.area : 0;
+    }
+    auto core_weight = [&](V2 p) {
+        int cx = int(std::floor(p.x / DC)), cy = int(std::floor(p.y / DC));
+        double a = 0, at = 0;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                auto it = cov.find(dkey(cx + dx, cy + dy));
+                if (it != cov.end()) a += it->second.first, at += it->second.second;
+            }
+        double c = a / (9 * DC * DC), att = a > 0 ? at / a : 0;
+        return std::clamp(smoothstep(0.1, 0.26, c) * 0.8 + smoothstep(0.25, 0.6, att) * 0.4, 0.0, 1.0);
+    };
+    const Zone Z = locale.zone;
+    const bool sov = Z == Z_POST_SOVIET || Z == Z_EAST_EU;
+    const double lat = region.frame.lat0, lon = region.frame.lon0;
+
     for (size_t bi = 0; bi < buildings.size(); bi++) {
         auto &b = buildings[bi];
         auto &r = RB[b.src];
@@ -297,8 +341,7 @@ void World::prepare_buildings() {
         b.axis = ax;
         double rect = b.area / std::max(1.0, L * Wd);
         double elong = L / std::max(1.0, Wd);
-        double d0 = len(b.centroid);
-        double cw = 1.0 - smoothstep(1300, 2900, d0);  // the region centre is the city centre
+        double cw = core_weight(b.centroid);
         int F = r.floors;
         if (F <= 0 && r.height > 0) F = std::max(1, int(r.height / 3.2 + 0.3));
         bool known = F > 0;
@@ -333,22 +376,68 @@ void World::prepare_buildings() {
         }
         if (r.facade_material == "brick" && (era == E_PANEL || era == E_KHRUSH)) era = E_KHRUSH, b.variant = 0;
         if (r.facade_material == "panel" || r.facade_material == "concrete") era = era == E_STALIN || era == E_HISTORIC ? era : E_PANEL;
+        // ---- the same urban forms built the way they are built in this part of the world
+        {
+            double rz = hash01(h * 19);
+            bool small = F <= 3 && b.area < 260;
+            switch (Z) {
+                case Z_WEST_EU:
+                    if (era == E_STALIN) era = E_HISTORIC;
+                    else if (era == E_KHRUSH || era == E_PANEL) era = F >= 10 ? E_MODERN : E_POSTWAR;
+                    break;
+                case Z_NORTH_AMERICA: case Z_OCEANIA:
+                    if (era == E_STALIN || era == E_HISTORIC) era = F <= 4 && b.attached ? E_HISTORIC : F >= 8 ? E_OFFICE : E_POSTWAR;
+                    else if (era == E_KHRUSH || era == E_PANEL) era = small && !b.attached ? E_HOUSE : F >= 10 ? E_MODERN : E_POSTWAR;
+                    if (era == E_POSTWAR && small && !b.attached && cw < 0.4) era = E_HOUSE;
+                    break;
+                case Z_EAST_ASIA:
+                    if (F >= 10 && (era == E_PANEL || era == E_MODERN)) era = E_TOWER;
+                    else if (era == E_STALIN || era == E_KHRUSH || era == E_PANEL) era = small ? (lon > 128 ? E_HOUSE : E_LOCAL) : E_POSTWAR;
+                    break;
+                case Z_LATIN_AMERICA: case Z_HOT_DRY: case Z_TROPICAL:
+                    if (era == E_STALIN) era = E_HISTORIC;
+                    else if (era == E_KHRUSH || era == E_PANEL) era = F >= 7 ? E_MODERN : E_LOCAL;
+                    else if (era == E_HOUSE) era = rz < 0.85 ? E_LOCAL : E_HOUSE;
+                    else if (era == E_HISTORIC && cw < 0.45) era = E_LOCAL;
+                    break;
+                default: break;
+            }
+        }
         b.era = era;
         b.variant = int(hash32(h * 7) % 4);
         // style / storey height / palette
         const std::vector<uint32_t> *pal = &P_PANEL;
         switch (era) {
-            case E_HISTORIC: b.style = 2, b.floor_h = 3.8, pal = &P_HIST; break;
+            case E_POSTWAR:
+                b.style = hash01(h * 37) < (Z == Z_NORTH_AMERICA || lat > 50 ? 0.55 : 0.25) ? 1 : 19, b.floor_h = 2.9;
+                pal = b.style == 1 ? &P_WEST_BRICK : (Z == Z_EAST_ASIA ? &P_ASIA : &P_POSTWAR);
+                break;
+            case E_LOCAL:
+                b.style = 18, b.floor_h = 3.0;
+                pal = Z == Z_LATIN_AMERICA ? &P_LATAM : Z == Z_HOT_DRY ? &P_HOTDRY : Z == Z_EAST_ASIA ? &P_ASIA : &P_TROPIC;
+                break;
+            case E_TOWER: b.style = 11, b.floor_h = 2.95, pal = &P_ASIA; break;
+            case E_HISTORIC:
+                if (sov) b.style = 2, b.floor_h = 3.8, pal = &P_HIST;
+                else if (Z == Z_WEST_EU) b.style = (lat > 50.5 && hash01(h * 41) < 0.45) ? 1 : 2, b.floor_h = 3.6, pal = b.style == 1 ? &P_WEST_BRICK : &P_WEST_HIST;
+                else if (Z == Z_NORTH_AMERICA || Z == Z_OCEANIA) b.style = 1, b.floor_h = 3.8, pal = &P_WEST_BRICK;
+                else b.style = 2, b.floor_h = 3.8, pal = Z == Z_LATIN_AMERICA ? &P_LATAM : Z == Z_HOT_DRY ? &P_HOTDRY : &P_TROPIC;
+                break;
             case E_STALIN: b.style = 10, b.floor_h = 3.4, pal = &P_STALIN; break;
             case E_KHRUSH:
                 b.style = b.variant < 2 ? 1 : 12, b.floor_h = 2.8, pal = b.style == 1 ? &P_KH_BRICK : &P_KH_PANEL;
                 if (b.style == 1 && cw > 0.5 && b.variant == 0) b.variant = 1;  // few red-brick ones in the centre
                 break;
             case E_PANEL: b.style = 0, b.floor_h = 2.8, pal = &P_PANEL; break;
-            case E_MODERN: b.style = 11, b.floor_h = 3.0, pal = &P_MODERN; break;
+            case E_MODERN: b.style = 11, b.floor_h = 3.0, pal = Z == Z_EAST_ASIA ? &P_ASIA : Z == Z_LATIN_AMERICA || Z == Z_HOT_DRY ? &P_HOTDRY : &P_MODERN; break;
             case E_OFFICE: b.style = 3, b.floor_h = 3.8, pal = &P_GLASS; break;
             case E_INDUSTRIAL: b.style = 4, b.floor_h = 5.0, pal = &P_INDUS; break;
-            case E_HOUSE: b.style = 5, b.floor_h = 3.0, pal = &P_HOUSE; break;
+            case E_HOUSE:
+                if (Z == Z_NORTH_AMERICA || (Z == Z_OCEANIA && hash01(h * 43) < 0.5)) b.style = 17, pal = &P_SIDING;
+                else if (Z == Z_OCEANIA || (Z == Z_WEST_EU && lat > 50 && hash01(h * 43) < 0.6)) b.style = 1, pal = &P_WEST_BRICK;
+                else b.style = 5, pal = Z == Z_EAST_ASIA ? &P_ASIA : sov ? &P_HOUSE : &P_POSTWAR;
+                b.floor_h = 3.0;
+                break;
             case E_SHED: b.style = 6, b.floor_h = 3.0, pal = &P_SHED; break;
             case E_PUBLIC: b.style = 13, b.floor_h = 3.6, pal = &P_PUBLIC; break;
             case E_CHURCH: b.style = 14, b.floor_h = 5.0, pal = &P_CHURCH; break;
@@ -377,13 +466,30 @@ void World::prepare_buildings() {
                 case E_STALIN: b.roof_kind = rr < 0.75 ? RK_HIP : RK_FLAT; break;
                 case E_KHRUSH: b.roof_kind = rr < 0.35 ? RK_HIP : RK_FLAT; break;
                 case E_HOUSE: b.roof_kind = RK_HIP; break;
+                case E_LOCAL: b.roof_kind = RK_FLAT; break;
                 case E_CHURCH: b.roof_kind = RK_HIP; break;
                 case E_PUBLIC: b.roof_kind = cw > 0.5 && rr < 0.5 ? RK_HIP : RK_FLAT; break;
+                case E_POSTWAR: b.roof_kind = Z == Z_WEST_EU && rr < 0.55 ? RK_HIP : RK_FLAT; break;
                 default: b.roof_kind = RK_FLAT;
             }
+            // regional habits
+            if (Z == Z_HOT_DRY || (Z == Z_LATIN_AMERICA && era != E_HISTORIC)) b.roof_kind = era == E_CHURCH ? b.roof_kind : RK_FLAT;
+            if (Z == Z_TROPICAL && era == E_LOCAL) b.roof_kind = rr < 0.5 ? RK_HIP : RK_FLAT;
+            if ((Z == Z_NORTH_AMERICA || Z == Z_OCEANIA) && era == E_HISTORIC) b.roof_kind = RK_FLAT;
+            if (Z == Z_EAST_ASIA && era == E_HOUSE && lon < 128) b.roof_kind = RK_FLAT;
         }
         if (b.roof_kind == RK_HIP || b.roof_kind == RK_APEX) {
-            const std::vector<uint32_t> &rp = era == E_HOUSE || era == E_HISTORIC ? (hash01(h * 23) < 0.5 ? R_TILE : R_METAL) : R_METAL;
+            const std::vector<uint32_t> *rpp = era == E_HOUSE || era == E_HISTORIC ? (hash01(h * 23) < 0.5 ? &R_TILE : &R_METAL) : &R_METAL;
+            switch (Z) {
+                case Z_WEST_EU: rpp = lat > 47.5 && hash01(h * 23) < 0.6 ? &R_SLATE : &R_TERRACOTTA; break;
+                case Z_NORTH_AMERICA: rpp = &R_SHINGLE; break;
+                case Z_OCEANIA: rpp = &R_COLORBOND; break;
+                case Z_TROPICAL: rpp = &R_CORRUGATED; break;
+                case Z_LATIN_AMERICA: case Z_HOT_DRY: rpp = &R_TERRACOTTA; break;
+                case Z_EAST_ASIA: rpp = lon > 128 ? &R_JAPAN : &R_SLATE; break;
+                default: break;
+            }
+            const std::vector<uint32_t> &rp = *rpp;
             b.roof = r.roof_color ? r.roof_color : pick(rp, h >> 7);
         } else
             b.roof = r.roof_color ? r.roof_color : pick(R_FLATC, h >> 7);
@@ -398,7 +504,13 @@ void World::prepare_buildings() {
         b.cornice = (era == E_STALIN || era == E_HISTORIC || (era == E_PUBLIC && cw > 0.4)) && b.height > 6;
         b.balconies = (era == E_PANEL || era == E_KHRUSH || era == E_MODERN || (era == E_STALIN && hash01(h * 29) < 0.5)) && F >= 3;
         b.entrances = (era == E_PANEL || era == E_KHRUSH || era == E_MODERN || era == E_STALIN) && L > 18 && F >= 3;
-        b.roof_boxes = (era == E_PANEL || era == E_MODERN || era == E_OFFICE) && F >= 9;
+        b.roof_boxes = (era == E_PANEL || era == E_MODERN || era == E_OFFICE || era == E_TOWER) && F >= 9;
+        b.tanks = (era == E_LOCAL || ((Z == Z_LATIN_AMERICA || Z == Z_HOT_DRY || Z == Z_TROPICAL) && era == E_MODERN)) && b.roof_kind == RK_FLAT;
+        if (era == E_POSTWAR || era == E_TOWER) {
+            b.balconies = F >= 3 && (era == E_TOWER || hash01(h * 29) < 0.5);
+            b.entrances = L > 18 && F >= 3;
+        }
+        if (era == E_HISTORIC && !sov) b.cornice = b.height > 6 && Z != Z_TROPICAL;
         b.glazed = era == E_MODERN ? true : hash01(h * 7) < 0.55;
     }
     // parts inherit their parent's architecture so a complex building stays one design
@@ -530,6 +642,8 @@ double style_bay(int style) {
         case 12: return 3.2;
         case 13: return 3.4;
         case 5: return 3.2;
+        case 17: return 3.2;
+        case 18: return 3.5;
         default: return 3.0;
     }
 }
@@ -652,7 +766,7 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
     // 2. gable on simple quads (data says gabled, or some houses)
     bool simple = r.rings.size() == 1 && r.rings[0].holes.empty() && r.rings[0].outer.size() == 4 && single;
     bool gable = !apex && simple && b.roof_kind == RK_HIP &&
-                 (rs == "gabled" || rs == "skillion" || rs == "gambrel" || (rs.empty() && b.era == E_HOUSE && hash01(hb * 41) < 0.6));
+                 (rs == "gabled" || rs == "skillion" || rs == "gambrel" || (rs.empty() && b.era == E_HOUSE && hash01(hb * 41) < (locale.zone == Z_NORTH_AMERICA ? 0.75 : locale.zone == Z_EAST_ASIA ? 0.2 : 0.6)));
     // 3. inset (hip / mansard-like) roof for any footprint: rings offset inwards, slopes + a flat top
     std::vector<std::vector<Poly>> inset_src, inset_dst;  // per ring set: [outer, holes...]
     std::vector<std::vector<std::vector<double>>> inset_d;
@@ -1021,6 +1135,18 @@ void World::emit_building(const Building &b, double base, double foot, V2 o, Chu
     }
     // flat roof
     for (auto &ring : r.rings) flat_poly(Rf, ring.outer, ring.holes, top, o, rc, 0);
+    if (b.tanks && !r.rings.empty() && b.area > 40) {
+        // water tanks / solar heaters on flat roofs of warm countries
+        const Poly &P = r.rings[0].outer;
+        V2 c = poly_centroid(P);
+        int n = 1 + int(hash32(hb * 89) % 3);
+        for (int k = 0; k < n; k++) {
+            V2 p = c + V2{(hash01(hb * 97 + k) - 0.5) * 6, (hash01(hb * 101 + k) - 0.5) * 6};
+            if (!point_in_poly(P, p) || !point_in_poly(P, p + V2{1.2, 1.2}) || !point_in_poly(P, p - V2{1.2, 1.2})) continue;
+            V3 tcol = hash01(hb * 103 + k) < 0.5 ? V3(0.12, 0.13, 0.14) : V3(0.2, 0.35, 0.6);
+            cbox(W, p, b.axis, 0.55, 0.55, top + rim, top + rim + 1.1, o, {3.0, 6.0}, tcol, seed);
+        }
+    }
     if (b.roof_boxes && !r.rings.empty()) {
         // lift machine rooms / stair exits along the long axis
         const Poly &P = r.rings[0].outer;
@@ -1654,7 +1780,8 @@ std::unique_ptr<ChunkData> World::build_chunk(int cx, int cy) const {
         I.p = lv(p, z, o);
         I.yaw = hash01(h) * 2 * PI;
         I.scale = sc * (0.8 + 0.45 * hash01(h * 31 + 7));
-        I.variant = int(hash32(h * 13) % 4);
+        double vr = hash01(h * 13);
+        I.variant = vr < locale.conifer ? 3 : vr < locale.conifer + locale.palm ? 4 : int(hash32(h * 17) % 3);
         C.inst[I_TREE].push_back(I);
     };
     for (auto &pt : region.points) {

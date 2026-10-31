@@ -213,10 +213,11 @@ std::string tile_path(const std::string &root, const std::string &rel, const cha
 
 // ---------------------------------------------------------------- loader
 
-bool Region::load(const std::string &root) {
+bool Region::load(const std::string &root, const std::string &spec) {
     std::string js;
-    if (!read_file(root + "/region.json", js)) {
-        log.push_back("no region.json in " + root);
+    std::string sp = spec.empty() ? root + "/region.json" : spec;
+    if (!read_file(sp, js)) {
+        log.push_back("no region description " + sp);
         return false;
     }
     Json R = Json::parse(js);
@@ -238,7 +239,15 @@ bool Region::load(const std::string &root) {
         std::vector<std::pair<TileId, std::string>> files;
         fs::path dd = fs::path(root) / "dem";
         std::error_code ec;
-        if (fs::exists(dd, ec))
+        if (R["dem13"].a.size() > 0) {
+            // shared cache: only the tiles this region asked for
+            for (auto &t : R["dem13"].a) {
+                TileId id{13, int(t[0].num()), int(t[1].num())};
+                char b[96];
+                snprintf(b, sizeof b, "/dem/13/%d/%d.png", id.x, id.y);
+                if (fs::exists(root + b, ec)) files.push_back({id, root + b});
+            }
+        } else if (fs::exists(dd, ec))
             for (auto &zdir : fs::directory_iterator(dd, ec))
                 for (auto &xdir : fs::directory_iterator(zdir.path(), ec))
                     for (auto &f : fs::directory_iterator(xdir.path(), ec)) {
@@ -497,10 +506,11 @@ bool Region::load(const std::string &root) {
                             bt.push_back({atoi(zdir.path().filename().string().c_str()), atoi(xdir.path().filename().string().c_str()), atoi(f.path().stem().string().c_str())});
         Rect keep = bounds.grown(50);
         for (auto &t : bt) {
-            std::vector<mvt::Layer> L;
-            if (!load_mvt(tile_path(root, release, "base", t), L)) continue;
             V2 a, b;
             frame.tile_rect(t, a, b);
+            if (!Rect{a, b}.overlaps(keep)) continue;  // shared cache: tiles of other regions
+            std::vector<mvt::Layer> L;
+            if (!load_mvt(tile_path(root, release, "base", t), L)) continue;
             Rect clip{a, b};
             if (!clip.overlaps(keep)) continue;
             // clip to the intersection of the tile and the region (keeps data bounded)
@@ -555,6 +565,58 @@ bool Region::load(const std::string &root) {
         }
         log.push_back("areas " + std::to_string(areas.size()) + ", lines " + std::to_string(lines.size()) + ", points " + std::to_string(points.size()));
     }
+    return true;
+}
+
+}  // namespace es
+
+namespace es {
+
+// World-map rendering of a Terrarium elevation tile: hypsometric tints + hill shading.
+bool shade_terrarium(const uint8_t *png, size_t n, int z, int ty, std::vector<uint8_t> &rgb) {
+    int w0, h0, c;
+    uint8_t *px = stbi_load_from_memory(png, int(n), &w0, &h0, &c, 3);
+    if (!px) return false;
+    if (w0 != 256 || h0 != 256) {
+        stbi_image_free(px);
+        return false;
+    }
+    std::vector<float> H(256 * 256);
+    for (int i = 0; i < 256 * 256; i++) H[i] = float(px[i * 3] * 256.0 + px[i * 3 + 1] + px[i * 3 + 2] / 256.0 - 32768.0);
+    stbi_image_free(px);
+    double lat = std::atan(std::sinh(PI * (1 - 2 * (ty + 0.5) / double(1 << z))));
+    double mpp = 40075016.0 * std::cos(lat) / (256.0 * double(1 << z));
+    double exag = z < 6 ? 6.0 : z < 10 ? 3.0 : 1.8;
+    struct Stop {
+        float h, r, g, b;
+    };
+    static const Stop land[] = {{0, 0.47f, 0.62f, 0.40f}, {150, 0.56f, 0.68f, 0.44f}, {500, 0.78f, 0.75f, 0.53f}, {1200, 0.68f, 0.56f, 0.42f},
+                                {2500, 0.60f, 0.55f, 0.52f}, {3800, 0.86f, 0.86f, 0.86f}, {6000, 0.98f, 0.98f, 1.0f}};
+    rgb.resize(256 * 256 * 3);
+    for (int y = 0; y < 256; y++)
+        for (int x = 0; x < 256; x++) {
+            float h = H[y * 256 + x];
+            float r, g, b;
+            if (h <= 0.5f) {
+                float t = std::min(1.0f, -h / 2500.0f);
+                r = 0.42f - 0.25f * t, g = 0.62f - 0.3f * t, b = 0.78f - 0.25f * t;
+            } else {
+                int k = 0;
+                while (k < 5 && h > land[k + 1].h) k++;
+                float t = std::clamp((h - land[k].h) / (land[k + 1].h - land[k].h), 0.0f, 1.0f);
+                r = land[k].r + (land[k + 1].r - land[k].r) * t, g = land[k].g + (land[k + 1].g - land[k].g) * t, b = land[k].b + (land[k + 1].b - land[k].b) * t;
+                float hx0 = H[y * 256 + std::max(0, x - 1)], hx1 = H[y * 256 + std::min(255, x + 1)];
+                float hy0 = H[std::max(0, y - 1) * 256 + x], hy1 = H[std::min(255, y + 1) * 256 + x];
+                double dx = (hx1 - hx0) / (2 * mpp) * exag, dy = (hy1 - hy0) / (2 * mpp) * exag;
+                // light from the north-west
+                double nx = -dx, ny = -dy, nz = 1, l = std::sqrt(nx * nx + ny * ny + nz * nz);
+                double sh = (nx * -0.6 + ny * -0.6 + nz * 0.53) / l;
+                float k2 = float(std::clamp(0.45 + 0.75 * sh, 0.35, 1.2));
+                r *= k2, g *= k2, b *= k2;
+            }
+            uint8_t *o = &rgb[(y * 256 + x) * 3];
+            o[0] = uint8_t(std::clamp(r, 0.0f, 1.0f) * 255), o[1] = uint8_t(std::clamp(g, 0.0f, 1.0f) * 255), o[2] = uint8_t(std::clamp(b, 0.0f, 1.0f) * 255);
+        }
     return true;
 }
 

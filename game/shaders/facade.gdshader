@@ -33,7 +33,7 @@ void fragment() {
 	float nfl = floor(info.y / 32.0 + 0.01);
 	int style = int(info.y - nfl * 32.0 + 0.5);
 	if (nfl < 0.5) nfl = 999.0;
-	float seed = COLOR.a;
+	float seed = floor(COLOR.a * 4096.0 + 0.5) / 4096.0;  // exact: the hashes below amplify tiny differences
 	vec3 wall = COLOR.rgb;
 	float x = UV.x, y = UV.y;
 	if (style >= 7 && style <= 9) {

@@ -101,10 +101,14 @@ struct Region {
 
     // Load from a data directory laid out as <root>/region.json, overture/<rel>/<theme>/<z>/<x>/<y>.mvt,
     // dem/<z>/<x>/<y>.png. Returns false and fills log on fatal errors.
-    bool load(const std::string &root);
+    // spec: region description file (default root/region.json); tiles are read from root
+    bool load(const std::string &root, const std::string &spec = "");
 };
 
 uint32_t parse_color(const std::string &s);  // "#RRGGBB" -> 0x1RRGGBB, 0 if invalid
 bool read_file(const std::string &path, std::string &out);
+
+// world map: hypsometric + hill-shaded RGB of a Terrarium tile (256x256x3)
+bool shade_terrarium(const uint8_t *png, size_t n, int z, int ty, std::vector<uint8_t> &rgb);
 
 }  // namespace es

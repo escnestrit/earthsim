@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "locale.hpp"
 #include "mesh.hpp"
 #include "region.hpp"
 #include "roadgeom.hpp"
@@ -26,7 +27,7 @@ struct Instance {
 
 enum InstKind : int { I_TREE = 0, I_LAMP, I_SIGNAL, I_BENCH, I_STOP, I_SIGN, I_CAR, I_BIN, I_PLAY, I_COUNT };
 
-enum Era : int { E_HISTORIC, E_STALIN, E_KHRUSH, E_PANEL, E_MODERN, E_OFFICE, E_INDUSTRIAL, E_HOUSE, E_SHED, E_PUBLIC, E_CHURCH };
+enum Era : int { E_HISTORIC, E_STALIN, E_KHRUSH, E_PANEL, E_MODERN, E_OFFICE, E_INDUSTRIAL, E_HOUSE, E_SHED, E_PUBLIC, E_CHURCH, E_POSTWAR, E_LOCAL, E_TOWER };
 enum RoofKind : int { RK_FLAT, RK_HIP, RK_APEX };
 
 struct Building {
@@ -44,7 +45,7 @@ struct Building {
     std::string roof_shape;
     int era = E_PANEL, variant = 0, floors = 1, roof_kind = RK_FLAT;
     int verts = 0, holes = 0;
-    bool attached = false, cornice = false, balconies = false, entrances = false, roof_boxes = false, glazed = false;
+    bool attached = false, tanks = false, cornice = false, balconies = false, entrances = false, roof_boxes = false, glazed = false;
     V2 axis{1, 0};
 };
 
@@ -71,7 +72,8 @@ struct World {
     std::vector<double> seam_x, seam_y;  // z14 tile seams (pieces of clipped polygons abut here)
     std::vector<std::string> log;
 
-    bool load(const std::string &root);
+    bool load(const std::string &root, const std::string &spec = "");
+    Locale locale;
     static uint64_t ckey(int cx, int cy) { return (uint64_t(uint32_t(cx)) << 32) | uint32_t(cy); }
     void chunk_range(int &x0, int &y0, int &x1, int &y1) const;  // chunks covering the region
     Rect chunk_rect(int cx, int cy) const { return {{cx * CHUNK, cy * CHUNK}, {(cx + 1) * CHUNK, (cy + 1) * CHUNK}}; }

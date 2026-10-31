@@ -743,7 +743,7 @@ bool RoadNet::follow(V2 p, V2 h, double ahead, V2 &target, int *speed_limit, V2 
             // right-hand lane centre: a quarter of the width right of the centre on two-way roads,
             // on one-way roads the rightmost lane
             double off = e.oneway ? std::max(0.0, e.half() - 1.8) : std::min(e.half() * 0.5, 2.0);
-            target = c - perp(t) * off;
+            target = c - perp(t) * (off * side);
             if (speed_limit) *speed_limit = e.speed;
             if (centre) *centre = c;
             if (width) *width = e.width;

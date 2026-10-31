@@ -32,6 +32,14 @@ func setup(w: EarthWorld, p: Node3D) -> void:
 	_wheel = CarModel.new().build_wheel(0.32, 0.2)
 	_shape.size = Vector3(1.8, 1.3, 4.5)
 
+# a new region: all cars go, new ones spawn on the new road graph
+func reset(w: EarthWorld) -> void:
+	for c in cars:
+		c["body"].queue_free()
+	cars.clear()
+	_info.clear()
+	world = w
+
 func _edge(e: int) -> Dictionary:
 	if not _info.has(e):
 		_info[e] = world.edge_info(e)

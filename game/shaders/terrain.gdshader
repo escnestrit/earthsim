@@ -25,6 +25,20 @@ void fragment() {
 	// patches of worn grass in urban ground
 	float patchy = smoothstep(0.45, 0.6, fbm(w * 0.25));
 	urban = mix(urban, grass * 0.85, patchy * 0.35);
+	// climate of the region
+	int bi = int(biome + 0.5);
+	if (bi == 1) { grass *= vec3(0.85, 0.95, 0.9); forest *= vec3(0.8, 0.9, 0.85); }
+	else if (bi == 2) { grass = mix(grass, vec3(0.42, 0.40, 0.22) * (0.8 + 0.3 * n2), 0.55); }
+	else if (bi == 3) {
+		vec3 sand = mix(vec3(0.66, 0.55, 0.40), vec3(0.76, 0.66, 0.50), n1) * (0.85 + 0.25 * n3);
+		grass = mix(sand, grass * vec3(1.1, 0.9, 0.7), 0.25 * smoothstep(0.55, 0.75, n2));
+		forest = mix(forest, sand * 0.8, 0.5);
+		soil = mix(soil, sand, 0.6);
+	}
+	else if (bi == 4) { grass *= vec3(0.85, 1.12, 0.8); forest *= vec3(0.8, 1.1, 0.8); }
+	else if (bi == 5) {
+		grass = mix(grass * vec3(0.95, 0.9, 0.85), vec3(0.82, 0.84, 0.86), smoothstep(0.5, 0.7, n1));
+	}
 	vec3 col = grass * m.r + forest * m.g + soil * m.b + urban * m.a;
 	float rough = 0.95;
 	if (paved > 0.25) {

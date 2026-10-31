@@ -1,6 +1,7 @@
 // Shared procedural helpers (no textures needed).
 global uniform float night;
 global uniform float wetness;
+global uniform float biome;  // 0 temperate, 1 boreal, 2 mediterranean, 3 arid, 4 tropical, 5 tundra
 global uniform vec3 detail_center;
 global uniform float detail_radius;
 uniform bool far_lod = false;

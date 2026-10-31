@@ -22,6 +22,11 @@ class EarthWorld : public RefCounted {
 
   public:
     bool load(const String &dir);
+    bool load_spec(const String &root, const String &spec);
+    // map overlay: roads of a transportation vector tile as polylines in 0..256 tile pixels
+    static Array map_tile_roads(const PackedByteArray &mvt);
+    // map background: shaded relief RGB8 bytes (256x256) from a Terrarium PNG
+    static PackedByteArray map_shade(const PackedByteArray &png, int z, int ty);
     bool is_loaded() const { return bool(w); }
     PackedStringArray get_log() const { return log_; }
     Rect2i chunk_range() const;

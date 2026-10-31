@@ -18,6 +18,7 @@ var conifer_lo: Mesh
 var lamp_head_mat: StandardMaterial3D
 var signal_mat: ShaderMaterial
 var play: Array[Mesh] = []
+var palm: Mesh
 
 func _init() -> void:
 	meshes.resize(I_COUNT)
@@ -32,6 +33,7 @@ func _init() -> void:
 	meshes[I_BIN] = _bins()
 	meshes[I_STOP] = _shelter()
 	play = [_swing(), _slide(), _sandbox()]
+	palm = _palm()
 
 static func _mat(c: Color, rough := 0.8, metal := 0.0) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -381,4 +383,27 @@ func _sandbox() -> Mesh:
 	_pbox(s3, Vector3(1.8, 0.08, 1.8), Transform3D(Basis(Vector3.UP, PI * 0.25), Vector3(0, 2.25, 0)))
 	s3.commit(m)
 	m.surface_set_material(2, _mat(Color(0.2, 0.6, 0.3), 0.6))
+	return m
+
+func _palm() -> Mesh:
+	var trunk := SurfaceTool.new()
+	trunk.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var base := Vector3.ZERO
+	for k in 6:
+		var top := base + Vector3(0.12 * sin(k * 0.6), 1.45, 0.05 * k)
+		_cyl(trunk, base, 0.2 - k * 0.015, 0.19 - k * 0.015, 1.5, 7)
+		base = top
+	var m := trunk.commit()
+	m.surface_set_material(0, _mat(Color(0.42, 0.36, 0.28), 0.95))
+	var fr := SurfaceTool.new()
+	fr.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for k in 9:
+		var a := TAU * k / 9.0
+		var dir := Vector3(cos(a), 0, sin(a))
+		var b := Basis(Vector3.UP, -a) * Basis(Vector3.FORWARD, 0.35)
+		_pbox(fr, Vector3(2.6, 0.04, 0.55), Transform3D(b, base + dir * 1.2 + Vector3(0, -0.25, 0)))
+	fr.commit(m)
+	var leaf := _mat(Color(0.2, 0.38, 0.14), 0.8)
+	leaf.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.surface_set_material(1, leaf)
 	return m
