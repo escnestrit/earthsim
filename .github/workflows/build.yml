@@ -69,7 +69,11 @@ jobs:
       - name: Traffic test
         run: timeout 300 ./godot --headless --path game -- --test=traffic --data=$PWD/data
       - name: Off-road and back test
-        run: timeout 400 ./godot --headless --path game -- --test=offroad --notraffic --data=$PWD/data
+        run: |
+          rc=0
+          timeout 400 ./godot --headless --path game -- --test=offroad --notraffic --data=$PWD/data > offroad.log 2>&1 || rc=$?
+          grep -E "^\[(test|offroad)\]" offroad.log | while read -r l; do echo "::notice::$l"; done
+          exit $rc
       - name: Runtime map loading test (London -> region switch -> Tokyo, real servers)
         run: |
           rc=0

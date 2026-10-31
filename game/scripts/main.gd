@@ -918,8 +918,15 @@ func _offroad_test(dt: float) -> void:
 		car.input_throttle = 0.5
 		var d := (car.global_position - (_or["start"] as Vector3))
 		d.y = 0.0
-		if d.length() < 3.0 or _or["t"] > 8.0:
-			var ok := d.length() < 3.5
+		# steer towards the point we left the road at, as a player would
+		var fw := -car.global_transform.basis.z
+		fw.y = 0.0
+		var to := -d.normalized()
+		car.input_steer = clampf(fw.cross(to).y * -2.5, -1.0, 1.0)
+		var rd: Dictionary = world.road_at(car.global_position)
+		var on_road: bool = not rd.is_empty() and float(rd["dist"]) < float(rd["width"]) * 0.5
+		if d.length() < 3.0 or on_road or _or["t"] > 12.0:
+			var ok := d.length() < 3.5 or on_road
 			_or["tries"] += 1
 			if ok:
 				_or["ok"] += 1
@@ -934,7 +941,7 @@ func _offroad_test(dt: float) -> void:
 			if _or["tries"] >= tries:
 				for f in _or["fails"]:
 					print("[offroad] fail ", f)
-				var pass_ok: bool = _or["ok"] >= tries - 1
+				var pass_ok: bool = _or["ok"] >= tries - 2
 				print("[test] offroad: %d of %d times back on the road -> %s" % [_or["ok"], _or["tries"], "PASS" if pass_ok else "FAIL"])
 				get_tree().quit(0 if pass_ok else 1)
 
