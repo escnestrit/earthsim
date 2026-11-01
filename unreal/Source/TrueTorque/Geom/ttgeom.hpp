@@ -45,6 +45,16 @@ struct Mesh {
     std::vector<V> base, off;      // rest position and accumulated dent
     std::vector<float> scrape;     // 0 paint .. 1 bare metal / cracked glass
     std::vector<Tri> tris;
+    // imported meshes keep their own normals and UVs; points at the same position form a weld group
+    // (UV seams and hard edges split vertices, dents must still move them together)
+    std::vector<V> nrm0;
+    std::vector<float> u0, v0;
+    std::vector<int> group;
+    int add_vertex(const V &p, const V &n, float u, float v) {
+        nrm0.push_back(n), u0.push_back(u), v0.push_back(v);
+        return add(p);
+    }
+    void build_groups();  // call once after all vertices are added (imported meshes)
 
     int add(const V &p) {
         base.push_back(p);

@@ -61,6 +61,17 @@ int main() {
     side.scratch(V{0, 92, 60}, 40, 1.0);
     double sc = 0, mv = 0; for (size_t i = 0; i < side.base.size(); i++) sc = std::max(sc, double(side.scrape[i])), mv = std::max(mv, len(side.off[i]));
     CHECK(sc > 0.3 && mv == 0, "scrape removes paint (%.2f) without moving metal", sc);
+    // imported meshes: split vertices (UV seam) stay welded under a dent and keep their own normals until bent
+    {
+        Mesh m;
+        int a = m.add_vertex(V{0, 0, 0}, V{0, 0, 1}, 0, 0), b = m.add_vertex(V{10, 0, 0}, V{0, 0, 1}, 1, 0), c = m.add_vertex(V{0, 10, 0}, V{0, 0, 1}, 0, 1);
+        int b2 = m.add_vertex(V{10, 0, 0}, V{0, 0, 1}, 0.5f, 0), d = m.add_vertex(V{10, 10, 0}, V{0, 0, 1}, 1, 1);
+        m.tris.push_back({a, b, c, 0, true}); m.tris.push_back({b2, d, c, 0, true});
+        m.build_groups();
+        std::vector<V> n0; m.point_normals(n0);
+        m.dent(V{10, 0, 0}, V{0, 0, -1}, 5, 8, 20, 1);
+        CHECK(m.group[b] == m.group[b2] && len(m.off[b] - m.off[b2]) < 1e-9 && n0[a].z == 1.0, "seam vertices weld (group %d/%d), move together, keep own normals", m.group[b], m.group[b2]);
+    }
     printf(fails ? "FAILED: %d\n" : "OK: 0 failed\n", fails);
     return fails != 0;
 }

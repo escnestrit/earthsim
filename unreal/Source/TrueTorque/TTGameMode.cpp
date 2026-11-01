@@ -27,21 +27,37 @@ ATTGameMode::ATTGameMode()
 	PlayerControllerClass = APlayerController::StaticClass();
 }
 
+ATTCar* ATTGameMode::SpawnCar(const FVector& Loc, float Yaw, int32 CarIndex, const FLinearColor& Paint)
+{
+	const FTransform T(FRotator(0.f, Yaw, 0.f), Loc);
+	// deferred so paint and model are set before BeginPlay builds the car
+	ATTCar* Car = GetWorld()->SpawnActorDeferred<ATTCar>(ATTCar::StaticClass(), T, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!Car) return nullptr;
+	Car->PaintColor = Paint;
+	Car->CarIndex = CarIndex;
+	Car->FinishSpawning(T);
+	return Car;
+}
+
+static const FLinearColor Paints[] = {{0.42f, 0.03f, 0.02f}, {0.02f, 0.08f, 0.35f}, {0.7f, 0.7f, 0.68f}, {0.02f, 0.02f, 0.02f}, {0.05f, 0.25f, 0.08f}, {0.6f, 0.4f, 0.02f}};
+
 APawn* ATTGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
 {
 	// cars line up on the start straight (bottom of the oval, y = -380 m), facing +X
 	const int32 i = Spawned++;
+	const int32 N = ATTCar::Catalog().Num();
 	const FVector Loc((-20.f - (i / 2) * 9.f) * 100.f, (-380.f + (i % 2 ? 2.5f : -2.5f)) * 100.f, 80.f);
-	const FLinearColor Paints[] = {{0.42f, 0.03f, 0.02f}, {0.02f, 0.08f, 0.35f}, {0.7f, 0.7f, 0.68f}, {0.02f, 0.02f, 0.02f}, {0.05f, 0.25f, 0.08f}, {0.6f, 0.4f, 0.02f}};
-	// deferred so the paint is set before BeginPlay builds the materials
-	ATTCar* Car = GetWorld()->SpawnActorDeferred<ATTCar>(ATTCar::StaticClass(), FTransform(FRotator::ZeroRotator, Loc), nullptr, GetInstigator(),
-	                                                     ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-	if (Car)
-	{
-		Car->PaintColor = Paints[i % 6];
-		Car->FinishSpawning(FTransform(FRotator::ZeroRotator, Loc));
-	}
-	return Car;
+	return SpawnCar(Loc, 0.f, N ? i % N : -1, Paints[i % 6]);
+}
+
+void ATTGameMode::StartPlay()
+{
+	Super::StartPlay();
+	// free cars parked by the garage: walk up (F) and take one
+	const int32 N = ATTCar::Catalog().Num();
+	const int32 Count = FMath::Min(N, 7) + 1;
+	for (int32 k = 0; k < Count; k++)
+		SpawnCar(FVector((-90.f + k * 6.f) * 100.f, (-380.f + 52.f) * 100.f, 80.f), 90.f, k < N ? k : -1, Paints[(k + 3) % 6]);
 }
 
 // ------------------------------------------------------------------ helpers

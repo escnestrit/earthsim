@@ -14,8 +14,10 @@ class TRUETORQUE_API ATTGameMode : public AGameModeBase
 public:
 	ATTGameMode();
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
+	virtual void StartPlay() override;
 private:
 	int32 Spawned = 0;
+	class ATTCar* SpawnCar(const FVector& Loc, float Yaw, int32 CarIndex, const FLinearColor& Paint);
 };
 
 UCLASS()

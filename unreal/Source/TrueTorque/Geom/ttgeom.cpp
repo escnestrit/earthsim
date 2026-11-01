@@ -81,14 +81,46 @@ void Mesh::repair(double fraction) {
     for (size_t i = 0; i < base.size(); i++) off[i] = off[i] * k, scrape[i] = float(scrape[i] * k);
 }
 
+void Mesh::build_groups() {
+    group.assign(base.size(), 0);
+    std::vector<std::pair<long long, int>> keys(base.size());
+    for (size_t i = 0; i < base.size(); i++) {
+        const long long qx = std::llround(base[i].x * 20), qy = std::llround(base[i].y * 20), qz = std::llround(base[i].z * 20);
+        keys[i] = {(qx * 73856093LL) ^ (qy * 19349663LL) ^ (qz * 83492791LL), int(i)};
+    }
+    std::sort(keys.begin(), keys.end());
+    int g = -1;
+    for (size_t k = 0; k < keys.size(); k++) {
+        const int i = keys[k].second;
+        bool same = k > 0 && keys[k].first == keys[k - 1].first && len(base[i] - base[keys[k - 1].second]) < 0.1;
+        if (!same) g++;
+        group[i] = g;
+    }
+}
+
 void Mesh::point_normals(std::vector<V> &out) const {
     out.assign(base.size(), V{0, 0, 0});
+    const bool grouped = group.size() == base.size();
+    std::vector<V> acc;
+    if (grouped) acc.assign(base.size(), V{0, 0, 0});
     for (const Tri &t : tris) {
         if (!t.smooth) continue;
         const V n = cross(p(t.c) - p(t.a), p(t.b) - p(t.a));
-        out[t.a] += n, out[t.b] += n, out[t.c] += n;
+        if (grouped) acc[group[t.a]] += n, acc[group[t.b]] += n, acc[group[t.c]] += n;
+        else out[t.a] += n, out[t.b] += n, out[t.c] += n;
     }
-    for (V &n : out) n = norm(n);
+    if (!grouped) {
+        for (V &n : out) n = norm(n);
+        return;
+    }
+    const bool own = nrm0.size() == base.size();
+    for (size_t i = 0; i < base.size(); i++) {
+        const V welded = norm(acc[group[i]]);
+        if (!own) { out[i] = welded; continue; }
+        // keep the artist's normal until the metal moves, then blend to the dented surface
+        const double w = std::min(1.0, len(off[i]) / 3.0);
+        out[i] = w <= 0 ? nrm0[i] : norm(lerp(nrm0[i], welded, w));
+    }
 }
 
 V Mesh::centre() const {
