@@ -34,6 +34,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "TTHud.h"
+#include "TTGameMode.h"
 
 namespace
 {
@@ -90,6 +91,21 @@ bool HasAny(const FString& S, std::initializer_list<const TCHAR*> Words)
 	return false;
 }
 }  // namespace
+
+int32 TTCmd::Cost(uint8 Cmd, int32 Index)
+{
+	switch (Cmd)
+	{
+	case RepairPart: return Index >= 100 ? 120 : 180;  // wheel studs + alignment / panel straightening or a used part
+	case Fluids: return 40;
+	case EngineRebuild: return 900;
+	case Tape: return 5;
+	case ColdWeld: return 25;
+	case SwapVariant: return 300;
+	case Reset: return 50;  // the tow truck
+	default: return 0;
+	}
+}
 
 // ------------------------------------------------------------------ catalog of imported cars
 
@@ -746,7 +762,8 @@ void ATTCar::Tick(float Dt)
 		bCoMSet = true;
 	}
 	UpdatePhysics(Dt);
-	if (HasAuthority()) UpdateEngineHeat(Dt);
+	if (HasAuthority()) UpdateEngineHeat(Dt), UpdateLap();
+	UpdateSkids(Dt);
 	UpdateVisuals(Dt);
 	UpdateCamera(Dt);
 	LastVelocity = Chassis->GetPhysicsLinearVelocity();
@@ -789,6 +806,7 @@ void ATTCar::UpdatePhysics(float Dt)
 	const FVector Vel = Chassis->GetPhysicsLinearVelocity() / 100.0;  // m/s
 	Speed = float(FVector::DotProduct(Vel, Fwd));
 	const bool bAuth = HasAuthority();
+	const ATTGameState* GS = GetWorld()->GetGameState<ATTGameState>();
 
 	// ---- controls (automatic: brake at a standstill engages reverse, pedals swap in reverse)
 	float Thr = RepThrottle, Brk = RepBrake;
@@ -928,7 +946,7 @@ void ATTCar::UpdatePhysics(float Dt)
 		const FVector Vc = Chassis->GetPhysicsLinearVelocityAtPoint(W.ContactPoint) / 100.0;
 		const float Vx = float(FVector::DotProduct(Vc, WF)), Vy = float(FVector::DotProduct(Vc, WR));
 		// load sensitivity: a heavily loaded tyre grips a bit less per kilo (so weight transfer matters)
-		const float Mu = 1.02f * W.Grip * (1.f - 0.25f * Bend) * FMath::Clamp(1.08f - 0.08f * Fz / 3300.f, 0.8f, 1.1f);
+		const float Mu = (GS ? GS->GripFactor(W.Grip) : 1.f) * 1.02f * W.Grip * (1.f - 0.25f * Bend) * FMath::Clamp(1.08f - 0.08f * Fz / 3300.f, 0.8f, 1.1f);
 		const float Den = FMath::Max(FMath::Abs(Vx), 3.f);
 		const int32 Sub = 8;
 		const float Hs = Dt / Sub;
@@ -1286,8 +1304,8 @@ void ATTCar::SetupInput()
 	Mapping->MapKey(Hb, EKeys::Gamepad_FaceButton_Bottom);
 	Mapping->MapKey(Look, EKeys::Mouse2D);
 	Mapping->MapKey(Look, EKeys::Gamepad_Right2D);
-	const FName Names[] = {"ShiftUp", "ShiftDown", "Camera", "Mechanic", "Reset", "Use", "Loosen", "Gearbox", "Lights", "Exit", "DebugHud", "DebugLines"};
-	const FKey Keys[] = {EKeys::E, EKeys::Q, EKeys::C, EKeys::Tab, EKeys::R, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::M, EKeys::L, EKeys::F, EKeys::F1, EKeys::F2};
+	const FName Names[] = {"ShiftUp", "ShiftDown", "Camera", "Mechanic", "Reset", "Use", "Loosen", "Gearbox", "Lights", "Exit", "DebugHud", "DebugLines", "WorldTime", "WorldRain"};
+	const FKey Keys[] = {EKeys::E, EKeys::Q, EKeys::C, EKeys::Tab, EKeys::R, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::M, EKeys::L, EKeys::F, EKeys::I, EKeys::O, EKeys::N, EKeys::K};
 	for (int32 i = 0; i < int32(UE_ARRAY_COUNT(Names)); i++) Mapping->MapKey(Act(Names[i], EInputActionValueType::Boolean), Keys[i]);
 }
 
@@ -1323,6 +1341,8 @@ void ATTCar::SetupPlayerInputComponent(UInputComponent* PIC)
 	E->BindAction(Actions["Exit"], ETriggerEvent::Started, this, &ATTCar::OnExit);
 	E->BindAction(Actions["DebugHud"], ETriggerEvent::Started, this, &ATTCar::OnDebugHud);
 	E->BindAction(Actions["DebugLines"], ETriggerEvent::Started, this, &ATTCar::OnDebugLines);
+	E->BindAction(Actions["WorldTime"], ETriggerEvent::Started, this, &ATTCar::OnWorldTime);
+	E->BindAction(Actions["WorldRain"], ETriggerEvent::Started, this, &ATTCar::OnWorldRain);
 }
 
 void ATTCar::OnThrottle(const FInputActionValue& V) { InThrottle = View == ETTView::Mechanic ? 0.f : V.Get<float>(); }
@@ -1468,15 +1488,22 @@ int32 ATTCar::AimedPart(const FVector& Eye, const FVector& Dir) const
 
 void ATTCar::Command(uint8 Cmd, int32 Index)
 {
-	if (HasAuthority()) DoCommand(Cmd, Index);
+	if (HasAuthority()) DoCommand(Cmd, Index, GetPlayerState());
 	else ServerCommand(Cmd, Index);
 }
 
-void ATTCar::ServerCommand_Implementation(uint8 Cmd, int32 Index) { DoCommand(Cmd, Index); }
+void ATTCar::ServerCommand_Implementation(uint8 Cmd, int32 Index) { DoCommand(Cmd, Index, GetPlayerState()); }
 
-void ATTCar::DoCommand(uint8 Cmd, int32 Index)
+void ATTCar::DoCommand(uint8 Cmd, int32 Index, APlayerState* Payer)
 {
 	const bool bParked = FMath::Abs(Speed) < 1.f;
+	const int32 Price = TTCmd::Cost(Cmd, Index);
+	if (Price > 0)
+	{
+		if (Cmd != TTCmd::Reset && !bParked) return;
+		if (ATTPlayerState* PS = Cast<ATTPlayerState>(Payer ? Payer : GetPlayerState()))
+			if (!PS->Pay(Price)) return;
+	}
 	switch (Cmd)
 	{
 	case TTCmd::Tighten:
@@ -1567,6 +1594,12 @@ void ATTCar::DoCommand(uint8 Cmd, int32 Index)
 	case TTCmd::Lights:
 		bLights = !bLights;
 		break;
+	case TTCmd::WorldTime:
+		if (ATTGameState* G = GetWorld()->GetGameState<ATTGameState>()) G->SkipTime(3.f);
+		break;
+	case TTCmd::WorldRain:
+		if (ATTGameState* G = GetWorld()->GetGameState<ATTGameState>()) G->ToggleRain();
+		break;
 	default:
 		break;
 	}
@@ -1576,6 +1609,22 @@ void ATTCar::DoCommand(uint8 Cmd, int32 Index)
 void ATTCar::ShowCommand(uint8 Cmd, int32 Index)
 {
 	const FVector Above = GetActorLocation() + FVector(0, 0, 200);
+	const int32 Price = TTCmd::Cost(Cmd, Index);
+	if (Price > 0)
+	{
+		const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+		const ATTPlayerState* PS = PC ? PC->GetPlayerState<ATTPlayerState>() : nullptr;
+		if (PS && PS->Money < Price)
+		{
+			Note(FString::Printf(TEXT("не хватает денег: нужно $%d, есть $%d"), Price, PS->Money), Above, 2.5f);
+			return;
+		}
+		if (Cmd != TTCmd::Reset && FMath::Abs(Speed) >= 1.f)
+		{
+			Note(TEXT("сначала останови машину"), Above, 2.f);
+			return;
+		}
+	}
 	auto PartName = [&](int32 i) { return Parts.IsValidIndex(i) ? Parts[i].Name : FString(TEXT("?")); };
 	switch (Cmd)
 	{
@@ -1812,6 +1861,8 @@ void ATTCar::UpdateMechanics()
 bool ATTCar::bDebugLines = false;
 void ATTCar::OnDebugHud() { ATTHUD::bShow = !ATTHUD::bShow; }
 void ATTCar::OnDebugLines() { bDebugLines = !bDebugLines; }
+void ATTCar::OnWorldTime() { Command(TTCmd::WorldTime, 0); }
+void ATTCar::OnWorldRain() { Command(TTCmd::WorldRain, 0); }
 
 FString ATTCar::DebugReport() const
 {
@@ -1877,4 +1928,89 @@ void ATTCar::DrawDebugLines() const
 		if (Wh.bContact) DrawDebugLine(W, Wh.ContactPoint, Wh.ContactPoint + Up * (Wh.Load / 100.f), FColor::Yellow, false, -1.f, 0, 2.f);
 	}
 	DrawDebugSphere(W, Chassis->GetCenterOfMass(), 12.f, 8, FColor::Cyan, false, -1.f, 0, 1.f);
+}
+
+// ------------------------------------------------------------------ skid marks
+
+void ATTCar::UpdateSkids(float Dt)
+{
+	if (GetNetMode() == NM_DedicatedServer) return;
+	if (!Skids)
+	{
+		Skids = NewObject<UProceduralMeshComponent>(this);
+		Skids->SetUsingAbsoluteLocation(true);
+		Skids->SetUsingAbsoluteRotation(true);
+		Skids->SetUsingAbsoluteScale(true);
+		Skids->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Skids->SetCastShadow(false);
+		Skids->RegisterComponent();
+		Skids->SetWorldTransform(FTransform::Identity);
+		SkidMat = MakeMat(this, TEXT("M_Painted"), FLinearColor(0.012f, 0.012f, 0.012f));
+		SkidMat->SetScalarParameterValue(TEXT("Rough"), 0.95f);
+	}
+	const int32 MaxQuads = 900;
+	const FVector Right = Chassis->GetRightVector();
+	for (int32 i = 0; i < 4 && i < Wheels.Num(); i++)
+	{
+		const FWheel& W = Wheels[i];
+		const bool bSlide = W.bContact && !((DetachedWheels >> i) & 1) && W.Slide > 1.25f && FMath::Abs(Speed) > 2.f;
+		if (!bSlide)
+		{
+			bSkidOn[i] = false;
+			continue;
+		}
+		const FVector P = W.ContactPoint + W.ContactNormal * 1.5f, Side = Right * 10.f;
+		if (!bSkidOn[i])
+		{
+			SkidLast[i][0] = P - Side, SkidLast[i][1] = P + Side, bSkidOn[i] = true;
+			continue;
+		}
+		if (FVector::DistSquared((SkidLast[i][0] + SkidLast[i][1]) * 0.5f, P) < 25.f * 25.f) continue;
+		if (SkidVerts.Num() < MaxQuads * 4) SkidVerts.AddUninitialized(4), SkidNext = SkidVerts.Num() / 4 - 1;
+		else SkidNext = (SkidNext + 1) % MaxQuads;
+		FVector* Q = &SkidVerts[SkidNext * 4];
+		Q[0] = SkidLast[i][0], Q[1] = SkidLast[i][1], Q[2] = P + Side, Q[3] = P - Side;
+		SkidLast[i][0] = Q[3], SkidLast[i][1] = Q[2];
+		bSkidDirty = true;
+	}
+	if (bSkidDirty && (SkidRebuild -= Dt) <= 0.f)
+	{
+		SkidRebuild = 0.15f, bSkidDirty = false;
+		TArray<int32> I;
+		TArray<FVector> N;
+		I.Reserve(SkidVerts.Num() / 4 * 12);
+		for (int32 q = 0; q < SkidVerts.Num() / 4; q++)
+		{
+			const int32 b = q * 4;
+			// both windings: the ribbon is seen from above whichever way the car was going
+			I.Append({b, b + 1, b + 2, b, b + 2, b + 3, b, b + 2, b + 1, b, b + 3, b + 2});
+		}
+		N.Init(FVector::UpVector, SkidVerts.Num());
+		Skids->CreateMeshSection_LinearColor(0, SkidVerts, I, N, TArray<FVector2D>(), TArray<FLinearColor>(), TArray<FProcMeshTangent>(), false);
+		Skids->SetMaterial(0, SkidMat);
+	}
+}
+
+// ------------------------------------------------------------------ lap timing
+
+void ATTCar::UpdateLap()
+{
+	// the start line: x = 0 on the bottom straight of the oval (y = -380 m +- 7 m), driven towards +X
+	const FVector L = GetActorLocation();
+	const bool bOnStraight = FMath::Abs(L.Y + 38000.f) < 900.f;
+	if (bOnStraight && PrevX < 0.f && L.X >= 0.f && Speed > 2.f)
+	{
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (LapStart > 0.f)
+		{
+			const float Lap = Now - LapStart;
+			if (ATTPlayerState* PS = GetPlayerState<ATTPlayerState>())
+			{
+				PS->LastLap = Lap;
+				if (PS->BestLap <= 0.f || Lap < PS->BestLap) PS->BestLap = Lap;
+			}
+		}
+		LapStart = Now;
+	}
+	PrevX = L.X;
 }

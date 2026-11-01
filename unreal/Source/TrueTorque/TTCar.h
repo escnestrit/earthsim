@@ -32,7 +32,8 @@ enum class ETTView : uint8 { Chase, Cockpit, Mechanic };
 // commands from the driver or a mechanic standing next to the car (validated on the server)
 namespace TTCmd
 {
-enum : uint8 { Tighten, Loosen, RepairPart, Fluids, EngineRebuild, Tape, ColdWeld, SwapVariant, Reset, ShiftUp, ShiftDown, Gearbox, Lights };
+enum : uint8 { Tighten, Loosen, RepairPart, Fluids, EngineRebuild, Tape, ColdWeld, SwapVariant, Reset, ShiftUp, ShiftDown, Gearbox, Lights, WorldTime, WorldRain };
+int32 Cost(uint8 Cmd, int32 Index);  // what the job costs (parts, consumables, tow)
 }
 
 // one imported car from Content/TT/Cars/cars.json (written by Tools/import_cars.py)
@@ -76,7 +77,7 @@ public:
 	UFUNCTION(NetMulticast, Reliable) void MulticastRepair(int32 Part);
 
 	// ---- used by the mechanic on foot
-	void DoCommand(uint8 Cmd, int32 Index);          // server
+	void DoCommand(uint8 Cmd, int32 Index, class APlayerState* Payer = nullptr);  // server
 	void ShowCommand(uint8 Cmd, int32 Index);        // local feedback (notes, sounds)
 	int32 AimedWheel(const FVector& Eye, const FVector& Dir) const;
 	int32 AimedPart(const FVector& Eye, const FVector& Dir) const;
@@ -191,6 +192,19 @@ private:
 	void SetPartDetached(int32 Part, bool bOff, const FVector& Kick);
 	void SetWheelDetached(int32 Wheel, bool bOff);
 
+	// skid marks: dark ribbons left by sliding tyres (local, world space)
+	UPROPERTY() TObjectPtr<UProceduralMeshComponent> Skids;
+	UPROPERTY() TObjectPtr<UMaterialInstanceDynamic> SkidMat;
+	TArray<FVector> SkidVerts;          // 4 per quad, ring buffer
+	int32 SkidNext = 0;
+	FVector SkidLast[4][2];
+	bool bSkidOn[4] = {false, false, false, false};
+	bool bSkidDirty = false;
+	float SkidRebuild = 0;
+	void UpdateSkids(float Dt);
+	// lap timing across the start line
+	float LapStart = -1.f, PrevX = 0.f;
+	void UpdateLap();
 	void UpdatePhysics(float Dt);
 	void UpdateEngineHeat(float Dt);
 	void UpdateVisuals(float Dt);
@@ -235,4 +249,6 @@ private:
 	void OnExit();
 	void OnDebugHud();
 	void OnDebugLines();
+	void OnWorldTime();
+	void OnWorldRain();
 };

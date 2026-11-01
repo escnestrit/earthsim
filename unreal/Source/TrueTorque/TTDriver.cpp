@@ -1,6 +1,7 @@
 #include "TTDriver.h"
 #include "TTCar.h"
 #include "TTHud.h"
+#include "TTGameMode.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -91,8 +92,8 @@ void ATTDriver::SetupPlayerInputComponent(UInputComponent* PIC)
 		Mapping->MapKey(Move, EKeys::Gamepad_Left2D);
 		Mapping->MapKey(Look, EKeys::Mouse2D);
 		Mapping->MapKey(Look, EKeys::Gamepad_Right2D);
-		const FName Names[] = {"Jump", "Enter", "Tighten", "Loosen", "Repair", "Tape", "Weld", "Fluids", "Engine", "Swap", "DebugHud"};
-		const FKey Keys[] = {EKeys::SpaceBar, EKeys::F, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::R, EKeys::T, EKeys::V, EKeys::G, EKeys::H, EKeys::Y, EKeys::F1};
+		const FName Names[] = {"Jump", "Enter", "Tighten", "Loosen", "Repair", "Tape", "Weld", "Fluids", "Engine", "Swap", "DebugHud", "WorldTime", "WorldRain", "Give"};
+		const FKey Keys[] = {EKeys::SpaceBar, EKeys::F, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::R, EKeys::T, EKeys::V, EKeys::G, EKeys::H, EKeys::Y, EKeys::I, EKeys::N, EKeys::K, EKeys::P};
 		for (int32 i = 0; i < int32(UE_ARRAY_COUNT(Names)); i++) Mapping->MapKey(Act(Names[i], EInputActionValueType::Boolean), Keys[i]);
 	}
 	if (APlayerController* PC = Cast<APlayerController>(GetController()))
@@ -117,6 +118,9 @@ void ATTDriver::SetupPlayerInputComponent(UInputComponent* PIC)
 	E->BindAction(Actions["Engine"], ETriggerEvent::Started, this, &ATTDriver::OnEngine);
 	E->BindAction(Actions["Swap"], ETriggerEvent::Started, this, &ATTDriver::OnSwap);
 	E->BindAction(Actions["DebugHud"], ETriggerEvent::Started, this, &ATTDriver::OnDebugHud);
+	E->BindAction(Actions["WorldTime"], ETriggerEvent::Started, this, &ATTDriver::OnWorldTime);
+	E->BindAction(Actions["WorldRain"], ETriggerEvent::Started, this, &ATTDriver::OnWorldRain);
+	E->BindAction(Actions["Give"], ETriggerEvent::Started, this, &ATTDriver::OnGiveMoney);
 }
 
 void ATTDriver::OnMove(const FInputActionValue& V)
@@ -175,7 +179,7 @@ void ATTDriver::ServerEnter_Implementation(ATTCar* Car)
 
 void ATTDriver::ServerCarCommand_Implementation(ATTCar* Car, uint8 Cmd, int32 Index)
 {
-	if (Car && FVector::Dist(Car->GetActorLocation(), GetActorLocation()) < 650.f) Car->DoCommand(Cmd, Index);
+	if (Car && FVector::Dist(Car->GetActorLocation(), GetActorLocation()) < 650.f) Car->DoCommand(Cmd, Index, GetPlayerState());
 }
 
 void ATTDriver::Tool(uint8 Cmd)
@@ -213,7 +217,7 @@ void ATTDriver::Tool(uint8 Cmd)
 		break;
 	}
 	Car->ShowCommand(Cmd, Index);
-	if (HasAuthority()) Car->DoCommand(Cmd, Index);
+	if (HasAuthority()) Car->DoCommand(Cmd, Index, GetPlayerState());
 	else ServerCarCommand(Car, Cmd, Index);
 }
 
@@ -234,4 +238,35 @@ FString ATTDriver::AimText() const
 	ATTCar* Car = LookedAtCar(Eye, Dir);
 	if (!Car || FVector::Dist(Car->GetActorLocation(), Eye) > 600.f) return FString();
 	return Car->AimReport(Eye, Dir) + (Car->GetController() ? TEXT("") : TEXT("\nF — сесть"));
+}
+
+void ATTDriver::OnWorldTime() { ServerWorld(TTCmd::WorldTime); }
+void ATTDriver::OnWorldRain() { ServerWorld(TTCmd::WorldRain); }
+
+void ATTDriver::ServerWorld_Implementation(uint8 Cmd)
+{
+	if (ATTGameState* G = GetWorld()->GetGameState<ATTGameState>())
+	{
+		if (Cmd == TTCmd::WorldTime) G->SkipTime(3.f);
+		if (Cmd == TTCmd::WorldRain) G->ToggleRain();
+	}
+}
+
+// hand $100 to the player you look at (on foot or in a car) — the start of player-to-player trade
+void ATTDriver::OnGiveMoney()
+{
+	const FVector Eye = Eyes->GetComponentLocation(), Dir = Eyes->GetForwardVector();
+	FHitResult H;
+	FCollisionQueryParams Q(SCENE_QUERY_STAT(TTGive), false, this);
+	if (GetWorld()->LineTraceSingleByChannel(H, Eye, Eye + Dir * 500.f, ECC_Pawn, Q))
+		if (APawn* To = Cast<APawn>(H.GetActor()))
+			if (To->GetPlayerState()) ServerGiveMoney(To, 100);
+}
+
+void ATTDriver::ServerGiveMoney_Implementation(APawn* To, int32 Amount)
+{
+	ATTPlayerState* From = GetPlayerState<ATTPlayerState>();
+	ATTPlayerState* Dest = To ? To->GetPlayerState<ATTPlayerState>() : nullptr;
+	if (!From || !Dest || From == Dest || Amount <= 0 || FVector::Dist(To->GetActorLocation(), GetActorLocation()) > 600.f) return;
+	if (From->Pay(Amount)) Dest->Money += Amount;
 }

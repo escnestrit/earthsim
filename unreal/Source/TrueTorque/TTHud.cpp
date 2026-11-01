@@ -1,6 +1,7 @@
 #include "TTHud.h"
 #include "TTCar.h"
 #include "TTDriver.h"
+#include "TTGameMode.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
@@ -23,9 +24,31 @@ void ATTHUD::DrawHUD()
 		}
 		return Y;
 	};
+	// always: money, clock and weather, lap times (small, top right)
+	{
+		FString Top;
+		if (const ATTGameState* GS = GetWorld()->GetGameState<ATTGameState>()) Top += GS->WeatherText();
+		if (const APlayerController* PC = GetOwningPlayerController())
+			if (const ATTPlayerState* PS = PC->GetPlayerState<ATTPlayerState>())
+			{
+				Top += FString::Printf(TEXT("\n$%d"), PS->Money);
+				if (PS->LastLap > 0.f) Top += FString::Printf(TEXT("\nкруг %d:%05.2f   лучший %d:%05.2f"), int32(PS->LastLap / 60.f), FMath::Fmod(PS->LastLap, 60.f), int32(PS->BestLap / 60.f), FMath::Fmod(PS->BestLap, 60.f));
+			}
+		TArray<FString> L;
+		Top.ParseIntoArray(L, TEXT("\n"), false);
+		float Ty = 10.f;
+		for (const FString& S : L)
+		{
+			float W = 0, H = 0;
+			GetTextSize(S, W, H, Font, 1.1f);
+			DrawText(S, FLinearColor(0, 0, 0, 0.8f), Canvas->ClipX - W - 11.f, Ty + 1, Font, 1.1f);
+			DrawText(S, FLinearColor(1, 1, 1, 0.85f), Canvas->ClipX - W - 12.f, Ty, Font, 1.1f);
+			Ty += 15.f;
+		}
+	}
 	if (!bShow)
 	{
-		Lines(TEXT("F1 — подсказки и телеметрия"), 12, 10, FLinearColor(1, 1, 1, 0.35f));
+		Lines(TEXT("I — подсказки и телеметрия"), 12, 10, FLinearColor(1, 1, 1, 0.35f));
 		return;
 	}
 	float Y = 10.f;
@@ -34,7 +57,7 @@ void ATTHUD::DrawHUD()
 	{
 		Y = Lines(Car->DebugReport(), 12, Y, FLinearColor(0.85f, 1.f, 0.85f));
 		Lines(TEXT("W/S газ-тормоз (на автомате S стоя = задний)   A/D руль   Пробел ручник   E/Q передачи   M автомат/ручная\n"
-		           "C камера   L фары   R поставить на колёса   F выйти   Tab механик (ЛКМ/ПКМ гайки)   F2 линии подвески"),
+		           "C камера   L фары   R эвакуатор ($50)   F выйти   Tab механик (ЛКМ/ПКМ гайки)   O линии подвески   N +3 часа   K дождь"),
 		      12, Y + 8, FLinearColor(1, 0.9f, 0.6f));
 	}
 	else if (const ATTDriver* D = Cast<ATTDriver>(P))
@@ -57,7 +80,8 @@ void ATTHUD::DrawHUD()
 		}
 		Lines(TEXT("Пешком: WASD, мышь, Пробел.  F — сесть в машину (любую свободную)\n"
 		           "Смотри на деталь:  ЛКМ ключ на гайку (120 Н·м, дальше сорвёшь)   ПКМ открутить   R выправить/поставить\n"
-		           "T изолента   V холодная сварка (перед машины = радиатор)   G антифриз+масло   H перебрать двигатель   Y тюнинг-вариант"),
+		           "T изолента $5   V холодная сварка $25 (перед машины = радиатор)   G антифриз+масло $40   H перебрать двигатель $900   Y тюнинг $300\n"
+		           "R: деталь $180, колесо $120   P — дать $100 игроку, на которого смотришь   N +3 часа   K дождь"),
 		      12, Y, FLinearColor(1, 0.9f, 0.6f));
 	}
 }

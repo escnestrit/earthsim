@@ -19,6 +19,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "TTCar.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Net/UnrealNetwork.h"
 #include "TTHud.h"
 
 ATTGameMode::ATTGameMode()
@@ -27,6 +29,7 @@ ATTGameMode::ATTGameMode()
 	GameStateClass = ATTGameState::StaticClass();
 	PlayerControllerClass = APlayerController::StaticClass();
 	HUDClass = ATTHUD::StaticClass();
+	PlayerStateClass = ATTPlayerState::StaticClass();
 }
 
 ATTCar* ATTGameMode::SpawnCar(const FVector& Loc, float Yaw, int32 CarIndex, const FLinearColor& Paint)
@@ -109,10 +112,152 @@ UHierarchicalInstancedStaticMeshComponent* ATTGameState::Instances(AActor* Owner
 	return C;
 }
 
+void ATTPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ATTPlayerState, Money);
+	DOREPLIFETIME(ATTPlayerState, BestLap);
+	DOREPLIFETIME(ATTPlayerState, LastLap);
+}
+
+bool ATTPlayerState::Pay(int32 Amount)
+{
+	if (Amount <= 0) return true;
+	if (Money < Amount) return false;
+	Money -= Amount;
+	return true;
+}
+
+ATTGameState::ATTGameState()
+{
+	PrimaryActorTick.bCanEverTick = true;
+}
+
+void ATTGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ATTGameState, TimeOfDay);
+	DOREPLIFETIME(ATTGameState, Rain);
+	DOREPLIFETIME(ATTGameState, Wetness);
+	DOREPLIFETIME(ATTGameState, TimeScale);
+}
+
+void ATTGameState::SkipTime(float Hours) { TimeOfDay = FMath::Fmod(TimeOfDay + Hours + 24.f, 24.f); }
+void ATTGameState::ToggleRain()
+{
+	RainTarget = RainTarget > 0.1f ? 0.f : FMath::FRandRange(0.5f, 1.f);
+	WeatherTimer = FMath::FRandRange(300.f, 600.f);
+}
+
+float ATTGameState::GripFactor(float SurfaceGrip) const
+{
+	// a film of water: asphalt loses about a third, grass (already slippery) a little more
+	const float Loss = SurfaceGrip > 0.8f ? 0.32f : 0.4f;
+	return 1.f - Loss * Wetness;
+}
+
+FString ATTGameState::WeatherText() const
+{
+	const int32 H = int32(TimeOfDay), M = int32((TimeOfDay - H) * 60.f);
+	const TCHAR* W = Rain > 0.6f ? TEXT("ливень") : Rain > 0.15f ? TEXT("дождь") : Wetness > 0.2f ? TEXT("мокро") : TEXT("сухо");
+	return FString::Printf(TEXT("%02d:%02d  %s  (дорога мокрая на %.0f%%)"), H, M, W, Wetness * 100.f);
+}
+
+void ATTGameState::Tick(float Dt)
+{
+	Super::Tick(Dt);
+	if (HasAuthority())
+	{
+		TimeOfDay = FMath::Fmod(TimeOfDay + Dt * TimeScale / 3600.f, 24.f);
+		// weather: every few minutes the sky decides again; rain comes and goes gradually
+		if ((WeatherTimer -= Dt) <= 0.f)
+		{
+			RainTarget = FMath::FRand() < 0.35f ? FMath::FRandRange(0.3f, 1.f) : 0.f;
+			WeatherTimer = FMath::FRandRange(240.f, 600.f);
+		}
+		Rain = FMath::FInterpConstantTo(Rain, RainTarget, Dt, 0.02f);
+		Wetness = Rain > 0.05f ? FMath::Min(1.f, Wetness + Dt * Rain / 40.f) : FMath::Max(0.f, Wetness - Dt / 400.f);
+	}
+	ApplyEnvironment(Dt);
+	UpdateRain(Dt);
+}
+
+void ATTGameState::ApplyEnvironment(float Dt)
+{
+	if (!Sun) return;
+	// sun along a simple arc: up at 6:00, highest at 13:00 (~58 deg), down at 20:00
+	const float Day = (TimeOfDay - 6.f) / 14.f;
+	const float Elev = FMath::Sin(Day * PI) * 58.f;
+	const float Az = 80.f + Day * 200.f;
+	Sun->SetActorRotation(FRotator(-Elev, Az, 0.f));
+	const float Light = FMath::Clamp(Elev / 12.f, 0.f, 1.f);
+	const float Overcast = 1.f - 0.65f * Rain;
+	Cast<UDirectionalLightComponent>(Sun->GetLightComponent())->SetIntensity((Elev > -2.f ? 10.f : 0.f) * FMath::Max(Light, 0.05f) * Overcast);
+	if (Moon) Cast<UDirectionalLightComponent>(Moon->GetLightComponent())->SetIntensity((1.f - Light) * 0.12f * Overcast);
+	for (UPointLightComponent* L : StreetLights) L->SetIntensity(Light < 0.25f ? 600000.f : 0.f);
+	if (Fog) Fog->GetComponent()->SetFogDensity(0.008f + 0.035f * Rain);
+	if (Post)
+	{
+		// the eye adapts to the night, but not all the way (headlights should matter)
+		Post->Settings.AutoExposureMinBrightness = FMath::Lerp(0.15f, 1.f, Light);
+		Post->Settings.AutoExposureMaxBrightness = FMath::Lerp(1.2f, 3.f, Light);
+	}
+	if (Sky && (SkyRecapture -= Dt) <= 0.f) SkyRecapture = 2.f, Sky->GetLightComponent()->SetIntensity(FMath::Lerp(0.6f, 1.f, Light) * Overcast + 0.05f);
+	for (UMaterialInstanceDynamic* M : WetMats)
+		if (M) M->SetScalarParameterValue(TEXT("Wet"), Wetness);
+}
+
+// rain: a few hundred streaks around the local camera, falling and wrapping (cheap, no assets)
+void ATTGameState::UpdateRain(float Dt)
+{
+	if (!Drops || GetNetMode() == NM_DedicatedServer) return;
+	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	if (!PC || !PC->PlayerCameraManager) return;
+	const FVector Cam = PC->PlayerCameraManager->GetCameraLocation();
+	const int32 Want = FMath::RoundToInt(Rain * 900.f);
+	Drops->SetVisibility(Want > 0);
+	if (Want == 0) return;
+	FRandomStream R(int32(GetWorld()->GetTimeSeconds() * 10.f));
+	while (DropPos.Num() < 900) DropPos.Add(FVector(R.FRandRange(-1500.f, 1500.f), R.FRandRange(-1500.f, 1500.f), R.FRandRange(-300.f, 1500.f)));
+	TArray<FTransform> T;
+	T.Reserve(900);
+	const FVector Wind(120.f, 60.f, 0.f);
+	for (int32 i = 0; i < DropPos.Num(); i++)
+	{
+		FVector& D = DropPos[i];
+		D += (FVector(0, 0, -900.f) + Wind) * Dt;
+		if (D.Z < -300.f) D.Z += 1800.f;
+		if (D.X > 1500.f) D.X -= 3000.f;
+		if (D.Y > 1500.f) D.Y -= 3000.f;
+		const bool bOn = i < Want;
+		T.Add(FTransform(FRotator(-7.f, 26.f, 0.f), Cam + D, bOn ? FVector(0.006f, 0.006f, 0.45f) : FVector::ZeroVector));
+	}
+	Drops->BatchUpdateInstancesTransforms(0, T, true, true, true);
+}
+
 void ATTGameState::BeginPlay()
 {
 	Super::BeginPlay();
 	BuildWorld();
+	// rain streaks (local)
+	FActorSpawnParameters P;
+	if (AActor* RainActor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, P))
+	{
+		USceneComponent* Root = NewObject<USceneComponent>(RainActor);
+		RainActor->SetRootComponent(Root);
+		Root->RegisterComponent();
+		Drops = NewObject<UInstancedStaticMeshComponent>(RainActor);
+		Drops->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
+		Drops->SetMaterial(0, Mat(TEXT("M_Painted"), FLinearColor(0.55f, 0.6f, 0.66f), 0.05f));
+		Drops->SetupAttachment(Root);
+		Drops->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Drops->SetCastShadow(false);
+		Drops->RegisterComponent();
+		TArray<FTransform> T;
+		T.Init(FTransform(FRotator::ZeroRotator, FVector::ZeroVector, FVector::ZeroVector), 900);
+		Drops->AddInstances(T, false);
+		Drops->SetVisibility(false);
+	}
 }
 
 // ------------------------------------------------------------------ world
@@ -123,7 +268,7 @@ void ATTGameState::BuildWorld()
 	FActorSpawnParameters P;
 
 	// ---- sky: physical atmosphere, sun, real-time sky light, volumetric clouds, height fog
-	ADirectionalLight* Sun = W->SpawnActor<ADirectionalLight>(FVector(0, 0, 50000), FRotator(-36, 35, 0), P);
+	Sun = W->SpawnActor<ADirectionalLight>(FVector(0, 0, 50000), FRotator(-36, 35, 0), P);
 	if (Sun)
 	{
 		UDirectionalLightComponent* L = Cast<UDirectionalLightComponent>(Sun->GetLightComponent());
@@ -135,7 +280,19 @@ void ATTGameState::BuildWorld()
 		L->bCastCloudShadows = true;
 	}
 	W->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, P);
-	if (ASkyLight* Sky = W->SpawnActor<ASkyLight>(FVector(0, 0, 1000), FRotator::ZeroRotator, P))
+	// moonlight: a dim, cold second light that only matters at night
+	Moon = W->SpawnActor<ADirectionalLight>(FVector(0, 0, 50000), FRotator(-55, -140, 0), P);
+	if (Moon)
+	{
+		UDirectionalLightComponent* L = Cast<UDirectionalLightComponent>(Moon->GetLightComponent());
+		L->SetMobility(EComponentMobility::Movable);
+		L->SetIntensity(0.f);
+		L->SetLightColor(FLinearColor(0.55f, 0.65f, 1.f));
+		L->SetCastShadows(true);
+		L->SetAtmosphereSunLight(false);
+	}
+	Sky = W->SpawnActor<ASkyLight>(FVector(0, 0, 1000), FRotator::ZeroRotator, P);
+	if (Sky)
 	{
 		USkyLightComponent* S = Sky->GetLightComponent();
 		S->SetMobility(EComponentMobility::Movable);
@@ -144,7 +301,8 @@ void ATTGameState::BuildWorld()
 		S->RecaptureSky();
 	}
 	W->SpawnActor<AVolumetricCloud>(FVector::ZeroVector, FRotator::ZeroRotator, P);
-	if (AExponentialHeightFog* Fog = W->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -1000), FRotator::ZeroRotator, P))
+	Fog = W->SpawnActor<AExponentialHeightFog>(FVector(0, 0, -1000), FRotator::ZeroRotator, P);
+	if (Fog)
 	{
 		UExponentialHeightFogComponent* F = Fog->GetComponent();
 		F->SetFogDensity(0.008f);
@@ -152,10 +310,11 @@ void ATTGameState::BuildWorld()
 		F->SetVolumetricFog(true);
 		F->SetVolumetricFogScatteringDistribution(0.4f);
 	}
-	if (APostProcessVolume* PP = W->SpawnActor<APostProcessVolume>(FVector::ZeroVector, FRotator::ZeroRotator, P))
+	Post = W->SpawnActor<APostProcessVolume>(FVector::ZeroVector, FRotator::ZeroRotator, P);
+	if (Post)
 	{
-		FPostProcessSettings& S = PP->Settings;
-		PP->bUnbound = true;
+		FPostProcessSettings& S = Post->Settings;
+		Post->bUnbound = true;
 		S.bOverride_AutoExposureMinBrightness = true, S.AutoExposureMinBrightness = 1.0f;
 		S.bOverride_AutoExposureMaxBrightness = true, S.AutoExposureMaxBrightness = 3.0f;
 		S.bOverride_AutoExposureSpeedUp = true, S.AutoExposureSpeedUp = 2.f;
@@ -193,6 +352,7 @@ void ATTGameState::BuildWorld()
 	UMaterialInterface* KerbRed = Mat(TEXT("M_Painted"), FLinearColor(0.55f, 0.03f, 0.02f), 0.55f);
 	UMaterialInterface* KerbWhite = Mat(TEXT("M_Painted"), FLinearColor(0.8f, 0.8f, 0.78f), 0.55f);
 	UMaterialInterface* LinePaint = Mat(TEXT("M_Painted"), FLinearColor(0.85f, 0.85f, 0.82f), 0.6f);
+	for (UMaterialInterface* M : {Asphalt, Grass, Concrete, DarkConcrete, KerbRed, KerbWhite, LinePaint}) WetMats.Add(Cast<UMaterialInstanceDynamic>(M));
 	UMaterialInterface* Armco = Mat(TEXT("M_Metal"), FLinearColor(0.75f, 0.76f, 0.78f), 0.35f);
 	UMaterialInterface* Rust = Mat(TEXT("M_Metal"), FLinearColor(0.35f, 0.12f, 0.05f), 0.7f);
 	UMaterialInterface* Rubber = Mat(TEXT("M_Painted"), FLinearColor(0.02f, 0.02f, 0.02f), 0.9f);
@@ -277,6 +437,17 @@ void ATTGameState::BuildWorld()
 		Box(Out + FVector(0, 0, 4.5), FVector(12, 0.3, 3.5), Face, Ads[k % 3]);
 		Box(Out + FVector(0, 0, 18), FVector(0.6, 0.6, 36), FRotator::ZeroRotator, Roof, false, TEXT("Cylinder"));
 		Box(Out + FVector(0, 0, 36.5), FVector(3, 0.6, 1.5), Face, Roof);
+		// floodlight on the tower, on at night
+		if (APointLight* L = W->SpawnActor<APointLight>((Out + FVector(0, 0, 35.5)) * 100.0, FRotator::ZeroRotator, P))
+		{
+			L->PointLightComponent->SetMobility(EComponentMobility::Movable);
+			L->PointLightComponent->SetIntensity(0.f);
+			L->PointLightComponent->SetAttenuationRadius(14000.f);
+			L->PointLightComponent->SetSourceRadius(60.f);
+			L->PointLightComponent->SetLightColor(FLinearColor(1.f, 0.92f, 0.8f));
+			L->PointLightComponent->SetCastShadows(false);
+			StreetLights.Add(L->PointLightComponent);
+		}
 	}
 
 	// ---- crash zone on the pad: wall, barrels, ramps, bumps

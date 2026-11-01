@@ -104,6 +104,14 @@ def noise(m, scale, lo, hi, x, y, levels=4):
     return node(m, unreal.MaterialExpressionNoise, x, y, scale=scale, levels=levels, output_min=lo, output_max=hi)
 
 
+def wet(m, base, rough, x, y, dark=0.55, wet_rough=0.08, base_out='', rough_out=''):
+    # rain: water darkens the surface and makes it glossy (the game sets the "Wet" parameter)
+    w = scal(m, 'Wet', 0.0, x, y)
+    b = lerp(m, base, mul(m, base, const(m, dark, x, y + 80), x + 150, y + 40, aout=base_out), w, x + 300, y)
+    r = lerp(m, rough, const(m, wet_rough, x, y + 160), w, x + 300, y + 160)
+    return b, r
+
+
 def finish(m, name, two_sided=False):
     m.set_editor_property('two_sided', two_sided)
     m.set_editor_property('used_with_instanced_static_meshes', True)
@@ -202,8 +210,9 @@ def asphalt(name):
         g = node(m, unreal.MaterialExpressionAdd, -800, 300, const_b=0.55)
         link(grain, g, 'A', 'R')
         base = mul(m, base, g, -450, 100)
-    out(m, mul(m, base, col, -250, 0), MP.MP_BASE_COLOR)
-    out(m, noise(m, 0.01, 0.72, 0.88, -450, 400, levels=3), MP.MP_ROUGHNESS)
+    b, r = wet(m, mul(m, base, col, -250, 0), noise(m, 0.01, 0.72, 0.88, -450, 400, levels=3), -200, 600)
+    out(m, b, MP.MP_BASE_COLOR)
+    out(m, r, MP.MP_ROUGHNESS)
     out(m, const(m, 0.45, -250, 500), MP.MP_SPECULAR)
     n = tex(m, '/Game/StarterContent/Textures/T_Ground_Gravel_N', uv, -1000, 650, normal=True)
     if n:
@@ -219,8 +228,9 @@ def grass(name):
     base = mulc(m, d, 0.85, -800, 100, aout='RGB') if d else const3(m, (0.06, 0.11, 0.03), -800, 100)
     # large-scale colour variation so the field does not tile
     tint = lerp(m, const3(m, (0.85, 1.0, 0.7), -800, 300), const3(m, (1.1, 0.95, 0.75), -800, 380), noise(m, 0.0015, 0, 1, -800, 460), -600, 350)
-    out(m, mul(m, mul(m, base, tint, -450, 150), col, -250, 100), MP.MP_BASE_COLOR)
-    out(m, const(m, 0.92, -250, 400), MP.MP_ROUGHNESS)
+    b, r = wet(m, mul(m, mul(m, base, tint, -450, 150), col, -250, 100), const(m, 0.92, -250, 400), -200, 700, dark=0.75, wet_rough=0.45)
+    out(m, b, MP.MP_BASE_COLOR)
+    out(m, r, MP.MP_ROUGHNESS)
     n = tex(m, '/Game/StarterContent/Textures/T_Ground_Grass_N', uv, -1000, 600, normal=True)
     if n:
         out(m, n, MP.MP_NORMAL, 'RGB')
@@ -233,8 +243,9 @@ def concrete(name):
     uv = world_uv(m, 300.0, -1400, 100)
     d = tex(m, '/Game/StarterContent/Textures/T_Concrete_Poured_D', uv, -1000, 100)
     base = d if d else const3(m, (0.32, 0.31, 0.29), -800, 100)
-    out(m, mul(m, base, col, -400, 50, aout='RGB' if d else ''), MP.MP_BASE_COLOR)
-    out(m, const(m, 0.85, -400, 300), MP.MP_ROUGHNESS)
+    b, r = wet(m, mul(m, base, col, -400, 50, aout='RGB' if d else ''), const(m, 0.85, -400, 300), -200, 700, dark=0.6, wet_rough=0.12)
+    out(m, b, MP.MP_BASE_COLOR)
+    out(m, r, MP.MP_ROUGHNESS)
     n = tex(m, '/Game/StarterContent/Textures/T_Concrete_Poured_N', uv, -1000, 500, normal=True)
     if n:
         out(m, n, MP.MP_NORMAL, 'RGB')
@@ -245,8 +256,9 @@ def painted(name):
     m = new_mat(name)
     col = vec(m, 'Color', (0.8, 0.8, 0.8), -800, 0)
     grime = noise(m, 0.02, 0.85, 1.0, -800, 200, levels=3)
-    out(m, mul(m, col, grime, -500, 50), MP.MP_BASE_COLOR)
-    out(m, scal(m, 'Rough', 0.6, -500, 250), MP.MP_ROUGHNESS)
+    b, r = wet(m, mul(m, col, grime, -500, 50), scal(m, 'Rough', 0.6, -500, 250), -200, 500, dark=0.8, wet_rough=0.1)
+    out(m, b, MP.MP_BASE_COLOR)
+    out(m, r, MP.MP_ROUGHNESS)
     finish(m, name)
 
 
