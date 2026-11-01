@@ -18,8 +18,6 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Components/SkyAtmosphereComponent.h"
-#include "SkyAtmosphere.h"
-#include "VolumetricCloud.h"
 #include "TTVehicle.h"
 
 ATTGameMode::ATTGameMode()
@@ -67,7 +65,7 @@ AActor* ATTGameState::Box(const FVector& Centre, const FVector& SizeM, const FRo
 	if (!A) return nullptr;
 	A->SetReplicates(false);
 	UStaticMeshComponent* C = A->GetStaticMeshComponent();
-	C->SetMobility(bPhysics ? EComponentMobility::Movable : EComponentMobility::Static);
+	C->SetMobility(EComponentMobility::Movable);
 	C->SetStaticMesh(Mesh);
 	C->SetWorldScale3D(SizeM);
 	C->SetMaterial(0, Mat(Col));

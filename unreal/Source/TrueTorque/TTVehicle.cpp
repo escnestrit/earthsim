@@ -1,5 +1,6 @@
 #include "TTVehicle.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "EnhancedInputComponent.h"
@@ -145,7 +146,7 @@ void ATTVehicle::BuildMesh()
 		for (int32 q : SectionQuads[m])
 		{
 			int32 b = V.Num();
-			for (int32 k = 0; k < 4; k++) V.Add(FVector::ZeroVector), N.Add(FVector::UpVector), UV.Add(FVector2D(k == 1 || k == 2, k >= 2));
+			for (int32 k = 0; k < 4; k++) V.Add(FVector::ZeroVector), N.Add(FVector::UpVector), UV.Add(FVector2D((k == 1 || k == 2) ? 1.0 : 0.0, k >= 2 ? 1.0 : 0.0));
 			// flat-shaded quad, two triangles (Unreal front faces are clockwise)
 			I.Append({b, b + 2, b + 1, b, b + 3, b + 2});
 		}
