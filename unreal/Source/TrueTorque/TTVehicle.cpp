@@ -397,7 +397,7 @@ void ATTVehicle::SetupInput()
 {
 	Mapping = NewObject<UInputMappingContext>(this);
 	auto Act = [&](FName Name, EInputActionValueType Type) {
-		UInputAction* A = NewObject<UInputAction>(this, Name);
+		UInputAction* A = NewObject<UInputAction>(this, FName(*(FString(TEXT("IA_")) + Name.ToString())));
 		A->ValueType = Type;
 		Actions.Add(Name, A);
 		return A;
