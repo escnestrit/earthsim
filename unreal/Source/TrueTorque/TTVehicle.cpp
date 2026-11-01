@@ -160,10 +160,15 @@ void ATTVehicle::UpdateMesh()
 {
 	const FTransform Inv = GetActorTransform().Inverse();
 	auto& Nodes = Sim->body.nodes;
+	// car centre in local space: panels face away from it
+	FVector Ctr = FVector::ZeroVector;
+	for (const tt::Node& Nd : Nodes) Ctr += Inv.TransformPosition(ToUE(Nd.p));
+	Ctr /= double(FMath::Max<int32>(1, int32(Nodes.size())));
 	for (int32 m = 0; m < SectionQuads.Num(); m++)
 	{
 		TArray<FVector> V;
 		TArray<FVector> N;
+		TArray<FProcMeshTangent> T;
 		V.Reserve(SectionQuads[m].Num() * 4);
 		for (int32 q : SectionQuads[m])
 		{
@@ -172,9 +177,12 @@ void ATTVehicle::UpdateMesh()
 			                Inv.TransformPosition(ToUE(Nodes[S.d].p))};
 			// detached parts stay drawn where they fell (their nodes keep simulating)
 			FVector Nrm = FVector::CrossProduct(P[2] - P[0], P[1] - P[0]).GetSafeNormal();
-			for (int32 k = 0; k < 4; k++) V.Add(P[k]), N.Add(Nrm);
+			if (FVector::DotProduct(Nrm, (P[0] + P[1] + P[2] + P[3]) * 0.25 - Ctr) < 0) Nrm = -Nrm;
+			else Swap(P[1], P[3]);  // triangles (0,2,1),(0,3,2) must wind so the front face points along Nrm
+			const FVector Tx = (P[1] - P[0] - Nrm * FVector::DotProduct(P[1] - P[0], Nrm)).GetSafeNormal();
+			for (int32 k = 0; k < 4; k++) V.Add(P[k]), N.Add(Nrm), T.Add(FProcMeshTangent(Tx, false));
 		}
-		Body->UpdateMeshSection(m, V, N, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>());
+		Body->UpdateMeshSection(m, V, N, TArray<FVector2D>(), TArray<FColor>(), T);
 	}
 }
 
@@ -257,14 +265,17 @@ void ATTVehicle::UpdateContacts(float Dt)
 		const FVector Vel = DirUE(N.v) * 100.0;
 		const FVector Ahead = P + Vel * (Dt * 2.0) + Vel.GetSafeNormal() * (N.radius * 150.0);
 		FHitResult Hit;
-		if (W->LineTraceSingleByChannel(Hit, P - Vel.GetSafeNormal() * 30.0, Ahead, ECC_Visibility, Q))
+		const bool bMoving = Vel.SizeSquared() > 50.0 * 50.0;
+		if (bMoving && W->LineTraceSingleByChannel(Hit, P, Ahead, ECC_Visibility, Q) && !Hit.bStartPenetrating &&
+		    FVector::DotProduct(Hit.ImpactNormal, Vel.GetSafeNormal()) < -0.1)
 		{
 			C.push_back(tt::ContactPlane{ToTT(Hit.ImpactPoint), DirTT(Hit.ImpactNormal), 0.6, 0});
 			if (UPrimitiveComponent* Comp = Hit.GetComponent())
 				if (Comp->IsSimulatingPhysics() && Vel.Size() > 50.0)
 					Comp->AddImpulseAtLocation(Vel.GetSafeNormal() * N.m * Vel.Size() * 0.3, Hit.ImpactPoint);
 		}
-		if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 30), P - FVector(0, 0, 40 + N.radius * 100.0), ECC_Visibility, Q))
+		if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 30), P - FVector(0, 0, 40 + N.radius * 100.0), ECC_Visibility, Q) &&
+		    !Hit.bStartPenetrating && Hit.ImpactNormal.Z > 0.3)
 			C.push_back(tt::ContactPlane{ToTT(Hit.ImpactPoint), DirTT(Hit.ImpactNormal), 0.7, 0});
 	}
 }

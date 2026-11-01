@@ -74,7 +74,8 @@ void SoftBody::contact_forces(double dt, const GroundFn &ground) {
         if (!n.collide) continue;
         auto apply = [&](const V3 &q, const V3 &nrm, double mu) {
             double pen = n.radius - dot(n.p - q, nrm);
-            if (pen <= 0) return;
+            // far behind the plane = not a real contact (plane extrapolated past its surface)
+            if (pen <= 0 || pen > n.radius + 0.25) return;
             double vn = dot(n.v, nrm);
             double fn = contact_k * pen * std::sqrt(n.m / 10.0) - contact_c * std::sqrt(n.m / 10.0) * vn;
             if (fn <= 0) return;
