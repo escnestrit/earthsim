@@ -1,15 +1,12 @@
 @echo off
-rem Builds True Torque into .\Build\Windows (needs Unreal Engine 5.5 + Visual Studio 2022 with C++ game development).
+rem Builds the playable game into .\Build\Windows. Output goes to build.log next to this file.
 setlocal
+cd /d "%~dp0"
 set UE=%UE_ROOT%
-if "%UE%"=="" set UE=C:\Program Files\Epic Games\UE_5.5
-if not exist "%UE%\Engine\Build\BatchFiles\RunUAT.bat" (
-  echo Unreal Engine 5.5 not found. Set UE_ROOT to the engine folder, e.g. set UE_ROOT=D:\Epic\UE_5.5
-  exit /b 1
-)
-call "%UE%\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun -project="%~dp0unreal\TrueTorque.uproject" -noP4 -platform=Win64 -clientconfig=Development -serverconfig=Development -build -cook -stage -pak -archive -archivedirectory="%~dp0Build" -utf8output
-if errorlevel 1 (
-  echo BUILD FAILED - send the last screen of messages to Claude
-  exit /b 1
-)
-echo Done: %~dp0Build\Windows\TrueTorque.exe
+if "%UE%"=="" for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0find_ue.ps1"`) do set UE=%%i
+echo Unreal Engine: %UE% > build.log
+if "%UE%"=="" ( echo Unreal Engine 5 not found >> build.log & echo Unreal Engine 5 not found & pause & exit /b 1 )
+call "%UE%\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun -project="%~dp0unreal\TrueTorque.uproject" -noP4 -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="%~dp0Build" -utf8output >> build.log 2>&1
+if errorlevel 1 ( echo BUILD FAILED >> build.log ) else ( echo BUILD OK >> build.log )
+type build.log | findstr /i /c:"error" /c:"BUILD OK" /c:"BUILD FAILED"
+timeout /t 15
