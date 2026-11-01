@@ -2,7 +2,7 @@
 	"FileVersion": 3,
 	"EngineAssociation": "5.5",
 	"Category": "",
-	"Description": "True Torque — soft-body multiplayer car sandbox",
+	"Description": "True Torque — multiplayer car sandbox",
 	"Modules": [
 		{
 			"Name": "TrueTorque",
@@ -13,6 +13,8 @@
 	],
 	"Plugins": [
 		{ "Name": "ProceduralMeshComponent", "Enabled": true },
-		{ "Name": "EnhancedInput", "Enabled": true }
+		{ "Name": "EnhancedInput", "Enabled": true },
+		{ "Name": "PythonScriptPlugin", "Enabled": true },
+		{ "Name": "EditorScriptingUtilities", "Enabled": true }
 	]
 }

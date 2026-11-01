@@ -8,10 +8,10 @@ public class TrueTorque : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput",
-			"ProceduralMeshComponent", "AudioMixer", "NetCore"
+			"ProceduralMeshComponent", "AudioMixer", "NetCore", "PhysicsCore"
 		});
-		// the simulation core is plain C++ shared with the command-line tests
-		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Sim"));
+		// car geometry and visual damage: plain C++ shared with the command-line tests
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Geom"));
 		ShadowVariableWarningLevel = WarningLevel.Off;
 		bUseUnity = false;
 	}
