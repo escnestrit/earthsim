@@ -31,17 +31,20 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "StaticMeshResources.h"
+#include "Components/StaticMeshComponent.h"
+#include "DrawDebugHelpers.h"
+#include "TTHud.h"
 
 namespace
 {
 // ---- car constants (cm unless noted)
 constexpr float ZC = 72.f;           // chassis origin height above the ground at ride height
-constexpr float SuspMax = 22.f;      // wheel centre travel below the mount
-constexpr float StaticSpring = 12.8f;// wheel centre below the mount at rest
+constexpr float SuspMax = 28.f;      // wheel centre travel below the mount
+constexpr float StaticSpring = 15.3f;// wheel centre below the mount at rest (28 - static compression 12.7)
 constexpr float MassKg = 1350.f;
-constexpr float SpringK = 36000.f;   // N/m
-constexpr float DampBump = 3000.f, DampRebound = 4600.f;  // N s/m
-constexpr float AntiRollF = 14000.f, AntiRollR = 9000.f;  // N/m
+constexpr float SpringK = 26000.f;   // N/m: road car, ~1.4 Hz
+constexpr float DampBump = 1900.f, DampRebound = 3100.f;  // N s/m: ~0.3 of critical
+constexpr float AntiRollF = 9000.f, AntiRollR = 5000.f;   // N/m
 constexpr float WheelInertia = 1.3f; // kg m^2
 constexpr float NutSpec = 120.f;     // N m
 const float GearRatio[6] = {3.45f, 2.20f, 1.55f, 1.18f, 0.94f, 0.78f};
@@ -163,22 +166,20 @@ ATTCar::ATTCar()
 	SetNetUpdateFrequency(60.f);
 	bAlwaysRelevant = true;
 
-	Chassis = CreateDefaultSubobject<UBoxComponent>(TEXT("Chassis"));
+	Chassis = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("Chassis"));
 	RootComponent = Chassis;
-	Chassis->SetBoxExtent(FVector(222.f, 84.f, 48.f));
+	Chassis->bUseComplexAsSimpleCollision = false;
 	Chassis->SetCollisionProfileName(TEXT("Vehicle"));
-	Chassis->SetSimulatePhysics(true);
 	Chassis->SetNotifyRigidBodyCollision(true);
 	Chassis->BodyInstance.bUseCCD = true;
 	Chassis->SetHiddenInGame(true);
-
-	Cabin = CreateDefaultSubobject<UBoxComponent>(TEXT("Cabin"));
-	Cabin->SetupAttachment(Chassis);
-	Cabin->SetRelativeLocation(FVector(-30.f, 0.f, 56.f));
-	Cabin->SetBoxExtent(FVector(70.f, 66.f, 12.f));
-	Cabin->SetCollisionProfileName(TEXT("Vehicle"));
-	Cabin->SetNotifyRigidBodyCollision(true);
-	Cabin->SetHiddenInGame(true);
+	// a placeholder hull so the body exists from the start; BeginPlay fits the real one
+	{
+		TArray<FVector> Box;
+		for (int32 k = 0; k < 8; k++) Box.Add(FVector((k & 1) ? 200.f : -200.f, (k & 2) ? 80.f : -80.f, (k & 4) ? 40.f : -40.f));
+		Chassis->AddCollisionConvexMesh(Box);
+	}
+	Chassis->SetSimulatePhysics(true);
 
 	Visual = CreateDefaultSubobject<USceneComponent>(TEXT("Visual"));
 	Visual->SetupAttachment(Chassis);
@@ -274,20 +275,13 @@ void ATTCar::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimePr
 void ATTCar::BeginPlay()
 {
 	Super::BeginPlay();
-	// rigid body: mass, low centre of mass, a dead (non-bouncy) shell
-	Chassis->SetMassOverrideInKg(NAME_None, MassKg, true);
-	Chassis->SetCenterOfMass(FVector(8.f, 0.f, -16.f));
-	Chassis->SetLinearDamping(0.01f);
-	Chassis->SetAngularDamping(0.15f);
 	UPhysicalMaterial* Shell = NewObject<UPhysicalMaterial>(this);
 	Shell->Friction = 0.35f;
 	Shell->Restitution = 0.05f;
 	Shell->bOverrideRestitutionCombineMode = true;
 	Shell->RestitutionCombineMode = EFrictionCombineMode::Min;
 	Chassis->SetPhysMaterialOverride(Shell);
-	Cabin->SetPhysMaterialOverride(Shell);
 	Chassis->OnComponentHit.AddDynamic(this, &ATTCar::OnChassisHit);
-	Cabin->OnComponentHit.AddDynamic(this, &ATTCar::OnChassisHit);
 
 	Mats.Add(MakeMat(this, TEXT("M_CarPaint"), PaintColor));
 	Mats.Add(MakeMat(this, TEXT("M_Glass"), FLinearColor(0.01f, 0.012f, 0.015f)));
@@ -304,6 +298,8 @@ void ATTCar::BeginPlay()
 	if (PartVariant.Num() != Parts.Num()) PartVariant.SetNumZeroed(Parts.Num());
 	AppliedVariant = PartVariant;
 	SetupWheels();
+	BuildHull();
+	BuildMechanics();
 
 	// effects (StarterContent particles; silently absent without them)
 	auto MakeFx = [this](UParticleSystem* T, const FVector& At, float Scale) -> UParticleSystemComponent* {
@@ -599,11 +595,6 @@ void ATTCar::BuildImported(const FTTCarDef& D)
 		CreatePartComponent(i);
 		BuildPartMesh(i, true);
 	}
-	// 5. collision boxes from the real size: body below the belt, cabin above
-	Chassis->SetBoxExtent(FVector(CarLength * 0.5f - 6.f, CarWidth * 0.5f - 6.f, 48.f));
-	const float RoofTop = H + Clearance - Sill;
-	if (RoofTop > 128.f) Cabin->SetBoxExtent(FVector(CarLength * 0.16f, CarWidth * 0.36f, (RoofTop - 118.f) * 0.5f)), Cabin->SetRelativeLocation(FVector(-CarLength * 0.05f, 0, (RoofTop + 116.f) * 0.5f - ZC));
-	else Cabin->SetBoxExtent(FVector(CarLength * 0.16f, CarWidth * 0.36f, 4.f)), Cabin->SetRelativeLocation(FVector(-CarLength * 0.05f, 0, RoofTop - 6.f - ZC));
 	UE_LOG(LogTemp, Log, TEXT("TrueTorque: car %s: %.0f x %.0f cm, wheels r=%.0f at x=%.0f/%.0f, %d parts"), *D.Name, CarLength, CarWidth, WheelRadius, AxleX[0], AxleX[1], Parts.Num());
 }
 
@@ -747,6 +738,13 @@ void ATTCar::Tick(float Dt)
 		// drive our own copy with fresh input; the server corrects the body
 		RepThrottle = InThrottle, RepBrake = InBrake, RepSteer = InSteer, RepHandbrake = InHandbrake;
 	}
+	if (!bCoMSet && Chassis->IsSimulatingPhysics())
+	{
+		// the hulls put the centre of mass in the middle of the body; a real car carries it low
+		const FVector LocalCoM = Chassis->GetComponentTransform().InverseTransformPosition(Chassis->GetCenterOfMass());
+		Chassis->SetCenterOfMass(FVector(8.f, 0.f, 56.f - ZC) - LocalCoM);
+		bCoMSet = true;
+	}
 	UpdatePhysics(Dt);
 	if (HasAuthority()) UpdateEngineHeat(Dt);
 	UpdateVisuals(Dt);
@@ -810,7 +808,7 @@ void ATTCar::UpdatePhysics(float Dt)
 		}
 	}
 	const float MaxSteer = FMath::Lerp(34.f, 9.f, FMath::Clamp(FMath::Abs(Speed) / 40.f, 0.f, 1.f));
-	SteerAngle = FMath::FInterpTo(SteerAngle, RepSteer * MaxSteer, Dt, 7.f);
+	SteerAngle = FMath::FInterpTo(SteerAngle, RepSteer * MaxSteer, Dt, 5.f);
 
 	// ---- engine, clutch, gearbox
 	ShiftTimer -= Dt;
@@ -831,7 +829,7 @@ void ATTCar::UpdatePhysics(float Dt)
 	else if (WheelRpm < 1300.f)
 	{
 		EngineRpm = FMath::FInterpTo(EngineRpm, FMath::Max(1300.f, IdleRpm + Thr * 2800.f), Dt, 6.f);
-		EngineT = Thr > 0.02f ? EngineTorque(EngineRpm) * Thr : (bAutomatic && RepHandbrake < 0.5f ? 30.f : 0.f);
+		EngineT = Thr > 0.02f ? EngineTorque(EngineRpm) * Thr : (bAutomatic && RepHandbrake < 0.5f ? 30.f * FMath::Clamp(1.f - FMath::Abs(Speed) / 1.4f, 0.f, 1.f) : 0.f);  // idle creep ~5 km/h
 	}
 	else
 	{
@@ -878,7 +876,7 @@ void ATTCar::UpdatePhysics(float Dt)
 		W.Grip = 1.f;
 		if (const UPhysicalMaterial* PM = H.PhysMaterial.Get()) W.Grip = FMath::Clamp(PM->Friction / 0.7f, 0.35f, 1.2f);
 		float F = SpringK * X + (Xdot > 0 ? DampBump : DampRebound) * Xdot;
-		if (X > 0.20f) F += 200000.f * (X - 0.20f);
+		if (X > 0.25f) F += 120000.f * (X - 0.25f);  // bump stop
 		W.Load = F;
 	}
 	for (int32 Axle = 0; Axle < 2; Axle++)
@@ -929,7 +927,8 @@ void ATTCar::UpdatePhysics(float Dt)
 		WR = (WR - N * FVector::DotProduct(WR, N)).GetSafeNormal();
 		const FVector Vc = Chassis->GetPhysicsLinearVelocityAtPoint(W.ContactPoint) / 100.0;
 		const float Vx = float(FVector::DotProduct(Vc, WF)), Vy = float(FVector::DotProduct(Vc, WR));
-		const float Mu = 1.05f * W.Grip * (1.f - 0.25f * Bend);
+		// load sensitivity: a heavily loaded tyre grips a bit less per kilo (so weight transfer matters)
+		const float Mu = 1.02f * W.Grip * (1.f - 0.25f * Bend) * FMath::Clamp(1.08f - 0.08f * Fz / 3300.f, 0.8f, 1.1f);
 		const float Den = FMath::Max(FMath::Abs(Vx), 3.f);
 		const int32 Sub = 8;
 		const float Hs = Dt / Sub;
@@ -937,7 +936,7 @@ void ATTCar::UpdatePhysics(float Dt)
 		for (int32 s = 0; s < Sub; s++)
 		{
 			const float Sr = (W.Omega * WheelRadius / 100.f - Vx) / Den;
-			const float Sx = Sr / 0.11f, Sy = (Vy / Den) / 0.15f;
+			const float Sx = Sr / 0.13f, Sy = (Vy / Den) / 0.17f;
 			const float S = FMath::Sqrt(Sx * Sx + Sy * Sy);
 			const float Fm = Mu * Fz * SlipCurve(S);
 			const float Fx = S > 1e-5f ? Fm * Sx / S : 0.f, Fy = S > 1e-5f ? -Fm * Sy / S : 0.f;
@@ -986,7 +985,7 @@ void ATTCar::UpdateEngineHeat(float Dt)
 
 void ATTCar::OnChassisHit(UPrimitiveComponent* HitComp, AActor* Other, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
 {
-	if (!HasAuthority() || Parts.Num() == 0) return;
+	if (!HasAuthority() || Parts.Num() == 0 || Other == this) return;  // our own fallen parts do not dent us
 	const FVector P = Hit.ImpactPoint, Nrm = Hit.ImpactNormal;  // normal points from the obstacle into us
 	FVector OtherV = FVector::ZeroVector;
 	if (OtherComp && OtherComp->IsSimulatingPhysics()) OtherV = OtherComp->GetPhysicsLinearVelocityAtPoint(P);
@@ -1000,6 +999,12 @@ void ATTCar::OnChassisHit(UPrimitiveComponent* HitComp, AActor* Other, UPrimitiv
 	const FTransform A = GetActorTransform();
 	const FVector LP = A.InverseTransformPosition(P), LD = A.InverseTransformVectorNoScale(Nrm);
 	const float Seed = FMath::FRandRange(0.f, 100.f);
+	// scraping the floor on kerbs and landings: no dents and no fatigue unless it is a real crash from below
+	if (LD.Z > 0.6f && Dv < 7.f)
+	{
+		if (Tangential > 4.f) MulticastDent(LP, LD, 0.3f, 30.f, Seed, 1);  // sparks
+		return;
+	}
 	if (Dv > 2.2f)
 	{
 		const float Depth = FMath::Clamp((Dv - 2.2f) * 2.4f, 1.f, 38.f);
@@ -1048,6 +1053,7 @@ void ATTCar::MulticastDent_Implementation(FVector_NetQuantize10 LocalPoint, FVec
 {
 	ApplyDent(LocalPoint, LocalDir, Depth, Radius, Seed, Kind);
 	if (Sound && Kind == 0) Sound->Impact(FMath::Clamp(Depth / 25.f, 0.1f, 1.f));
+	if (Kind == 0) ShakeAmp = FMath::Max(ShakeAmp, FMath::Clamp(Depth / 20.f, 0.2f, 1.f));
 	UParticleSystem* Sparks = Fx(TEXT("P_Sparks"));
 	if (Sparks && (Kind == 1 || Depth > 6.f))
 		UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Sparks, GetActorTransform().TransformPosition(LocalPoint), FRotator::ZeroRotator, FVector(Kind == 1 ? 0.4f : 0.8f));
@@ -1110,6 +1116,7 @@ void ATTCar::SetPartDetached(int32 Part, bool bOff, const FVector& Kick)
 		C->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
 		C->SetCollisionProfileName(TEXT("PhysicsActor"));
 		C->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		C->SetCollisionResponseToChannel(ECC_Vehicle, ECR_Ignore);  // debris must not shove cars around
 		C->SetSimulatePhysics(true);
 		C->SetMassOverrideInKg(NAME_None, Part == EnginePart ? 16.f : 8.f, true);
 		C->SetPhysicsLinearVelocity(Chassis->GetPhysicsLinearVelocity() + Kick);
@@ -1141,6 +1148,7 @@ void ATTCar::SetWheelDetached(int32 Wheel, bool bOff)
 		}
 		C->SetCollisionProfileName(TEXT("PhysicsActor"));
 		C->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		C->SetCollisionResponseToChannel(ECC_Vehicle, ECR_Ignore);  // debris must not shove cars around
 		C->SetSimulatePhysics(true);
 		C->SetMassOverrideInKg(NAME_None, 20.f, true);
 		C->SetPhysicsLinearVelocity(V);
@@ -1189,6 +1197,8 @@ void ATTCar::UpdateVisuals(float Dt)
 		const float Camber = Bend * 6.f * (W.bLeft ? 1.f : -1.f) + Loose * 4.f * FMath::Sin(W.Spin);
 		WheelComps[i]->SetRelativeLocationAndRotation(Centre, FRotator(-FMath::RadiansToDegrees(W.Spin), Yaw, Camber));
 	}
+	UpdateMechanics();
+	if (bDebugLines) DrawDebugLines();
 	const bool bBraking = RepBrake > 0.05f && Gear >= 0;
 	if (Mats.Num() >= 5)
 	{
@@ -1237,6 +1247,11 @@ void ATTCar::UpdateCamera(float Dt)
 	const float Delta = FRotator::NormalizeAxis(CarYaw - CamYaw);
 	CamYaw += Delta * FMath::Min(1.f, Dt * (View == ETTView::Mechanic ? 0.f : 4.f));
 	Arm->SetWorldRotation(FRotator(LookPitch, CamYaw + LookYaw, 0.f));
+	// speed widens the view a little; hits shake it
+	if (View == ETTView::Chase) Camera->SetFieldOfView(FMath::FInterpTo(Camera->FieldOfView, 76.f + FMath::Clamp(FMath::Abs(Speed) - 10.f, 0.f, 40.f) * 0.35f, Dt, 3.f));
+	ShakeAmp = FMath::Max(0.f, ShakeAmp - Dt * 3.f);
+	const float Sh = ShakeAmp * ShakeAmp * 12.f;
+	Camera->SetRelativeLocation(FVector(0.f, FMath::FRandRange(-Sh, Sh), FMath::FRandRange(-Sh, Sh)));
 }
 
 // ------------------------------------------------------------------ input
@@ -1271,8 +1286,8 @@ void ATTCar::SetupInput()
 	Mapping->MapKey(Hb, EKeys::Gamepad_FaceButton_Bottom);
 	Mapping->MapKey(Look, EKeys::Mouse2D);
 	Mapping->MapKey(Look, EKeys::Gamepad_Right2D);
-	const FName Names[] = {"ShiftUp", "ShiftDown", "Camera", "Mechanic", "Reset", "Use", "Loosen", "Gearbox", "Lights", "Exit"};
-	const FKey Keys[] = {EKeys::E, EKeys::Q, EKeys::C, EKeys::Tab, EKeys::R, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::M, EKeys::L, EKeys::F};
+	const FName Names[] = {"ShiftUp", "ShiftDown", "Camera", "Mechanic", "Reset", "Use", "Loosen", "Gearbox", "Lights", "Exit", "DebugHud", "DebugLines"};
+	const FKey Keys[] = {EKeys::E, EKeys::Q, EKeys::C, EKeys::Tab, EKeys::R, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::M, EKeys::L, EKeys::F, EKeys::F1, EKeys::F2};
 	for (int32 i = 0; i < int32(UE_ARRAY_COUNT(Names)); i++) Mapping->MapKey(Act(Names[i], EInputActionValueType::Boolean), Keys[i]);
 }
 
@@ -1306,6 +1321,8 @@ void ATTCar::SetupPlayerInputComponent(UInputComponent* PIC)
 	E->BindAction(Actions["Gearbox"], ETriggerEvent::Started, this, &ATTCar::OnGearbox);
 	E->BindAction(Actions["Lights"], ETriggerEvent::Started, this, &ATTCar::OnLightsKey);
 	E->BindAction(Actions["Exit"], ETriggerEvent::Started, this, &ATTCar::OnExit);
+	E->BindAction(Actions["DebugHud"], ETriggerEvent::Started, this, &ATTCar::OnDebugHud);
+	E->BindAction(Actions["DebugLines"], ETriggerEvent::Started, this, &ATTCar::OnDebugLines);
 }
 
 void ATTCar::OnThrottle(const FInputActionValue& V) { InThrottle = View == ETTView::Mechanic ? 0.f : V.Get<float>(); }
@@ -1342,6 +1359,7 @@ void ATTCar::OnMechanic()
 }
 void ATTCar::OnExit()
 {
+	UE_LOG(LogTemp, Log, TEXT("TrueTorque: exit pressed, speed %.1f m/s"), Speed);
 	if (FMath::Abs(Speed) > 3.f) return;
 	if (HasAuthority()) ServerExit_Implementation();
 	else ServerExit();
@@ -1359,6 +1377,7 @@ void ATTCar::ServerExit_Implementation()
 	FActorSpawnParameters P;
 	P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 	ATTDriver* D = GetWorld()->SpawnActor<ATTDriver>(ATTDriver::StaticClass(), DriverDoor(), FRotator(0.f, GetActorRotation().Yaw, 0.f), P);
+	UE_LOG(LogTemp, Log, TEXT("TrueTorque: driver spawned: %s"), D ? *D->GetName() : TEXT("FAILED"));
 	if (!D) return;
 	C->UnPossess();
 	C->Possess(D);
@@ -1617,4 +1636,245 @@ void ATTCar::OnLoosen()
 	if (W < 0) return;
 	ShowCommand(TTCmd::Loosen, W);
 	Command(TTCmd::Loosen, W);
+}
+
+// ------------------------------------------------------------------ physics hull
+
+// Three convex hulls fitted to the body itself (front, cabin, rear): the car touches walls, kerbs and
+// other cars where its panels are, and the rounded ends slide off instead of catching.
+void ATTCar::BuildHull()
+{
+	TArray<FVector> Pts[3];
+	const float X0 = -CarLength * 0.5f, X1 = CarLength * 0.5f;
+	for (int32 i = 0; i < Parts.Num(); i++)
+	{
+		const FString& N = Parts[i].Name;
+		if (HasAny(N, {TEXT("mirror"), TEXT("interior"), TEXT("seat"), TEXT("dash"), TEXT("spoiler"), TEXT("exhaust"), TEXT("steering"), TEXT("gauge")})) continue;
+		const ttg::Mesh& M = Parts[i].Mesh;
+		const int32 Step = FMath::Max(1, int32(M.base.size() / 600));
+		for (size_t k = 0; k < M.base.size(); k += Step)
+		{
+			FVector q = ToF(M.base[k]);
+			q.Z = FMath::Max(q.Z, 26.f);  // keep the underside above kerbs; the wheels carry the car
+			const float t = (q.X - X0) / FMath::Max(1.f, X1 - X0);
+			const int32 Slab = t < 0.3f ? 0 : t < 0.7f ? 1 : 2;
+			q.Z -= ZC;  // ground-level car space -> chassis space
+			Pts[Slab].Add(q);
+			// neighbouring hulls overlap a little so there is no crack between them
+			if (Slab != 1 && FMath::Abs(t - 0.5f) < 0.24f) Pts[1].Add(q);
+		}
+	}
+	Chassis->ClearCollisionConvexMeshes();
+	for (int32 k = 0; k < 3; k++)
+		if (Pts[k].Num() >= 8) Chassis->AddCollisionConvexMesh(Pts[k]);
+	Chassis->SetSimulatePhysics(true);
+	Chassis->SetMassOverrideInKg(NAME_None, MassKg, true);
+	Chassis->SetLinearDamping(0.01f);
+	Chassis->SetAngularDamping(0.15f);
+}
+
+// ------------------------------------------------------------------ running gear you can see
+
+UStaticMeshComponent* ATTCar::AddMech(const TCHAR* Shape, UMaterialInterface* M)
+{
+	UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
+	C->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Engine/BasicShapes/%s.%s"), Shape, Shape)));
+	C->SetMaterial(0, M);
+	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	C->SetupAttachment(Visual);
+	C->RegisterComponent();
+	Mech.Add(C);
+	return C;
+}
+
+namespace
+{
+// a cylinder (axis Z, 100 cm) or a cube stretched between two points
+void PlaceBetween(UStaticMeshComponent* C, const FVector& A, const FVector& B, float W, float H = -1.f)
+{
+	const FVector D = B - A;
+	const float L = FMath::Max(1.f, float(D.Size()));
+	C->SetRelativeLocationAndRotation((A + B) * 0.5, FRotationMatrix::MakeFromZ(D / L).Rotator());
+	C->SetRelativeScale3D(FVector(W / 100.f, (H > 0 ? H : W) / 100.f, L / 100.f));
+}
+}  // namespace
+
+void ATTCar::BuildMechanics()
+{
+	MechMats.Add(MakeMat(this, TEXT("M_Metal"), FLinearColor(0.32f, 0.33f, 0.35f)));   // 0 steel
+	MechMats[0]->SetScalarParameterValue(TEXT("Rough"), 0.45f);
+	MechMats.Add(MakeMat(this, TEXT("M_Painted"), FLinearColor(0.55f, 0.04f, 0.02f)));  // 1 caliper red
+	MechMats.Add(MakeMat(this, TEXT("M_Metal"), FLinearColor(0.45f, 0.44f, 0.42f)));   // 2 disc
+	MechMats[2]->SetScalarParameterValue(TEXT("Rough"), 0.3f);
+	MechMats.Add(MakeMat(this, TEXT("M_Painted"), FLinearColor(0.03f, 0.03f, 0.03f)));  // 3 black parts
+	MechMats.Add(MakeMat(this, TEXT("M_Painted"), FLinearColor(0.75f, 0.55f, 0.05f)));  // 4 spring yellow
+	MechMats.Add(MakeMat(this, TEXT("M_Metal"), FLinearColor(0.2f, 0.12f, 0.07f)));    // 5 exhaust (heat-tinted)
+	// per corner: disc, caliper, damper, lower arm, upper arm, tie rod / driveshaft
+	for (int32 i = 0; i < 4; i++)
+	{
+		AddMech(TEXT("Cylinder"), MechMats[2]);
+		AddMech(TEXT("Cube"), MechMats[1]);
+		AddMech(TEXT("Cylinder"), MechMats[0]);
+		AddMech(TEXT("Cube"), MechMats[3]);
+		AddMech(TEXT("Cube"), MechMats[3]);
+		AddMech(TEXT("Cylinder"), MechMats[0]);
+		UProceduralMeshComponent* Sp = NewObject<UProceduralMeshComponent>(this);
+		Sp->SetupAttachment(Visual);
+		Sp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Sp->RegisterComponent();
+		Springs.Add(Sp);
+	}
+	// fixed running gear (car space at ride height)
+	const float L = CarLength, Fx = Wheels[0].Mount.X, Rx = Wheels[2].Mount.X, R = WheelRadius;
+	auto Fixed = [&](const TCHAR* Shape, UMaterialInterface* M, const FVector& At, const FVector& SizeCm, const FRotator& Rot = FRotator::ZeroRotator) {
+		UStaticMeshComponent* C = AddMech(Shape, M);
+		C->SetRelativeLocationAndRotation(At, Rot);
+		C->SetRelativeScale3D(SizeCm / 100.f);
+	};
+	Fixed(TEXT("Cube"), MechMats[0], FVector(Fx - 5.f, 0, R + 28.f), FVector(55, 50, 45));                      // engine block
+	Fixed(TEXT("Cylinder"), MechMats[3], FVector(Fx - 5.f, 0, R + 56.f), FVector(48, 20, 12), FRotator(90, 0, 0)); // valve cover
+	Fixed(TEXT("Cube"), MechMats[0], FVector(Fx - 50.f, 0, R + 12.f), FVector(55, 30, 28));                     // gearbox
+	Fixed(TEXT("Cube"), MechMats[3], FVector(L * 0.5f - 22.f, 0, R + 22.f), FVector(5, CarWidth * 0.55f, 40));   // radiator
+	Fixed(TEXT("Cylinder"), MechMats[0], FVector((Fx + Rx) * 0.5f - 25.f, 0, R + 8.f), FVector(7, 7, Fx - Rx - 90.f), FRotator(90, 0, 0)); // propshaft
+	Fixed(TEXT("Cube"), MechMats[0], FVector(Rx, 0, R + 4.f), FVector(28, 32, 24));                              // differential
+	Fixed(TEXT("Cylinder"), MechMats[5], FVector((Fx + Rx) * 0.5f - 30.f, CarWidth * 0.2f, 24.f), FVector(8, 8, L * 0.7f), FRotator(90, 0, 0)); // exhaust
+	Fixed(TEXT("Cylinder"), MechMats[5], FVector(Rx - 35.f, CarWidth * 0.2f, 26.f), FVector(22, 22, 45), FRotator(90, 0, 0)); // silencer
+	Fixed(TEXT("Cube"), MechMats[3], FVector(Rx + 40.f, 0, R + 6.f), FVector(55, CarWidth * 0.5f, 22));          // fuel tank
+}
+
+void ATTCar::UpdateMechanics()
+{
+	if (Mech.Num() < 24 || Springs.Num() < 4) return;
+	for (int32 i = 0; i < 4; i++)
+	{
+		const FWheel& W = Wheels[i];
+		const bool bOff = (DetachedWheels >> i) & 1;
+		const float s = W.bLeft ? -1.f : 1.f, R = WheelRadius;
+		const FVector C = W.Mount - FVector(0, 0, W.SpringLen) + FVector(0, 0, ZC);  // wheel centre, car space
+		const float Yaw = W.bFront ? SteerAngle : 0.f;
+		const FQuat Steer(FRotator(0.f, Yaw, 0.f));
+		const FVector Hub = C + Steer.RotateVector(FVector(0, -s * 13.f, 0));
+		// disc and caliper turn with the steering (the disc's spin is invisible on a flat disc)
+		Mech[i * 6 + 0]->SetVisibility(!bOff);
+		Mech[i * 6 + 1]->SetVisibility(!bOff);
+		Mech[i * 6 + 0]->SetRelativeLocationAndRotation(C + Steer.RotateVector(FVector(0, -s * 7.f, 0)), (Steer * FQuat(FVector::ForwardVector, PI * 0.5f)).Rotator());
+		Mech[i * 6 + 0]->SetRelativeScale3D(FVector(R * 1.5f / 100.f, R * 1.5f / 100.f, 0.028f));
+		Mech[i * 6 + 1]->SetRelativeLocationAndRotation(C + Steer.RotateVector(FVector(-R * 0.45f, -s * 8.f, R * 0.4f)), Steer.Rotator() + FRotator(-40.f, 0, 0));
+		Mech[i * 6 + 1]->SetRelativeScale3D(FVector(R * 0.42f, 7.f, R * 0.22f) / 100.f);
+		// strut: damper from the hub to the tower, spring around its upper part
+		const FVector Tower = FVector(W.Mount.X, W.Mount.Y - s * 8.f, W.Mount.Z + ZC + 34.f);
+		const FVector D0 = Hub + FVector(0, 0, 8.f);
+		PlaceBetween(Mech[i * 6 + 2], D0, Tower, 5.f);
+		// lower and upper arms to pivots on the subframe, tie rod (front) or driveshaft (rear)
+		const FVector PivotLo(W.Mount.X, W.Mount.Y - s * 42.f, R - 8.f), PivotUp(W.Mount.X, W.Mount.Y - s * 32.f, R + 20.f);
+		PlaceBetween(Mech[i * 6 + 3], Hub - FVector(0, 0, R * 0.45f), PivotLo, 6.f, 3.f);
+		PlaceBetween(Mech[i * 6 + 4], Hub + FVector(0, 0, R * 0.35f), PivotUp, 4.f, 2.5f);
+		if (W.bFront) PlaceBetween(Mech[i * 6 + 5], Hub + Steer.RotateVector(FVector(-14.f, 0, -4.f)), FVector(W.Mount.X - 16.f, W.Mount.Y - s * 45.f, R - 4.f), 2.5f);
+		else PlaceBetween(Mech[i * 6 + 5], Hub, FVector(W.Mount.X, s * 16.f, R + 4.f), 5.5f);
+		for (int32 k = 2; k < 6; k++) Mech[i * 6 + k]->SetVisibility(true);
+		// coil spring: a helix rebuilt every frame between its seats (it visibly compresses)
+		const FVector S0 = D0 + (Tower - D0) * 0.35f, S1 = Tower - (Tower - D0) * 0.04f;
+		const FVector Ax = (S1 - S0).GetSafeNormal(), U = FVector::CrossProduct(Ax, FVector::ForwardVector).GetSafeNormal(), Vv = FVector::CrossProduct(Ax, U);
+		const int32 Turns = 6, Seg = 10 * Turns, Ring = 6;
+		const float Rad = 7.f, Wire = 1.1f;
+		TArray<FVector> V, N;
+		TArray<int32> I;
+		for (int32 k = 0; k <= Seg; k++)
+		{
+			const float t = float(k) / Seg, a = t * Turns * 2.f * PI;
+			const FVector Ctr = S0 + (S1 - S0) * t + (U * FMath::Cos(a) + Vv * FMath::Sin(a)) * Rad;
+			const FVector Out = (U * FMath::Cos(a) + Vv * FMath::Sin(a));
+			for (int32 r = 0; r < Ring; r++)
+			{
+				const float b = 2.f * PI * r / Ring;
+				const FVector Nn = Out * FMath::Cos(b) + Ax * FMath::Sin(b);
+				V.Add(Ctr + Nn * Wire), N.Add(Nn);
+			}
+		}
+		for (int32 k = 0; k < Seg; k++)
+			for (int32 r = 0; r < Ring; r++)
+			{
+				const int32 a0 = k * Ring + r, a1 = k * Ring + (r + 1) % Ring, b0 = a0 + Ring, b1 = a1 + Ring;
+				I.Append({a0, b0, a1, a1, b0, b1});
+			}
+		UProceduralMeshComponent* Sp = Springs[i];
+		if (Sp->GetNumSections() == 0)
+		{
+			Sp->CreateMeshSection_LinearColor(0, V, I, N, TArray<FVector2D>(), TArray<FLinearColor>(), TArray<FProcMeshTangent>(), false);
+			Sp->SetMaterial(0, MechMats[4]);
+		}
+		else Sp->UpdateMeshSection_LinearColor(0, V, N, TArray<FVector2D>(), TArray<FLinearColor>(), TArray<FProcMeshTangent>());
+	}
+}
+
+// ------------------------------------------------------------------ debug (F1 text, F2 lines)
+
+bool ATTCar::bDebugLines = false;
+void ATTCar::OnDebugHud() { ATTHUD::bShow = !ATTHUD::bShow; }
+void ATTCar::OnDebugLines() { bDebugLines = !bDebugLines; }
+
+FString ATTCar::DebugReport() const
+{
+	const TCHAR* GearName[] = {TEXT("R"), TEXT("N"), TEXT("1"), TEXT("2"), TEXT("3"), TEXT("4"), TEXT("5"), TEXT("6")};
+	FString S = FString::Printf(TEXT("%s   %.0f km/h   %s%s   %.0f rpm   gas %.2f  brake %.2f  steer %+.2f  hb %.0f\n"),
+	                            CarIndex >= 0 && Def() ? *Def()->Name : TEXT("built-in sedan"), FMath::Abs(Speed) * 3.6f, GearName[FMath::Clamp(Gear + 1, 0, 7)],
+	                            bAutomatic ? TEXT(" auto") : TEXT(" manual"), EngineRpm, RepThrottle, RepBrake, RepSteer, RepHandbrake);
+	S += FString::Printf(TEXT("engine %.0f%%%s   temp %.0f C   coolant %.0f%%   oil %.0f%%   radiator leak %.2f%%/s%s\n"), EngineHealth * 100.f,
+	                     bEngineRunning ? TEXT("") : TEXT(" (stalled)"), EngineTemp, Coolant * 100.f, Oil * 100.f, RadiatorLeak * 100.f, bRadiatorWelded ? TEXT(" (welded)") : TEXT(""));
+	const TCHAR* WN[] = {TEXT("FL"), TEXT("FR"), TEXT("RL"), TEXT("RR")};
+	for (int32 i = 0; i < 4 && i < Wheels.Num(); i++)
+	{
+		const FWheel& W = Wheels[i];
+		S += FString::Printf(TEXT("%s  %s load %4.1f kN  travel %4.1f cm  slip %4.2f  ratio %+.2f  nuts %3.0f Nm  bent %3.0f%%%s\n"), WN[i],
+		                     W.bContact ? TEXT("on ") : TEXT("air"), W.Load / 1000.f, SuspMax - W.SpringLen, W.Slide, W.SlipRatio, WheelNutAverage(i), FMath::Min(WheelDamage[i], 1.f) * 100.f,
+		                     (DetachedWheels >> i) & 1 ? TEXT("  OFF") : TEXT(""));
+	}
+	S += TEXT("parts:\n");
+	for (int32 i = 0; i < Parts.Num(); i++)
+	{
+		const FPart& P = Parts[i];
+		S += FString::Printf(TEXT("  %-22s %3.0f%%  fatigue %3.0f%%%s%s%s\n"), *P.Name.Left(22), P.Health * 100.f, P.Fatigue * 100.f, P.bCracked ? TEXT("  CRACKED") : TEXT(""),
+		                     P.bTaped ? TEXT("  taped") : TEXT(""), IsOff(i) ? TEXT("  OFF") : TEXT(""));
+	}
+	return S;
+}
+
+FString ATTCar::AimReport(const FVector& Eye, const FVector& Dir) const
+{
+	const int32 W = AimedWheel(Eye, Dir), P = AimedPart(Eye, Dir);
+	const TCHAR* WN[] = {TEXT("переднее левое"), TEXT("переднее правое"), TEXT("заднее левое"), TEXT("заднее правое")};
+	FString S;
+	if (W >= 0)
+	{
+		S += FString::Printf(TEXT("колесо %s%s  гайки:"), WN[W], (DetachedWheels >> W) & 1 ? TEXT(" (снято — R поставить)") : TEXT(""));
+		for (int32 k = 0; k < 5; k++) S += NutTorque[W * 5 + k] < 0.f ? FString(TEXT(" X")) : FString::Printf(TEXT(" %.0f"), NutTorque[W * 5 + k]);
+		S += FString::Printf(TEXT(" Н·м   подвеска %s"), WheelDamage[W] > 0.05f ? TEXT("погнута (R)") : TEXT("ок"));
+	}
+	if (P >= 0)
+	{
+		if (!S.IsEmpty()) S += TEXT("\n");
+		const FPart& Pa = Parts[P];
+		S += FString::Printf(TEXT("%s: %.0f%%%s%s%s"), *Pa.Name, Pa.Health * 100.f, IsOff(P) ? TEXT("  отвалилась (R/T)") : TEXT(""), Pa.bCracked ? TEXT("  трещина (V/T)") : TEXT(""),
+		                     Pa.bTaped ? TEXT("  на изоленте") : TEXT(""));
+		if (const FTTCarDef* D = Def())
+			if (D->Parts.IsValidIndex(Pa.Def) && D->Parts[Pa.Def].VariantNames.Num() > 1)
+				S += FString::Printf(TEXT("  [%s, Y — сменить]"), *D->Parts[Pa.Def].VariantNames[FMath::Clamp(int32(PartVariant[P]), 0, D->Parts[Pa.Def].VariantNames.Num() - 1)]);
+	}
+	S += FString::Printf(TEXT("\nдвигатель %.0f%%  %.0f°C  антифриз %.0f%%  масло %.0f%%%s"), EngineHealth * 100.f, EngineTemp, Coolant * 100.f, Oil * 100.f,
+	                     RadiatorLeak > 0.f && !bRadiatorWelded ? TEXT("  РАДИАТОР ТЕЧЁТ (V)") : TEXT(""));
+	return S;
+}
+
+void ATTCar::DrawDebugLines() const
+{
+	UWorld* W = GetWorld();
+	const FTransform T = Chassis->GetComponentTransform();
+	const FVector Up = T.GetUnitAxis(EAxis::Z);
+	for (const FWheel& Wh : Wheels)
+	{
+		const FVector M = T.TransformPosition(Wh.Mount);
+		DrawDebugLine(W, M, M - Up * (SuspMax + WheelRadius), Wh.bContact ? FColor::Green : FColor::Red, false, -1.f, 0, 1.5f);
+		if (Wh.bContact) DrawDebugLine(W, Wh.ContactPoint, Wh.ContactPoint + Up * (Wh.Load / 100.f), FColor::Yellow, false, -1.f, 0, 2.f);
+	}
+	DrawDebugSphere(W, Chassis->GetCenterOfMass(), 12.f, 8, FColor::Cyan, false, -1.f, 0, 1.f);
 }

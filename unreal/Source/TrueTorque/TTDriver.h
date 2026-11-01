@@ -27,6 +27,7 @@ public:
 
 	UFUNCTION(Server, Reliable) void ServerEnter(ATTCar* Car);
 	UFUNCTION(Server, Reliable) void ServerCarCommand(ATTCar* Car, uint8 Cmd, int32 Index);
+	FString AimText() const;
 
 private:
 	UPROPERTY(VisibleAnywhere) TObjectPtr<UCameraComponent> Eyes;
@@ -51,4 +52,5 @@ private:
 	void OnFluids();
 	void OnEngine();
 	void OnSwap();
+	void OnDebugHud();
 };

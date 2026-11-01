@@ -1,5 +1,6 @@
 #include "TTDriver.h"
 #include "TTCar.h"
+#include "TTHud.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -90,8 +91,8 @@ void ATTDriver::SetupPlayerInputComponent(UInputComponent* PIC)
 		Mapping->MapKey(Move, EKeys::Gamepad_Left2D);
 		Mapping->MapKey(Look, EKeys::Mouse2D);
 		Mapping->MapKey(Look, EKeys::Gamepad_Right2D);
-		const FName Names[] = {"Jump", "Enter", "Tighten", "Loosen", "Repair", "Tape", "Weld", "Fluids", "Engine", "Swap"};
-		const FKey Keys[] = {EKeys::SpaceBar, EKeys::F, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::R, EKeys::T, EKeys::V, EKeys::G, EKeys::H, EKeys::Y};
+		const FName Names[] = {"Jump", "Enter", "Tighten", "Loosen", "Repair", "Tape", "Weld", "Fluids", "Engine", "Swap", "DebugHud"};
+		const FKey Keys[] = {EKeys::SpaceBar, EKeys::F, EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::R, EKeys::T, EKeys::V, EKeys::G, EKeys::H, EKeys::Y, EKeys::F1};
 		for (int32 i = 0; i < int32(UE_ARRAY_COUNT(Names)); i++) Mapping->MapKey(Act(Names[i], EInputActionValueType::Boolean), Keys[i]);
 	}
 	if (APlayerController* PC = Cast<APlayerController>(GetController()))
@@ -115,6 +116,7 @@ void ATTDriver::SetupPlayerInputComponent(UInputComponent* PIC)
 	E->BindAction(Actions["Fluids"], ETriggerEvent::Started, this, &ATTDriver::OnFluids);
 	E->BindAction(Actions["Engine"], ETriggerEvent::Started, this, &ATTDriver::OnEngine);
 	E->BindAction(Actions["Swap"], ETriggerEvent::Started, this, &ATTDriver::OnSwap);
+	E->BindAction(Actions["DebugHud"], ETriggerEvent::Started, this, &ATTDriver::OnDebugHud);
 }
 
 void ATTDriver::OnMove(const FInputActionValue& V)
@@ -154,6 +156,8 @@ ATTCar* ATTDriver::LookedAtCar(FVector& Eye, FVector& Dir) const
 
 void ATTDriver::OnEnter()
 {
+	UE_LOG(LogTemp, Log, TEXT("TrueTorque: enter pressed %.2f s after getting out"), GetGameTimeSinceCreation());
+	if (GetGameTimeSinceCreation() < 0.8f) return;  // the F that got us out must not put us straight back in
 	FVector Eye, Dir;
 	ATTCar* Car = LookedAtCar(Eye, Dir);
 	if (!Car || FVector::Dist(Car->GetActorLocation(), GetActorLocation()) > 450.f) return;
@@ -221,3 +225,13 @@ void ATTDriver::OnWeld() { Tool(TTCmd::ColdWeld); }
 void ATTDriver::OnFluids() { Tool(TTCmd::Fluids); }
 void ATTDriver::OnEngine() { Tool(TTCmd::EngineRebuild); }
 void ATTDriver::OnSwap() { Tool(TTCmd::SwapVariant); }
+
+void ATTDriver::OnDebugHud() { ATTHUD::bShow = !ATTHUD::bShow; }
+
+FString ATTDriver::AimText() const
+{
+	FVector Eye, Dir;
+	ATTCar* Car = LookedAtCar(Eye, Dir);
+	if (!Car || FVector::Dist(Car->GetActorLocation(), Eye) > 600.f) return FString();
+	return Car->AimReport(Eye, Dir) + (Car->GetController() ? TEXT("") : TEXT("\nF — сесть"));
+}

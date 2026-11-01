@@ -13,6 +13,7 @@
 #include "TTCar.generated.h"
 
 class UBoxComponent;
+class UStaticMeshComponent;
 class UProceduralMeshComponent;
 class UCameraComponent;
 class USpringArmComponent;
@@ -52,6 +53,7 @@ UCLASS()
 class TRUETORQUE_API ATTCar : public APawn
 {
 	GENERATED_BODY()
+	friend class ATTHUD;
 public:
 	ATTCar();
 	virtual void BeginPlay() override;
@@ -81,12 +83,16 @@ public:
 	void Note(const FString& Text, const FVector& Where, float Secs = 3.f);
 	float GetSpeed() const { return Speed; }
 	FVector DriverDoor() const;
+	FString DebugReport() const;   // F1 overlay
+	FString AimReport(const FVector& Eye, const FVector& Dir) const;  // what a mechanic looking at the car would work on
+	void DrawDebugLines() const;   // F2
+	static bool bDebugLines;
 	bool WheelNeedsWork(int32 W) const { return W >= 0 && W < 4 && ((DetachedWheels >> W) & 1 || WheelDamage[W] > 0.05f); }
 
 private:
 	// ---- components
-	UPROPERTY(VisibleAnywhere) TObjectPtr<UBoxComponent> Chassis;
-	UPROPERTY(VisibleAnywhere) TObjectPtr<UBoxComponent> Cabin;
+	// physics body: convex hulls fitted to the car's own shape (front / cabin / rear)
+	UPROPERTY(VisibleAnywhere) TObjectPtr<UProceduralMeshComponent> Chassis;
 	UPROPERTY(VisibleAnywhere) TObjectPtr<USceneComponent> Visual;  // ground-level car space
 	UPROPERTY() TArray<TObjectPtr<UProceduralMeshComponent>> PartComps;
 	UPROPERTY(VisibleAnywhere) TArray<TObjectPtr<UProceduralMeshComponent>> WheelComps;
@@ -104,6 +110,11 @@ private:
 	UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> Mats;      // procedural car slots (paint, glass, trim, head, tail)
 	UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> WheelMats; // tyre, rim
 	UPROPERTY() TArray<TObjectPtr<UMaterialInterface>> PartMats;        // every material any part uses (GC)
+	// running gear you can see: per corner disc, caliper, damper, lower arm, upper arm, tie rod / driveshaft;
+	// plus engine, gearbox, radiator, exhaust, diff, tank
+	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Mech;
+	UPROPERTY() TArray<TObjectPtr<UProceduralMeshComponent>> Springs;
+	UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> MechMats;
 
 	// ---- body parts (visual deformation)
 	struct FPart
@@ -186,6 +197,12 @@ private:
 	void UpdateCamera(float Dt);
 	float WheelNutAverage(int32 Wheel) const;
 	void SetupWheels();
+	void BuildHull();
+	void BuildMechanics();
+	void UpdateMechanics();
+	UStaticMeshComponent* AddMech(const TCHAR* Shape, UMaterialInterface* M);
+	float ShakeAmp = 0;
+	bool bCoMSet = false;
 
 	UFUNCTION() void OnChassisHit(UPrimitiveComponent* HitComp, AActor* Other, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit);
 
@@ -216,4 +233,6 @@ private:
 	void OnUse();
 	void OnLoosen();
 	void OnExit();
+	void OnDebugHud();
+	void OnDebugLines();
 };

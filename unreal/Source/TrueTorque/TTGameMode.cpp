@@ -19,12 +19,14 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "TTCar.h"
+#include "TTHud.h"
 
 ATTGameMode::ATTGameMode()
 {
 	DefaultPawnClass = ATTCar::StaticClass();
 	GameStateClass = ATTGameState::StaticClass();
 	PlayerControllerClass = APlayerController::StaticClass();
+	HUDClass = ATTHUD::StaticClass();
 }
 
 ATTCar* ATTGameMode::SpawnCar(const FVector& Loc, float Yaw, int32 CarIndex, const FLinearColor& Paint)
@@ -166,6 +168,10 @@ void ATTGameState::BuildWorld()
 		S.bOverride_FilmToe = true, S.FilmToe = 0.6f;
 		S.bOverride_LumenFinalGatherQuality = true, S.LumenFinalGatherQuality = 2.f;
 		S.bOverride_LumenSceneDetail = true, S.LumenSceneDetail = 2.f;
+		S.bOverride_LumenReflectionQuality = true, S.LumenReflectionQuality = 2.f;  // sharper reflections on the paint
+		S.bOverride_LumenSceneLightingQuality = true, S.LumenSceneLightingQuality = 2.f;
+		S.bOverride_AmbientOcclusionIntensity = true, S.AmbientOcclusionIntensity = 0.6f;
+		S.bOverride_LensFlareIntensity = true, S.LensFlareIntensity = 0.15f;
 	}
 
 	// ---- surfaces (grip comes from the friction: tyres divide by 0.7)
