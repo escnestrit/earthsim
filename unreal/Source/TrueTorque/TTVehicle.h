@@ -9,7 +9,7 @@
 #include <vector>
 #include "TTVehicle.generated.h"
 
-namespace tt { class Vehicle; struct GroundHit; }
+#include "vehicle.hpp"
 class UProceduralMeshComponent;
 class UStaticMeshComponent;
 class UCameraComponent;

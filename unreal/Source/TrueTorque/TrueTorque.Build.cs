@@ -14,6 +14,5 @@ public class TrueTorque : ModuleRules
 		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Sim"));
 		ShadowVariableWarningLevel = WarningLevel.Off;
 		bUseUnity = false;
-		CppStandard = CppStandardVersion.Cpp17;
 	}
 }
