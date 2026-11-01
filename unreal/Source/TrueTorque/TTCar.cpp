@@ -168,9 +168,9 @@ ATTCar::ATTCar()
 	WheelDamage.Init(0.f, 4);
 }
 
-void ATTCar::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const
+void ATTCar::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
-	Super::GetLifetimeReplicatedProps(Out);
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ATTCar, PaintColor);
 	DOREPLIFETIME(ATTCar, RepThrottle);
 	DOREPLIFETIME(ATTCar, RepBrake);
@@ -193,7 +193,6 @@ void ATTCar::BeginPlay()
 	Super::BeginPlay();
 	// rigid body: mass, low centre of mass, a dead (non-bouncy) shell
 	Chassis->SetMassOverrideInKg(NAME_None, MassKg, true);
-	Cabin->SetMassOverrideInKg(NAME_None, 1.f, true);
 	Chassis->SetCenterOfMass(FVector(8.f, 0.f, -16.f));
 	Chassis->SetLinearDamping(0.01f);
 	Chassis->SetAngularDamping(0.15f);
@@ -237,6 +236,7 @@ void ATTCar::BeginPlay()
 		W.bFront = i < 2;
 		W.bLeft = (i % 2) == 0;
 		W.Mount = FVector(W.bFront ? ttg::WHEELBASE_HALF : -ttg::WHEELBASE_HALF, W.bLeft ? -ttg::TRACK_HALF : ttg::TRACK_HALF, MountZ);
+		W.Compression = 0.09f;  // start near the static ride height: no damper kick on the first frame
 		UProceduralMeshComponent* C = WheelComps[i];
 		TArray<FVector> V[2], N[2];
 		TArray<int32> I[2];

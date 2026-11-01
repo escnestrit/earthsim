@@ -71,6 +71,13 @@ def lerp(m, a, b, alpha, x, y, alpha_out=''):
     return e
 
 
+def mp_attr(*names):
+    for n in names:
+        if hasattr(MP, n):
+            return getattr(MP, n)
+    return None
+
+
 def out(m, e, prop, o=''):
     if not MEL.connect_material_property(e, o, prop):
         raise RuntimeError('cannot connect %s to %s' % (e.get_name(), prop))
@@ -129,8 +136,13 @@ def car_paint(name):
     out(m, lerp(m, painted, steel, vc, -350, 100, alpha_out='R'), MP.MP_BASE_COLOR)
     out(m, lerp(m, const(m, 0.45, -550, 350), const(m, 1.0, -550, 420), vc, -350, 350, alpha_out='R'), MP.MP_METALLIC)
     out(m, lerp(m, const(m, 0.32, -550, 500), const(m, 0.5, -550, 570), vc, -350, 500, alpha_out='R'), MP.MP_ROUGHNESS)
-    out(m, lerp(m, const(m, 1.0, -550, 650), const(m, 0.0, -550, 720), vc, -350, 650, alpha_out='R'), MP.MP_CUSTOM_DATA0)  # clear coat
-    out(m, const(m, 0.03, -350, 800), MP.MP_CUSTOM_DATA1)  # clear coat roughness
+    cc0 = mp_attr('MP_CUSTOM_DATA0', 'MP_CUSTOMDATA0', 'MP_CLEAR_COAT')
+    cc1 = mp_attr('MP_CUSTOM_DATA1', 'MP_CUSTOMDATA1', 'MP_CLEAR_COAT_ROUGHNESS')
+    if cc0 and cc1:
+        out(m, lerp(m, const(m, 1.0, -550, 650), const(m, 0.0, -550, 720), vc, -350, 650, alpha_out='R'), cc0)  # clear coat
+        out(m, const(m, 0.03, -350, 800), cc1)  # clear coat roughness
+    else:
+        unreal.log_warning('TT make_assets: no clear coat pins, MaterialProperty has: ' + ', '.join(a for a in dir(MP) if a.startswith('MP_')))
     finish(m, name, two_sided=True)
 
 

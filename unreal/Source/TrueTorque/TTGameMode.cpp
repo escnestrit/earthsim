@@ -164,8 +164,8 @@ void ATTGameState::BuildWorld()
 	UPhysicalMaterial* SConcrete = Surface(0.68f);
 
 	// ---- materials
-	UMaterialInterface* Asphalt = Mat(TEXT("M_Asphalt"), FLinearColor(1, 1, 1));
-	UMaterialInterface* Grass = Mat(TEXT("M_Grass"), FLinearColor(1, 1, 1));
+	UMaterialInterface* Asphalt = Mat(TEXT("M_Asphalt"), FLinearColor(0.8f, 0.8f, 0.82f));
+	UMaterialInterface* Grass = Mat(TEXT("M_Grass"), FLinearColor(0.42f, 0.6f, 0.3f));
 	UMaterialInterface* Concrete = Mat(TEXT("M_Concrete"), FLinearColor(1, 1, 1));
 	UMaterialInterface* DarkConcrete = Mat(TEXT("M_Concrete"), FLinearColor(0.55f, 0.55f, 0.56f));
 	UMaterialInterface* KerbRed = Mat(TEXT("M_Painted"), FLinearColor(0.55f, 0.03f, 0.02f), 0.55f);

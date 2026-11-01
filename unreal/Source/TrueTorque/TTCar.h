@@ -34,7 +34,7 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float Dt) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PIC) override;
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UPROPERTY(EditAnywhere, Replicated, Category = "TrueTorque") FLinearColor PaintColor = FLinearColor(0.42f, 0.03f, 0.02f);
 
