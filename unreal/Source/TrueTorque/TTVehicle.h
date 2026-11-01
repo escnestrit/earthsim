@@ -7,9 +7,9 @@
 #include "InputActionValue.h"
 #include <memory>
 #include <vector>
+#include "vehicle.hpp"
 #include "TTVehicle.generated.h"
 
-#include "vehicle.hpp"
 class UProceduralMeshComponent;
 class UStaticMeshComponent;
 class UCameraComponent;
